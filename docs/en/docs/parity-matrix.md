@@ -1,21 +1,40 @@
 # Parity Matrix
 
-This matrix records Palfrey behavior mapped to Uvicorn/Click sources.
+This matrix lists Palfrey behaviors grounded in explicit Uvicorn/Click sources.
 
-| Capability | Palfrey status | Uvicorn docs source | Uvicorn repo source |
-| --- | --- | --- | --- |
-| CLI option names and argument surface | Implemented with matching option names | "Settings" ([uvicorn.dev/settings](https://uvicorn.dev/settings/)) | `uvicorn/main.py` |
-| Host/port/UDS/fd binding | Implemented | "Settings" (Socket Binding) | `uvicorn/main.py`, `uvicorn/config.py`, `uvicorn/server.py` |
-| Reload mode and watch controls | Implemented (polling reloader) | "Settings" (Development) | `uvicorn/main.py`, `uvicorn/supervisors/statreload.py`, `uvicorn/supervisors/watchfilesreload.py` |
-| Worker process supervision | Implemented | "Deployment" ([uvicorn.dev/deployment](https://uvicorn.dev/deployment/)) | `uvicorn/main.py`, `uvicorn/supervisors/multiprocess.py` |
-| HTTP protocol selection flags | Implemented flag parity (`auto`, `h11`, `httptools`) | "Settings" (Implementation) | `uvicorn/main.py`, `uvicorn/config.py`, `uvicorn/protocols/http/h11_impl.py`, `uvicorn/protocols/http/httptools_impl.py` |
-| WebSocket protocol selection flags | Implemented flag parity (`auto`, `none`, `websockets`, `wsproto`) | "Concepts: WebSockets" ([uvicorn.dev/concepts/websockets](https://uvicorn.dev/concepts/websockets/)) | `uvicorn/main.py`, `uvicorn/config.py`, `uvicorn/protocols/websockets/websockets_impl.py` |
-| Lifespan modes (`auto`, `on`, `off`) | Implemented | "Concepts: Lifespan" ([uvicorn.dev/concepts/lifespan](https://uvicorn.dev/concepts/lifespan/)) | `uvicorn/main.py`, `uvicorn/config.py`, `uvicorn/server.py` |
-| Logging/TLS/proxy headers options | Implemented | "Settings" (Logging, HTTPS), "Deployment" (Proxies) | `uvicorn/main.py`, `uvicorn/config.py`, `uvicorn/middleware/proxy_headers.py` |
-| Interface modes (`asgi3`, `asgi2`, `wsgi`) | Implemented with adapters | "Settings" (Application Interface) | `uvicorn/main.py`, `uvicorn/config.py` |
-| Click command semantics | Implemented with Click command/options decorators | Click docs: "Options", "Commands and Groups" ([click.palletsprojects.com](https://click.palletsprojects.com/en/stable/options/)) | Click repo: `src/click/core.py` |
+| Area | Palfrey Status | Uvicorn Docs Source | Uvicorn Source Paths | Click Source |
+| --- | --- | --- | --- | --- |
+| CLI command surface | Implemented with matching option names and value domains | "Settings" ([uvicorn.dev/settings](https://uvicorn.dev/settings/)) | `uvicorn/main.py` | `src/click/core.py` |
+| App import + factory semantics | Implemented (`module:attr`, `--factory`) | "Settings" (Application) | `uvicorn/config.py`, `uvicorn/main.py` | `src/click/core.py` |
+| Loop setup modes (`none`, `auto`, `asyncio`, `uvloop`) | Implemented | "Settings" (Implementation) | `uvicorn/config.py` (`LOOP_SETUPS`) |  |
+| HTTP implementation option values (`auto`, `h11`, `httptools`) | Implemented option parity | "Settings" (Implementation) | `uvicorn/config.py` (`HTTP_PROTOCOLS`) |  |
+| WebSocket implementation option values (`auto`, `none`, `websockets`, `wsproto`) | Implemented option parity | "Settings" + "Concepts: WebSockets" ([uvicorn.dev/concepts/websockets](https://uvicorn.dev/concepts/websockets/)) | `uvicorn/config.py` (`WS_PROTOCOLS`) |  |
+| Lifespan modes (`auto`, `on`, `off`) | Implemented | "Concepts: Lifespan" ([uvicorn.dev/concepts/lifespan](https://uvicorn.dev/concepts/lifespan/)) | `uvicorn/config.py`, `uvicorn/server.py` |  |
+| Proxy headers behavior | Implemented middleware | "Deployment" (Proxies and forwarded headers) ([uvicorn.dev/deployment](https://uvicorn.dev/deployment/)) | `uvicorn/middleware/proxy_headers.py` |  |
+| ASGI message logger behavior | Implemented middleware | n/a (source-driven) | `uvicorn/middleware/message_logger.py` |  |
+| Worker supervision behavior | Implemented | "Deployment" | `uvicorn/supervisors/multiprocess.py`, `uvicorn/supervisors/process.py` |  |
+| Reload supervision behavior and options | Implemented | "Settings" (Development) | `uvicorn/supervisors/basereload.py`, `uvicorn/supervisors/statreload.py`, `uvicorn/supervisors/watchfilesreload.py` |  |
+| TLS option surface | Implemented option parity | "Settings" (HTTPS) | `uvicorn/main.py`, `uvicorn/config.py` |  |
+| Logging option surface | Implemented option parity | "Settings" (Logging) | `uvicorn/main.py`, `uvicorn/config.py` |  |
+| Interface adapters (`asgi3`, `asgi2`, `wsgi`) | Implemented | "Settings" (Application Interface) | `uvicorn/config.py` |  |
+| Keep-alive + header defaults | Implemented | "Server Behavior" ([uvicorn.dev/server-behavior](https://uvicorn.dev/server-behavior/)) | `uvicorn/server.py`, `uvicorn/protocols/http/*` |  |
 
-## Notes
+## Uvicorn Test Pattern Sources Consulted
 
-- Palfrey is a clean-room runtime and does not import Uvicorn.
-- Features in this matrix are constrained to confirmed source references only.
+- `tests/test_cli.py`
+- `tests/test_config.py`
+- `tests/protocols/test_http.py`
+- `tests/protocols/test_websocket.py`
+- `tests/middleware/test_proxy_headers.py`
+- `tests/supervisors/test_multiprocess.py`
+
+## Click Documentation and Source Consulted
+
+- Docs: [Options](https://click.palletsprojects.com/en/stable/options/)
+- Docs: [Commands and Groups](https://click.palletsprojects.com/en/stable/commands-and-groups/)
+- Source: `src/click/core.py`
+
+## Scope Notes
+
+- Palfrey is a clean-room runtime and does not import Uvicorn at runtime.
+- Rows above indicate feature/option parity, not byte-for-byte implementation identity.

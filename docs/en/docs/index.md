@@ -1,19 +1,32 @@
 # Palfrey
 
-Palfrey is a clean-room ASGI server implementation focused on high concurrency, predictable operations, and
-source-traceable parity with Uvicorn behavior.
+Palfrey is a clean-room ASGI server implementation focused on production runtime behavior parity with Uvicorn while
+remaining fully independent at runtime.
 
-## Goals
+## What Palfrey provides
 
-- Uvicorn-compatible CLI flags where confirmed by Uvicorn docs/source.
-- Original runtime implementation (no Uvicorn runtime dependency).
-- Built-in reload and worker supervision.
-- HTTP, WebSocket, and lifespan support.
-- Optional Rust acceleration helpers with Python fallback.
+- Click CLI with Uvicorn-compatible option names (where confirmed by source docs/code).
+- HTTP/1.1 request handling and response lifecycle.
+- WebSocket handshake and frame handling.
+- Lifespan startup/shutdown flow.
+- Process supervision for reload mode and worker mode.
+- Proxy-header and message-logger middleware support.
+- Optional Rust acceleration for parser hot paths.
 
-## Documentation map
+## Documentation structure
 
-- Usage: install, quickstart, deployment, reload, workers.
-- Reference: CLI and config behavior, protocols, logging.
-- Validation: parity matrix and benchmark methodology.
-- Release: OSS release process and CI gates.
+- **Getting Started**: installation, quickstart, migration.
+- **Concepts**: event loop, HTTP, WebSockets, lifespan, middleware.
+- **Reference**: CLI, config, protocols, logging.
+- **Operations**: deploy, reload, workers, benchmarks, release process.
+- **Validation**: parity matrix and testing strategy.
+
+## Source-backed parity policy
+
+Palfrey only claims parity for behavior grounded in:
+
+- Uvicorn docs at [uvicorn.dev](https://uvicorn.dev/)
+- Uvicorn source files under [`uvicorn/`](https://github.com/Kludex/uvicorn/tree/main/uvicorn)
+- Click docs/source for command parsing semantics
+
+See [Parity Matrix](parity-matrix.md) for detailed mapping.

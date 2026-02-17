@@ -39,7 +39,10 @@ class ReloadSupervisor:
             while not self._stop:
                 changed = self._changed_paths()
                 if changed:
-                    logger.info("Reload triggered by changes: %s", ", ".join(str(path) for path in changed))
+                    logger.info(
+                        "Reload triggered by changes: %s",
+                        ", ".join(str(path) for path in changed),
+                    )
                     self._restart()
                 if self._process and self._process.poll() is not None:
                     logger.warning("Child process exited; restarting")

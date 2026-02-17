@@ -18,6 +18,7 @@ _WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 class WebSocketFrame:
     """Decoded WebSocket frame payload."""
 
+    fin: bool
     opcode: int
     payload: bytes
 
@@ -97,6 +98,24 @@ def build_handshake_response(
     return b"\r\n".join(response_headers) + b"\r\n\r\n"
 
 
+def _validate_handshake(headers: list[tuple[str, str]]) -> None:
+    version = _header_value(headers, "sec-websocket-version")
+    if version != "13":
+        raise ValueError("Unsupported websocket version")
+
+    key = _header_value(headers, "sec-websocket-key")
+    if not key:
+        raise ValueError("Missing Sec-WebSocket-Key")
+
+    try:
+        decoded = base64.b64decode(key.encode("ascii"), validate=True)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError("Invalid Sec-WebSocket-Key") from exc
+
+    if len(decoded) != 16:
+        raise ValueError("Invalid Sec-WebSocket-Key length")
+
+
 def _encode_frame(opcode: int, payload: bytes = b"") -> bytes:
     length = len(payload)
     header = bytearray()
@@ -117,6 +136,7 @@ def _encode_frame(opcode: int, payload: bytes = b"") -> bytes:
 async def _read_frame(reader: asyncio.StreamReader, max_size: int) -> WebSocketFrame:
     first_two = await reader.readexactly(2)
     first, second = first_two[0], first_two[1]
+    fin = (first & 0x80) != 0
     opcode = first & 0x0F
 
     masked = (second & 0x80) != 0
@@ -130,6 +150,9 @@ async def _read_frame(reader: asyncio.StreamReader, max_size: int) -> WebSocketF
     if length > max_size:
         raise ValueError("WebSocket frame exceeds ws_max_size")
 
+    if not masked:
+        raise ValueError("Client websocket frames must be masked")
+
     masking_key = b""
     if masked:
         masking_key = await reader.readexactly(4)
@@ -139,7 +162,7 @@ async def _read_frame(reader: asyncio.StreamReader, max_size: int) -> WebSocketF
     if masked:
         payload = bytes(byte ^ masking_key[index % 4] for index, byte in enumerate(payload))
 
-    return WebSocketFrame(opcode=opcode, payload=payload)
+    return WebSocketFrame(fin=fin, opcode=opcode, payload=payload)
 
 
 async def handle_websocket(
@@ -156,6 +179,18 @@ async def handle_websocket(
 ) -> None:
     """Run the ASGI websocket flow for a single client connection."""
 
+    try:
+        _validate_handshake(headers)
+    except ValueError:
+        writer.write(
+            b"HTTP/1.1 400 Bad Request\r\n"
+            b"content-length: 19\r\n"
+            b"connection: close\r\n\r\n"
+            b"Bad WebSocket Request"
+        )
+        await writer.drain()
+        return
+
     scope = build_websocket_scope(
         target=target,
         headers=headers,
@@ -169,9 +204,11 @@ async def handle_websocket(
     closed = False
     accept_subprotocol: str | None = None
     receive_lock = asyncio.Lock()
+    fragmented_opcode: int | None = None
+    fragmented_chunks: list[bytes] = []
 
     async def receive() -> Message:
-        nonlocal closed
+        nonlocal closed, fragmented_opcode
 
         async with receive_lock:
             if closed:
@@ -191,13 +228,47 @@ async def handle_websocket(
                 await writer.drain()
                 return await receive()
 
+            if frame.opcode == 0xA:
+                return await receive()
+
+            if frame.opcode == 0x0:
+                if fragmented_opcode is None:
+                    return {"type": "websocket.disconnect", "code": 1002}
+                fragmented_chunks.append(frame.payload)
+                if not frame.fin:
+                    return await receive()
+                payload = b"".join(fragmented_chunks)
+                opcode = fragmented_opcode
+                fragmented_opcode = None
+                fragmented_chunks.clear()
+                if opcode == 0x1:
+                    try:
+                        return {"type": "websocket.receive", "text": payload.decode("utf-8")}
+                    except UnicodeDecodeError:
+                        return {"type": "websocket.disconnect", "code": 1007}
+                return {"type": "websocket.receive", "bytes": payload}
+
+            if (frame.opcode & 0x08) == 0 and frame.opcode not in {0x1, 0x2}:
+                return {"type": "websocket.disconnect", "code": 1002}
+
             if frame.opcode == 0x1:
-                return {"type": "websocket.receive", "text": frame.payload.decode("utf-8")}
+                if not frame.fin:
+                    fragmented_opcode = 0x1
+                    fragmented_chunks.append(frame.payload)
+                    return await receive()
+                try:
+                    return {"type": "websocket.receive", "text": frame.payload.decode("utf-8")}
+                except UnicodeDecodeError:
+                    return {"type": "websocket.disconnect", "code": 1007}
 
             if frame.opcode == 0x2:
+                if not frame.fin:
+                    fragmented_opcode = 0x2
+                    fragmented_chunks.append(frame.payload)
+                    return await receive()
                 return {"type": "websocket.receive", "bytes": frame.payload}
 
-            return {"type": "websocket.receive", "bytes": frame.payload}
+            return {"type": "websocket.disconnect", "code": 1002}
 
     async def send(message: Message) -> None:
         nonlocal accepted, closed, accept_subprotocol

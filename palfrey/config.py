@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -45,7 +46,7 @@ class PalfreyConfig:
     reload_includes: list[str] = field(default_factory=list)
     reload_excludes: list[str] = field(default_factory=list)
     reload_delay: float = 0.25
-    workers: int = 1
+    workers: int | None = None
     env_file: str | None = None
     log_config: str | None = None
     log_level: LogLevel | None = None
@@ -74,6 +75,24 @@ class PalfreyConfig:
     factory: bool = False
     h11_max_incomplete_event_size: int | None = None
 
+    def __post_init__(self) -> None:
+        """Normalize environment-dependent defaults and user inputs."""
+
+        if self.workers is None:
+            web_concurrency = os.getenv("WEB_CONCURRENCY")
+            self.workers = int(web_concurrency) if web_concurrency else 1
+        elif self.workers < 1:
+            raise ValueError("workers must be >= 1")
+
+        if self.forwarded_allow_ips is None:
+            self.forwarded_allow_ips = os.getenv("FORWARDED_ALLOW_IPS", "127.0.0.1")
+
+        if self.reload and not self.reload_dirs:
+            self.reload_dirs = [str(Path.cwd())]
+
+        if self.app_dir is not None:
+            self.app_dir = str(Path(self.app_dir).resolve())
+
     @property
     def normalized_headers(self) -> list[tuple[str, str]]:
         """Return normalized response headers configured via CLI or API."""
@@ -86,6 +105,12 @@ class PalfreyConfig:
             return [(str(name), str(value)) for name, value in self.headers]
 
         return parse_header_items([str(item) for item in self.headers])
+
+    @property
+    def workers_count(self) -> int:
+        """Return effective worker process count."""
+
+        return self.workers or 1
 
     @classmethod
     def from_import_string(

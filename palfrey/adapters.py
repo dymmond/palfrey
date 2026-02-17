@@ -82,7 +82,10 @@ class WSGIAdapter:
         status_line, headers, payload = await asyncio.to_thread(run_wsgi)
         status_code = int(status_line.split(" ", 1)[0])
 
-        encoded_headers = [(name.encode("latin-1"), value.encode("latin-1")) for name, value in headers]
+        encoded_headers = [
+            (name.encode("latin-1"), value.encode("latin-1"))
+            for name, value in headers
+        ]
 
         await send({
             "type": "http.response.start",

@@ -141,7 +141,10 @@ def _ws_handshake(sock: socket.socket, port: int) -> None:
         raise RuntimeError("WebSocket handshake failed")
 
     expected = base64.b64encode(
-        hashlib.sha1((nonce + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii"), usedforsecurity=False).digest()
+        hashlib.sha1(
+            (nonce + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii"),
+            usedforsecurity=False,
+        ).digest()
     )
     if expected not in response:
         raise RuntimeError("WebSocket accept key mismatch")
@@ -247,14 +250,30 @@ def _benchmark_server(
         _stop_server(process)
 
     return [
-        ScenarioResult(server=server, scenario="http", operations=http_ops, duration_seconds=http_duration),
-        ScenarioResult(server=server, scenario="websocket", operations=ws_ops, duration_seconds=ws_duration),
+        ScenarioResult(
+            server=server,
+            scenario="http",
+            operations=http_ops,
+            duration_seconds=http_duration,
+        ),
+        ScenarioResult(
+            server=server,
+            scenario="websocket",
+            operations=ws_ops,
+            duration_seconds=ws_duration,
+        ),
     ]
 
 
 def _relative_ratio(results: list[ScenarioResult], scenario: str) -> float | None:
-    palfrey = next((item for item in results if item.server == "palfrey" and item.scenario == scenario), None)
-    uvicorn = next((item for item in results if item.server == "uvicorn" and item.scenario == scenario), None)
+    palfrey = next(
+        (item for item in results if item.server == "palfrey" and item.scenario == scenario),
+        None,
+    )
+    uvicorn = next(
+        (item for item in results if item.server == "uvicorn" and item.scenario == scenario),
+        None,
+    )
     if palfrey is None or uvicorn is None or uvicorn.ops_per_second == 0:
         return None
     return palfrey.ops_per_second / uvicorn.ops_per_second

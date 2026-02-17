@@ -3,7 +3,7 @@
 Palfrey exposes a typed `PalfreyConfig` model for programmatic startup.
 
 ```python
-{!> ../../../docs_src/config/example.py !}
+{!> ../../../docs_src//config/example.py !}
 ```
 
 ## Key fields

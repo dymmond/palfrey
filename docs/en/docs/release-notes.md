@@ -1,9 +1,12 @@
 # Release Notes
 
-## 0.1.0
+Canonical release entries are tracked in:
 
-### Added
+- [`CHANGELOG.md`](../../../CHANGELOG.md)
 
-### Changed
+## Current cycle
 
-### Fixed
+- Runtime: clean-room ASGI server architecture with HTTP, WebSocket, lifespan.
+- Operations: reload and worker supervisors.
+- Middleware: proxy headers and ASGI message logger.
+- Tooling: Ty, pytest-cov, mkdocs-material CI gates.

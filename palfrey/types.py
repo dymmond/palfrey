@@ -13,12 +13,24 @@ Scope: TypeAlias = dict[str, Any]
 Message: TypeAlias = dict[str, Any]
 ReceiveCallable: TypeAlias = Callable[[], Awaitable[Message]]
 SendCallable: TypeAlias = Callable[[Message], Awaitable[None]]
-ASGIApplication: TypeAlias = Callable[[Scope, ReceiveCallable, SendCallable], Awaitable[None]]
+ASGIApplication: TypeAlias = Callable[
+    [Scope, ReceiveCallable, SendCallable],
+    Awaitable[None],
+]
 ASGI2ApplicationInstance: TypeAlias = Callable[[ReceiveCallable, SendCallable], Awaitable[None]]
 ASGI2Application: TypeAlias = Callable[[Scope], ASGI2ApplicationInstance]
 ASGIApplicationFactory: TypeAlias = Callable[[], ASGIApplication]
-WSGIApplication: TypeAlias = Callable[[dict[str, Any], Callable[..., None]], list[bytes] | tuple[bytes, ...]]
-AppType: TypeAlias = ASGIApplication | ASGI2Application | ASGIApplicationFactory | WSGIApplication | str
+WSGIApplication: TypeAlias = Callable[
+    [dict[str, Any], Callable[..., None]],
+    list[bytes] | tuple[bytes, ...],
+]
+AppType: TypeAlias = (
+    ASGIApplication
+    | ASGI2Application
+    | ASGIApplicationFactory
+    | WSGIApplication
+    | str
+)
 Headers: TypeAlias = list[tuple[bytes, bytes]]
 ClientAddress: TypeAlias = tuple[str, int]
 ServerAddress: TypeAlias = tuple[str, int]

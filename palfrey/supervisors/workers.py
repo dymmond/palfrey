@@ -43,7 +43,7 @@ class WorkerSupervisor:
             self._stop_workers()
 
     def _spawn_initial_workers(self) -> None:
-        for _ in range(self.config.workers):
+        for _ in range(self.config.workers_count):
             self._spawn_worker()
 
     def _spawn_worker(self) -> None:
@@ -63,7 +63,7 @@ class WorkerSupervisor:
                 logger.warning("Worker pid=%s exited", process.pid)
 
         self._workers = alive_workers
-        while len(self._workers) < self.config.workers and not self._stopping:
+        while len(self._workers) < self.config.workers_count and not self._stopping:
             self._spawn_worker()
 
     def _stop_workers(self) -> None:

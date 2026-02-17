@@ -41,7 +41,11 @@ from palfrey.runtime import run
 @click.option("--ws-max-queue", default=32, show_default=True, type=int)
 @click.option("--ws-ping-interval", default=20.0, show_default=True, type=float)
 @click.option("--ws-ping-timeout", default=20.0, show_default=True, type=float)
-@click.option("--ws-per-message-deflate/--no-ws-per-message-deflate", default=True, show_default=True)
+@click.option(
+    "--ws-per-message-deflate/--no-ws-per-message-deflate",
+    default=True,
+    show_default=True,
+)
 @click.option(
     "--lifespan",
     default="auto",
@@ -59,13 +63,16 @@ from palfrey.runtime import run
 @click.option("--reload-include", "reload_includes", multiple=True, type=str)
 @click.option("--reload-exclude", "reload_excludes", multiple=True, type=str)
 @click.option("--reload-delay", default=0.25, show_default=True, type=float)
-@click.option("--workers", default=1, show_default=True, type=int)
+@click.option("--workers", default=None, type=int)
 @click.option("--env-file", default=None, type=click.Path(path_type=str))
 @click.option("--log-config", default=None, type=click.Path(path_type=str))
 @click.option(
     "--log-level",
     default=None,
-    type=click.Choice(["critical", "error", "warning", "info", "debug", "trace"], case_sensitive=False),
+    type=click.Choice(
+        ["critical", "error", "warning", "info", "debug", "trace"],
+        case_sensitive=False,
+    ),
 )
 @click.option("--access-log/--no-access-log", default=True, show_default=True)
 @click.option("--use-colors/--no-use-colors", default=None)
@@ -113,7 +120,7 @@ def main(
     reload_includes: tuple[str, ...],
     reload_excludes: tuple[str, ...],
     reload_delay: float,
-    workers: int,
+    workers: int | None,
     env_file: str | None,
     log_config: str | None,
     log_level: str | None,

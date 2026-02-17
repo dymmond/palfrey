@@ -9,6 +9,8 @@ from dataclasses import dataclass
 
 from palfrey.adapters import ASGI2Adapter, WSGIAdapter
 from palfrey.config import PalfreyConfig
+from palfrey.middleware.message_logger import MessageLoggerMiddleware
+from palfrey.middleware.proxy_headers import ProxyHeadersMiddleware
 from palfrey.types import AppType, ASGIApplication
 
 
@@ -104,19 +106,29 @@ def resolve_application(config: PalfreyConfig) -> ResolvedApp:
     if interface == "auto":
         interface = _infer_interface(app_object)
 
+    wrapped_app: ASGIApplication
+
     if interface == "asgi3":
         if not callable(app_object):
             raise AppImportError("Resolved ASGI3 app is not callable.")
-        return ResolvedApp(app=app_object, interface=interface)
+        wrapped_app = app_object
 
-    if interface == "asgi2":
+    elif interface == "asgi2":
         if not callable(app_object):
             raise AppImportError("Resolved ASGI2 app is not callable.")
-        return ResolvedApp(app=ASGI2Adapter(app_object), interface=interface)
+        wrapped_app = ASGI2Adapter(app_object)
 
-    if interface == "wsgi":
+    elif interface == "wsgi":
         if not callable(app_object):
             raise AppImportError("Resolved WSGI app is not callable.")
-        return ResolvedApp(app=WSGIAdapter(app_object), interface=interface)
+        wrapped_app = WSGIAdapter(app_object)
+    else:
+        raise AppImportError(f"Unsupported interface mode '{interface}'.")
 
-    raise AppImportError(f"Unsupported interface mode '{interface}'.")
+    if config.proxy_headers:
+        wrapped_app = ProxyHeadersMiddleware(wrapped_app, config.forwarded_allow_ips or "127.0.0.1")
+
+    if config.log_level == "trace":
+        wrapped_app = MessageLoggerMiddleware(wrapped_app)
+
+    return ResolvedApp(app=wrapped_app, interface=interface)

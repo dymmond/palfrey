@@ -64,6 +64,45 @@ def _is_websocket_upgrade(headers: list[tuple[str, str]]) -> bool:
     return "websocket" in upgrade and "upgrade" in connection
 
 
+def _header_lookup(headers: list[tuple[str, str]], key: str) -> str | None:
+    for name, value in headers:
+        if name.lower() == key.lower():
+            return value
+    return None
+
+
+async def _read_chunked_body(reader: asyncio.StreamReader, body_limit: int) -> bytes:
+    body_chunks: list[bytes] = []
+    total = 0
+
+    while True:
+        chunk_size_line = await reader.readline()
+        if not chunk_size_line:
+            raise ValueError("Unexpected EOF while reading chunked body")
+
+        chunk_size_text = chunk_size_line.split(b";", 1)[0].strip()
+        try:
+            chunk_size = int(chunk_size_text, 16)
+        except ValueError as exc:
+            raise ValueError("Malformed chunked encoding size") from exc
+
+        if chunk_size == 0:
+            await reader.readuntil(b"\r\n")
+            break
+
+        chunk = await reader.readexactly(chunk_size)
+        body_chunks.append(chunk)
+        total += len(chunk)
+        if total > body_limit:
+            raise ValueError("HTTP body exceeds configured limit")
+
+        line_end = await reader.readexactly(2)
+        if line_end != b"\r\n":
+            raise ValueError("Malformed chunk delimiter")
+
+    return b"".join(body_chunks)
+
+
 async def read_http_request(
     reader: asyncio.StreamReader,
     *,
@@ -96,20 +135,32 @@ async def read_http_request(
 
     method, target, version, headers = parse_request_head(head)
 
+    content_length_raw = _header_lookup(headers, "content-length")
+    transfer_encoding = (_header_lookup(headers, "transfer-encoding") or "").lower()
+
     content_length = 0
-    for name, value in headers:
-        if name.lower() == "content-length":
-            content_length = int(value)
-            break
+    if content_length_raw is not None:
+        try:
+            content_length = int(content_length_raw)
+        except ValueError as exc:
+            raise ValueError("Invalid Content-Length header") from exc
 
     if content_length > body_limit:
         raise ValueError("HTTP body exceeds configured limit")
 
     body = b""
-    if content_length > 0:
+    if "chunked" in transfer_encoding:
+        body = await _read_chunked_body(reader, body_limit)
+    elif content_length > 0:
         body = await reader.readexactly(content_length)
 
-    return HTTPRequest(method=method, target=target, http_version=version, headers=headers, body=body)
+    return HTTPRequest(
+        method=method,
+        target=target,
+        http_version=version,
+        headers=headers,
+        body=body,
+    )
 
 
 def build_http_scope(
@@ -254,3 +305,12 @@ def is_websocket_upgrade(request: HTTPRequest) -> bool:
     """Return whether the request asks for a WebSocket protocol upgrade."""
 
     return _is_websocket_upgrade(request.headers)
+
+
+def requires_100_continue(request: HTTPRequest) -> bool:
+    """Return whether request asks for ``100-continue`` expectation."""
+
+    expect = _header_lookup(request.headers, "expect")
+    if not expect:
+        return False
+    return expect.lower() == "100-continue"

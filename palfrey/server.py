@@ -5,11 +5,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import signal
+import socket
 import ssl
 from dataclasses import dataclass, field
 from typing import Any
 
-from palfrey.acceleration import split_csv_values
 from palfrey.config import PalfreyConfig
 from palfrey.importer import ResolvedApp, resolve_application
 from palfrey.lifespan import LifespanManager
@@ -22,6 +22,7 @@ from palfrey.protocols.http import (
     encode_http_response,
     is_websocket_upgrade,
     read_http_request,
+    requires_100_continue,
     run_http_asgi,
     should_keep_alive,
 )
@@ -48,8 +49,10 @@ class PalfreyServer:
     _resolved_app: ResolvedApp | None = None
     _shutdown_event: asyncio.Event = field(default_factory=asyncio.Event)
     _requests_processed: int = 0
+    _active_requests: int = 0
     _server: asyncio.AbstractServer | None = None
     _lifespan: LifespanManager | None = None
+    _request_counter_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
     def started(self) -> bool:
@@ -74,7 +77,16 @@ class PalfreyServer:
 
         ssl_context = self._build_ssl_context()
 
-        if self.config.uds:
+        if self.config.fd is not None:
+            server_socket = socket.fromfd(self.config.fd, socket.AF_INET, socket.SOCK_STREAM)
+            server_socket.setblocking(False)
+            self._server = await asyncio.start_server(
+                self._handle_connection,
+                sock=server_socket,
+                ssl=ssl_context,
+                backlog=self.config.backlog,
+            )
+        elif self.config.uds:
             self._server = await asyncio.start_unix_server(
                 self._handle_connection,
                 path=self.config.uds,
@@ -88,7 +100,7 @@ class PalfreyServer:
                 port=self.config.port,
                 backlog=self.config.backlog,
                 ssl=ssl_context,
-                reuse_port=self.config.workers > 1,
+                reuse_port=self.config.workers_count > 1,
             )
 
         sockets = self._server.sockets or []
@@ -124,8 +136,16 @@ class PalfreyServer:
         sockname = writer.get_extra_info("sockname")
         ssl_object = writer.get_extra_info("ssl_object")
 
-        client = self._normalize_address(peername, default_host="0.0.0.0", default_port=0)
-        server = self._normalize_address(sockname, default_host=self.config.host, default_port=self.config.port)
+        client = self._normalize_address(
+            peername,
+            default_host="0.0.0.0",
+            default_port=0,
+        )
+        server = self._normalize_address(
+            sockname,
+            default_host=self.config.host,
+            default_port=self.config.port,
+        )
 
         context = ConnectionContext(client=client, server=server, is_tls=ssl_object is not None)
 
@@ -146,14 +166,6 @@ class PalfreyServer:
                 if request is None:
                     break
 
-                if self._concurrency_limit_reached():
-                    await self._write_response(
-                        writer,
-                        self._service_unavailable_response(),
-                        keep_alive=False,
-                    )
-                    break
-
                 if self.config.ws != "none" and is_websocket_upgrade(request):
                     await handle_websocket(
                         self._resolved_app.app,
@@ -168,7 +180,23 @@ class PalfreyServer:
                     )
                     break
 
-                response = await self._handle_http_request(request, context)
+                if requires_100_continue(request):
+                    writer.write(b"HTTP/1.1 100 Continue\r\n\r\n")
+                    await writer.drain()
+
+                acquired = await self._enter_request_slot()
+                if not acquired:
+                    await self._write_response(
+                        writer,
+                        self._service_unavailable_response(),
+                        keep_alive=False,
+                    )
+                    break
+
+                try:
+                    response = await self._handle_http_request(request, context)
+                finally:
+                    await self._leave_request_slot()
                 keep_processing = should_keep_alive(request, response)
 
                 await self._write_response(writer, response, keep_alive=keep_processing)
@@ -179,6 +207,11 @@ class PalfreyServer:
                     and self._requests_processed >= self.config.limit_max_requests
                 ):
                     self.request_shutdown()
+        except ValueError as exc:
+            logger.warning("Bad request: %s", exc)
+            error_response = HTTPResponse(status=400, headers=[(b"content-type", b"text/plain")])
+            error_response.body_chunks = [b"Bad Request"]
+            await self._write_response(writer, error_response, keep_alive=False)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Connection handler failed: %s", exc)
             error_response = HTTPResponse(status=500, headers=[(b"content-type", b"text/plain")])
@@ -196,10 +229,10 @@ class PalfreyServer:
     ) -> HTTPResponse:
         scope = build_http_scope(
             request,
-            client=self._trusted_client(request, context.client),
+            client=context.client,
             server=context.server,
             root_path=self.config.root_path,
-            is_tls=self._trusted_scheme(request, context.is_tls),
+            is_tls=context.is_tls,
         )
 
         response = await run_http_asgi(self._resolved_app.app, scope, request.body)
@@ -233,41 +266,29 @@ class PalfreyServer:
         append_default_response_headers(response, self.config)
         return response
 
-    def _concurrency_limit_reached(self) -> bool:
+    async def _enter_request_slot(self) -> bool:
+        """Attempt to reserve request-processing capacity."""
+
         limit = self.config.limit_concurrency
         if limit is None:
-            return False
-        return len(asyncio.all_tasks()) > limit
+            return True
 
-    def _trusted_client(self, request: HTTPRequest, original: ClientAddress) -> ClientAddress:
-        if not self.config.proxy_headers:
-            return original
+        async with self._request_counter_lock:
+            if self._active_requests >= limit:
+                return False
+            self._active_requests += 1
+            return True
 
-        trusted_ips = self._forwarded_allow_ips()
-        if trusted_ips and "*" not in trusted_ips and original[0] not in trusted_ips:
-            return original
+    async def _leave_request_slot(self) -> None:
+        """Release request-processing capacity token."""
 
-        for name, value in request.headers:
-            if name.lower() == "x-forwarded-for":
-                forwarded = [part.strip() for part in value.split(",") if part.strip()]
-                if forwarded:
-                    return forwarded[0], original[1]
-        return original
+        limit = self.config.limit_concurrency
+        if limit is None:
+            return
 
-    def _trusted_scheme(self, request: HTTPRequest, original_tls: bool) -> bool:
-        if not self.config.proxy_headers:
-            return original_tls
-
-        for name, value in request.headers:
-            if name.lower() == "x-forwarded-proto":
-                return value.lower() == "https"
-        return original_tls
-
-    def _forwarded_allow_ips(self) -> list[str]:
-        raw = self.config.forwarded_allow_ips
-        if not raw:
-            return ["127.0.0.1"]
-        return split_csv_values(raw)
+        async with self._request_counter_lock:
+            if self._active_requests > 0:
+                self._active_requests -= 1
 
     @staticmethod
     def _normalize_address(

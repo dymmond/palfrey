@@ -1,7 +1,7 @@
 # Deployment
 
 ```python
-{!> ../../../docs_src/deployment/example.py !}
+{!> ../../../docs_src//deployment/example.py !}
 ```
 
 ## Process supervision

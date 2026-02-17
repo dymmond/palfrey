@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
-import warnings
 from typing import Any, overload
 
 from palfrey.config import PalfreyConfig
 from palfrey.env import load_env_file
+from palfrey.loops import LOOP_SETUPS
 from palfrey.server import PalfreyServer
 from palfrey.supervisors.reload import ReloadSupervisor, build_reload_argv
 from palfrey.supervisors.workers import WorkerSupervisor
@@ -18,24 +17,9 @@ from palfrey.types import AppType
 def _configure_loop(loop_mode: str) -> None:
     """Apply event loop policy according to configured mode."""
 
-    if loop_mode in {"none", "asyncio"}:
-        return
-
-    if loop_mode == "uvloop":
-        try:
-            import uvloop  # type: ignore[import-not-found]
-        except ImportError:
-            warnings.warn("uvloop requested but not installed; using asyncio", stacklevel=2)
-            return
-        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-        return
-
-    if loop_mode == "auto":
-        try:
-            import uvloop  # type: ignore[import-not-found]
-        except ImportError:
-            return
-        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    if loop_mode not in LOOP_SETUPS:
+        raise ValueError(f"Unsupported loop mode: {loop_mode}")
+    LOOP_SETUPS[loop_mode]()
 
 
 def _run_config(config: PalfreyConfig) -> None:
@@ -51,20 +35,20 @@ def _run_config(config: PalfreyConfig) -> None:
     load_env_file(config.env_file)
     _configure_loop(config.loop)
 
-    if config.reload and config.workers > 1:
+    if config.reload and config.workers_count > 1:
         raise RuntimeError("`--reload` and `--workers` cannot be used together.")
 
     if config.reload and not isinstance(config.app, str):
         raise RuntimeError("Reload mode requires the application to be an import string.")
 
-    if config.workers > 1 and not isinstance(config.app, str):
+    if config.workers_count > 1 and not isinstance(config.app, str):
         raise RuntimeError("Worker mode requires the application to be an import string.")
 
     if config.reload and os.environ.get("PALFREY_RELOAD_CHILD") != "1":
         supervisor = ReloadSupervisor(config=config, argv=build_reload_argv())
         supervisor.run()
         return
-    if config.workers > 1:
+    if config.workers_count > 1:
         WorkerSupervisor(config=config).run()
         return
 

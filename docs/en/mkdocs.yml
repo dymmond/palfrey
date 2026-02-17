@@ -1,81 +1,90 @@
 site_name: Palfrey
-site_description: A distinctively robust ASGI server designed for high-concurrency production environments..
+site_description: A clean-room ASGI server with source-traceable Uvicorn parity
 site_url: https://palfrey.dymmond.com
-
-theme:
-  name: "material"
-  language: en
-  palette:
-    - scheme: "default"
-      primary: "purple"
-      accent: "amber"
-      media: "(prefers-color-scheme: light)"
-      toggle:
-            icon: "material/lightbulb"
-            name: "Switch to dark mode"
-    - scheme: "slate"
-      media: "(prefers-color-scheme: dark)"
-      primary: "purple"
-      accent: "amber"
-      toggle:
-            icon: "material/lightbulb-outline"
-            name: "Switch to light mode"
-  favicon: statics/images/favicon.ico
-  logo: statics/images/logo-white.svg
-  features:
-    - search.suggest
-    - search.highlight
-    - content.tabs.link
-    - content.code.copy
-
 repo_name: dymmond/palfrey
 repo_url: https://github.com/dymmond/palfrey
-edit_uri: ""
+edit_uri: ''
+theme:
+  name: material
+  language: en
+  palette:
+  - scheme: default
+    primary: blue
+    accent: amber
+    media: '(prefers-color-scheme: light)'
+    toggle:
+      icon: material/lightbulb
+      name: Switch to dark mode
+  - scheme: slate
+    media: '(prefers-color-scheme: dark)'
+    primary: blue
+    accent: amber
+    toggle:
+      icon: material/lightbulb-outline
+      name: Switch to light mode
+  features:
+  - navigation.sections
+  - navigation.expand
+  - search.suggest
+  - search.highlight
+  - content.code.copy
 plugins:
-  - search
-  - meta-descriptions:
-      export_csv: false
-      quiet: false
-      enable_checks: false
-      min_length: 50
-      max_length: 160
-      trim: false
-
+- search
+- meta-descriptions:
+    export_csv: false
+    quiet: false
+    enable_checks: false
+    min_length: 50
+    max_length: 160
+    trim: false
 nav:
-  - Overview: index.md
-  - Install: guides/usage/install.md
-  - Quickstart: guides/usage/quickstart.md
-  - CLI Reference: guides/reference/cli-reference.md
-  - Config Reference: guides/reference/config-reference.md
-  - Deployment: guides/operations/deployment.md
-  - Reload and Dev: guides/operations/reload-dev.md
-  - Workers and Process Model: guides/operations/workers-process-model.md
-  - Protocols: guides/reference/protocols.md
-  - Logging: guides/operations/logging.md
+- Overview: index.md
+- Getting Started:
+  - Installation: getting-started/installation.md
+  - Quickstart: getting-started/quickstart.md
+  - Migration From Uvicorn: getting-started/migration-from-uvicorn.md
+- Concepts:
+  - Event Loop: concepts/event-loop.md
+  - HTTP: concepts/http.md
+  - WebSockets: concepts/websockets.md
+  - Lifespan: concepts/lifespan.md
+  - Middleware: concepts/middleware.md
+- Reference:
+  - CLI: reference/cli.md
+  - Configuration: reference/configuration.md
+  - Protocols: reference/protocols.md
+  - Logging: reference/logging.md
+- Operations:
+  - Deployment: operations/deployment.md
+  - Reload: operations/reload.md
+  - Workers: operations/workers.md
+  - Benchmarks: operations/benchmarks.md
+  - Release Process: operations/release-process.md
+- Validation:
   - Parity Matrix: parity-matrix.md
-  - Benchmarks: benchmarks.md
-  - Release Process: release-process.md
+  - Testing Strategy: testing/testing-strategy.md
+- Contributing: contributing.md
+- Release Notes: release-notes.md
+- Sponsorship: sponsorship.md
 markdown_extensions:
-  - toc:
-      permalink: true
-  - mdx_include:
-      base_path: docs
-  - admonition
-  - extra
-  - pymdownx.superfences:
-      custom_fences:
-        - name: mermaid
-          class: mermaid
-          format: !!python/name:pymdownx.superfences.fence_code_format ""
-  - pymdownx.tabbed:
-      alternate_style: true
-  - attr_list
-  - md_in_html
-
+- toc:
+    permalink: true
+- mdx_include:
+    base_path: docs/
+- admonition
+- extra
+- pymdownx.superfences:
+    custom_fences:
+    - name: mermaid
+      class: mermaid
+      format: !!python/name:pymdownx.superfences.fence_code_format ''
+- pymdownx.tabbed:
+    alternate_style: true
+- attr_list
+- md_in_html
 extra:
   alternate:
-    - link: /
-      name: English
-      lang: en
+  - link: /
+    name: en - English
 hooks:
 - ../../scripts/hooks.py

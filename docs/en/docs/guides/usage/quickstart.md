@@ -3,7 +3,7 @@
 ## Python API
 
 ```python
-{!> ../../../docs_src/quickstart/example.py !}
+{!> ../../../docs_src//quickstart/example.py !}
 ```
 
 ## CLI

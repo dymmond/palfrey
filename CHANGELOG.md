@@ -5,6 +5,27 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-02-17
+
+### Added
+
+- Added loop strategy modules (`auto`, `asyncio`, `uvloop`, `none`) and runtime mapping.
+- Added middleware modules for proxy headers and ASGI message logging.
+- Added deeper HTTP parsing behavior, including chunked request-body support and `100-continue`.
+- Added stricter WebSocket handshake/frame validation and fragmented frame handling.
+- Added expanded test suite domains (`config`, `loops`, `middleware`, `protocols`, `runtime`, `server`, `supervisors`, `cli`) with substantially broader coverage.
+- Added richer docs organization under `docs/en/docs` with concept/reference/operations sections and runnable `docs_src` examples.
+
+### Changed
+
+- Updated docs navigation and content structure for release-grade organization.
+- Increased coverage gate target to 85%.
+- Updated semantic version from `0.2.0` to `0.3.0`.
+
+### Fixed
+
+- Corrected worker/env default normalization to follow Uvicorn-style expectations (`WEB_CONCURRENCY`, `FORWARDED_ALLOW_IPS`).
+
 ## [0.2.0] - 2026-02-17
 
 ### Added

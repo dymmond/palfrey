@@ -1,0 +1,76 @@
+"""Importer and interface resolution tests."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from palfrey.config import PalfreyConfig
+from palfrey.importer import AppImportError, resolve_application
+from palfrey.middleware.proxy_headers import ProxyHeadersMiddleware
+
+
+async def asgi3_app(scope, receive, send):
+    if scope["type"] == "http":
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+
+class ASGI2App:
+    def __call__(self, scope):
+        async def app(receive, send):
+            if scope["type"] == "http":
+                await send({"type": "http.response.start", "status": 200, "headers": []})
+                await send({"type": "http.response.body", "body": b"ok"})
+
+        return app
+
+
+def test_resolve_import_string() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:http_app")
+    resolved = resolve_application(config)
+    assert callable(resolved.app)
+
+
+def test_resolve_asgi2_interface() -> None:
+    config = PalfreyConfig(app=ASGI2App(), interface="asgi2")
+    resolved = resolve_application(config)
+    assert resolved.interface == "asgi2"
+
+
+def test_resolve_wsgi_interface() -> None:
+    def wsgi_app(environ: dict[str, Any], start_response):
+        start_response("200 OK", [("content-type", "text/plain")])
+        return [b"ok"]
+
+    config = PalfreyConfig(app=wsgi_app, interface="wsgi")
+    resolved = resolve_application(config)
+    assert resolved.interface == "wsgi"
+
+
+def test_resolve_factory() -> None:
+    def factory():
+        return asgi3_app
+
+    config = PalfreyConfig(app=factory, factory=True)
+    resolved = resolve_application(config)
+    assert callable(resolved.app)
+
+
+def test_resolve_wraps_proxy_headers_middleware_when_enabled() -> None:
+    config = PalfreyConfig(app=asgi3_app, proxy_headers=True)
+    resolved = resolve_application(config)
+    assert isinstance(resolved.app, ProxyHeadersMiddleware)
+
+
+def test_invalid_import_string_raises() -> None:
+    config = PalfreyConfig(app="broken-import-string")
+    with pytest.raises(AppImportError):
+        resolve_application(config)
+
+
+def test_factory_requires_callable() -> None:
+    config = PalfreyConfig(app=42, factory=True)
+    with pytest.raises(AppImportError):
+        resolve_application(config)

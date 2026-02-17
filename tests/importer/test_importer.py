@@ -79,15 +79,15 @@ def test_factory_requires_callable() -> None:
         resolve_application(config)
 
 
-def test_resolve_import_string_missing_module_reports_original_error() -> None:
+def test_resolve_import_string_missing_dotted_module_raises_module_not_found() -> None:
     config = PalfreyConfig(app="doesnotexist.module:app")
-    with pytest.raises(AppImportError, match="Original error"):
+    with pytest.raises(ModuleNotFoundError):
         resolve_application(config)
 
 
 def test_resolve_import_string_missing_attribute() -> None:
     config = PalfreyConfig(app="tests.fixtures.apps:not_there")
-    with pytest.raises(AppImportError, match="does not expose attribute"):
+    with pytest.raises(AppImportError, match='Attribute "not_there" not found'):
         resolve_application(config)
 
 

@@ -27,6 +27,7 @@ from palfrey.protocols.http import (
     run_http_asgi,
     should_keep_alive,
 )
+from palfrey.protocols.utils import get_path_with_query_string
 from palfrey.protocols.websocket import handle_websocket
 from palfrey.types import ClientAddress, ServerAddress
 
@@ -247,11 +248,13 @@ class PalfreyServer:
         append_default_response_headers(response, self.config)
 
         if self.config.access_log:
+            request_path = get_path_with_query_string(scope)
             logger.info(
-                '%s - "%s %s" %s',
+                '%s - "%s %s HTTP/%s" %s',
                 scope["client"][0],
                 scope["method"],
-                scope["path"],
+                request_path,
+                scope["http_version"],
                 response.status,
             )
 

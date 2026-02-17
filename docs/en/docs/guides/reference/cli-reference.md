@@ -21,4 +21,4 @@ palfrey [OPTIONS] APP
 - Response defaults: `--header`, `--server-header`, `--date-header`
 - App import controls: `--app-dir`, `--factory`
 
-See [Parity Matrix](../../../parity-matrix.md) for exact source mapping.
+See [Parity Matrix](../../parity-matrix.md) for exact source mapping.

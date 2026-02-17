@@ -14,17 +14,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - Added deeper HTTP parsing behavior, including chunked request-body support and `100-continue`.
 - Added stricter WebSocket handshake/frame validation and fragmented frame handling.
 - Added expanded test suite domains (`config`, `loops`, `middleware`, `protocols`, `runtime`, `server`, `supervisors`, `cli`) with substantially broader coverage.
-- Added richer docs organization under `docs/en/docs` with concept/reference/operations sections and runnable `docs_src` examples.
+- Added richer docs organization under `docs/en/docs` with concept/reference/operations sections and runnable `../../../docs_src/` examples.
+- Added importer parity behaviors aligned with Uvicorn: dotted attribute traversal and non-masked nested import failures.
+- Added Click error surface hardening so expected startup/import failures render clean `Error:` output without traceback noise.
+- Added parity-focused test suites modeled from Uvicorn coverage patterns, increasing Palfrey test functions beyond the local Uvicorn test-function count baseline.
 
 ### Changed
 
 - Updated docs navigation and content structure for release-grade organization.
 - Increased coverage gate target to 85%.
 - Updated semantic version from `0.2.0` to `0.3.0`.
+- Updated runtime reload/worker interaction to match Uvicorn expectation that `workers` is ignored when reload is enabled.
+- Updated docs build script to use MkDocs strict mode.
+- Updated server access-log request line formatting to include query string and HTTP version.
 
 ### Fixed
 
 - Corrected worker/env default normalization to follow Uvicorn-style expectations (`WEB_CONCURRENCY`, `FORWARDED_ALLOW_IPS`).
+- Corrected default-response header precedence so configured custom `server`/`date` headers suppress default injection.
+- Corrected logging config file-path handling for JSON, YAML/YML, and INI/fileConfig parity branches.
 
 ## [0.2.0] - 2026-02-17
 

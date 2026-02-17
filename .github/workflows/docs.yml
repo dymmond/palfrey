@@ -5,14 +5,14 @@ on:
     branches: ["main"]
     paths:
       - "docs/**"
-      - "docs_src/**"
+      - "../../../docs_src//**"
       - "docs/en/mkdocs.yml"
       - "pyproject.toml"
   pull_request:
     branches: ["main"]
     paths:
       - "docs/**"
-      - "docs_src/**"
+      - "../../../docs_src//**"
       - "docs/en/mkdocs.yml"
       - "pyproject.toml"
 

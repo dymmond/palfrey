@@ -235,15 +235,25 @@ def append_default_response_headers(
 ) -> None:
     """Add default response headers controlled by runtime configuration."""
 
+    configured_headers = config.normalized_headers
     existing_headers = {name.lower() for name, _ in response.headers}
+    configured_header_names = {name.lower() for name, _ in configured_headers}
 
-    if config.server_header and b"server" not in existing_headers:
+    if (
+        config.server_header
+        and b"server" not in existing_headers
+        and "server" not in configured_header_names
+    ):
         response.headers.append((b"server", b"palfrey"))
 
-    if config.date_header and b"date" not in existing_headers:
+    if (
+        config.date_header
+        and b"date" not in existing_headers
+        and "date" not in configured_header_names
+    ):
         response.headers.append((b"date", _http_date_header()))
 
-    for name, value in config.normalized_headers:
+    for name, value in configured_headers:
         response.headers.append((name.encode("latin-1"), value.encode("latin-1")))
 
 

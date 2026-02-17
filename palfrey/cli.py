@@ -7,6 +7,7 @@ users can migrate without relearning flag semantics.
 from __future__ import annotations
 
 import platform
+import ssl
 from typing import cast
 
 import click
@@ -21,6 +22,7 @@ from palfrey.config import (
     PalfreyConfig,
     WSType,
 )
+from palfrey.importer import AppImportError
 from palfrey.runtime import run
 
 
@@ -41,7 +43,7 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
 
 
 @click.command(context_settings={"auto_envvar_prefix": "PALFREY"})
-@click.argument("app", required=True)
+@click.argument("app", required=True, envvar="PALFREY_APP")
 @click.option("--host", default="127.0.0.1", show_default=True, type=str)
 @click.option("--port", default=8000, show_default=True, type=int)
 @click.option("--uds", default=None, type=click.Path(path_type=str))
@@ -62,7 +64,10 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
     "--ws",
     default="auto",
     show_default=True,
-    type=click.Choice(["auto", "none", "websockets", "wsproto"], case_sensitive=False),
+    type=click.Choice(
+        ["auto", "none", "websockets", "websockets-sansio", "wsproto"],
+        case_sensitive=False,
+    ),
 )
 @click.option("--ws-max-size", default=16_777_216, show_default=True, type=int)
 @click.option("--ws-max-queue", default=32, show_default=True, type=int)
@@ -119,8 +124,8 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
 @click.option("--ssl-keyfile", default=None, type=click.Path(path_type=str))
 @click.option("--ssl-certfile", default=None, type=click.Path(path_type=str))
 @click.option("--ssl-keyfile-password", default=None, type=str)
-@click.option("--ssl-version", default=None, type=int)
-@click.option("--ssl-cert-reqs", default=None, type=int)
+@click.option("--ssl-version", default=int(ssl.PROTOCOL_TLS_SERVER), show_default=True, type=int)
+@click.option("--ssl-cert-reqs", default=int(ssl.CERT_NONE), show_default=True, type=int)
 @click.option("--ssl-ca-certs", default=None, type=click.Path(path_type=str))
 @click.option("--ssl-ciphers", default="TLSv1", show_default=True, type=str)
 @click.option("--header", "headers", multiple=True, type=str)
@@ -176,8 +181,8 @@ def main(
     ssl_keyfile: str | None,
     ssl_certfile: str | None,
     ssl_keyfile_password: str | None,
-    ssl_version: int | None,
-    ssl_cert_reqs: int | None,
+    ssl_version: int,
+    ssl_cert_reqs: int,
     ssl_ca_certs: str | None,
     ssl_ciphers: str,
     headers: tuple[str, ...],
@@ -290,4 +295,7 @@ def main(
         factory=factory,
         h11_max_incomplete_event_size=h11_max_incomplete_event_size,
     )
-    run(config)
+    try:
+        run(config)
+    except (AppImportError, ImportError, RuntimeError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc

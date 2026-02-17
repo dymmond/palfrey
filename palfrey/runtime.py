@@ -7,11 +7,14 @@ from typing import Any, overload
 
 from palfrey.config import PalfreyConfig
 from palfrey.env import load_env_file
+from palfrey.logging_config import get_logger
 from palfrey.loops import LOOP_SETUPS
 from palfrey.server import PalfreyServer
 from palfrey.supervisors.reload import ReloadSupervisor, build_reload_argv
 from palfrey.supervisors.workers import WorkerSupervisor
 from palfrey.types import AppType
+
+logger = get_logger("palfrey.runtime")
 
 
 def _configure_loop(loop_mode: str) -> None:
@@ -36,7 +39,7 @@ def _run_config(config: PalfreyConfig) -> None:
     _configure_loop(config.loop)
 
     if config.reload and config.workers_count > 1:
-        raise RuntimeError("`--reload` and `--workers` cannot be used together.")
+        logger.warning('"workers" flag is ignored when reloading is enabled.')
 
     if config.reload and not isinstance(config.app, str):
         raise RuntimeError("Reload mode requires the application to be an import string.")

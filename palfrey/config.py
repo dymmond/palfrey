@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import ssl
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -12,7 +13,7 @@ from palfrey.types import AppType
 
 LoopType = Literal["none", "auto", "asyncio", "uvloop"]
 HTTPType = Literal["auto", "h11", "httptools"]
-WSType = Literal["auto", "none", "websockets", "wsproto"]
+WSType = Literal["auto", "none", "websockets", "websockets-sansio", "wsproto"]
 LifespanMode = Literal["auto", "on", "off"]
 InterfaceType = Literal["auto", "asgi3", "asgi2", "wsgi"]
 LogLevel = Literal["critical", "error", "warning", "info", "debug", "trace"]
@@ -66,8 +67,8 @@ class PalfreyConfig:
     ssl_keyfile: str | None = None
     ssl_certfile: str | None = None
     ssl_keyfile_password: str | None = None
-    ssl_version: int | None = None
-    ssl_cert_reqs: int | None = None
+    ssl_version: int = int(ssl.PROTOCOL_TLS_SERVER)
+    ssl_cert_reqs: int = int(ssl.CERT_NONE)
     ssl_ca_certs: str | None = None
     ssl_ciphers: str = "TLSv1"
     headers: list[tuple[str, str]] | list[str] = field(default_factory=list)

@@ -14,10 +14,30 @@ def test_configure_loop_rejects_unsupported_mode() -> None:
         _configure_loop("invalid")
 
 
-def test_run_config_rejects_reload_and_workers_together() -> None:
+def test_run_config_ignores_workers_when_reload_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    calls: list[str] = []
+
+    class FakeReloadSupervisor:
+        def __init__(self, config: PalfreyConfig, argv: list[str]) -> None:
+            calls.append("init")
+
+        def run(self) -> None:
+            calls.append("run")
+
+    monkeypatch.setattr(runtime_module, "ReloadSupervisor", FakeReloadSupervisor)
+    monkeypatch.setattr(runtime_module, "build_reload_argv", lambda: ["python", "-m", "palfrey"])
+    monkeypatch.setattr(runtime_module, "_configure_loop", lambda _: None)
+    monkeypatch.setattr(runtime_module, "load_env_file", lambda _: None)
+    monkeypatch.delenv("PALFREY_RELOAD_CHILD", raising=False)
+
     config = PalfreyConfig(app="tests.fixtures.apps:http_app", reload=True, workers=2)
-    with pytest.raises(RuntimeError, match="cannot be used together"):
-        _run_config(config)
+    _run_config(config)
+
+    assert calls == ["init", "run"]
+    assert '"workers" flag is ignored when reloading is enabled.' in caplog.text
 
 
 def test_run_config_rejects_reload_for_non_import_app() -> None:

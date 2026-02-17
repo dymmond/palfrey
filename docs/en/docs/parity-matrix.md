@@ -4,11 +4,11 @@ This matrix lists Palfrey behaviors grounded in explicit Uvicorn/Click sources.
 
 | Area | Palfrey Status | Uvicorn Docs Source | Uvicorn Source Paths | Click Source |
 | --- | --- | --- | --- | --- |
-| CLI command surface | **Partial parity** (core options present, semantics differ in some flags) | "Settings" ([uvicorn.dev/settings](https://uvicorn.dev/settings/)) | `uvicorn/main.py` | `src/click/core.py` |
-| App import + factory semantics | **Partial parity** | "Settings" (Application) | `uvicorn/config.py`, `uvicorn/main.py` | `src/click/core.py` |
+| CLI command surface | **Partial parity** (option surface largely aligned; startup lifecycle remains partial) | "Settings" ([uvicorn.dev/settings](https://uvicorn.dev/settings/)) | `uvicorn/main.py` | `src/click/core.py` |
+| App import + factory semantics | **Partial parity** (includes dotted attrs and nested import-error propagation parity) | "Settings" (Application) | `uvicorn/importer.py`, `uvicorn/config.py`, `uvicorn/main.py` | `src/click/core.py` |
 | Loop setup modes (`none`, `auto`, `asyncio`, `uvloop`) | Implemented | "Settings" (Implementation) | `uvicorn/config.py` (`LOOP_SETUPS`) |  |
 | HTTP implementation option values (`auto`, `h11`, `httptools`) | **Partial parity** (value surface exists; backend implementations not equivalent) | "Settings" (Implementation) | `uvicorn/config.py` (`HTTP_PROTOCOLS`), `uvicorn/protocols/http/h11_impl.py`, `uvicorn/protocols/http/httptools_impl.py` |  |
-| WebSocket implementation option values | **Partial parity** (`websockets-sansio` missing, backend mapping differs) | "Settings" + "Concepts: WebSockets" ([uvicorn.dev/concepts/websockets](https://uvicorn.dev/concepts/websockets/)) | `uvicorn/config.py` (`WS_PROTOCOLS`), `uvicorn/protocols/websockets/*` |  |
+| WebSocket implementation option values | **Partial parity** (value surface implemented, backend mapping differs) | "Settings" + "Concepts: WebSockets" ([uvicorn.dev/concepts/websockets](https://uvicorn.dev/concepts/websockets/)) | `uvicorn/config.py` (`WS_PROTOCOLS`), `uvicorn/protocols/websockets/*` |  |
 | Lifespan modes (`auto`, `on`, `off`) | **Partial parity** | "Concepts: Lifespan" ([uvicorn.dev/concepts/lifespan](https://uvicorn.dev/concepts/lifespan/)) | `uvicorn/lifespan/on.py`, `uvicorn/lifespan/off.py`, `uvicorn/server.py` |  |
 | Proxy headers behavior | Implemented middleware | "Deployment" (Proxies and forwarded headers) ([uvicorn.dev/deployment](https://uvicorn.dev/deployment/)) | `uvicorn/middleware/proxy_headers.py` |  |
 | ASGI message logger behavior | Implemented middleware | n/a (source-driven) | `uvicorn/middleware/message_logger.py` |  |
@@ -27,6 +27,9 @@ This matrix lists Palfrey behaviors grounded in explicit Uvicorn/Click sources.
 - `tests/protocols/test_websocket.py`
 - `tests/middleware/test_proxy_headers.py`
 - `tests/supervisors/test_multiprocess.py`
+- `tests/importer/test_importer.py`
+- `tests/test_default_headers.py`
+- `tests/test_server.py`
 
 ## Click Documentation and Source Consulted
 
@@ -41,8 +44,6 @@ This matrix lists Palfrey behaviors grounded in explicit Uvicorn/Click sources.
 
 ## Confirmed Gaps (Source-Mapped)
 
-- `websockets-sansio` option/value is present in Uvicorn but not in Palfrey.
-  - Source: `uvicorn/config.py` (`WS_PROTOCOLS`).
 - Uvicorn maps `--http` to concrete protocol engines (`h11` / `httptools`) with distinct implementations.
   - Sources: `uvicorn/config.py`, `uvicorn/protocols/http/h11_impl.py`, `uvicorn/protocols/http/httptools_impl.py`.
 - Uvicorn maps `--ws` to concrete protocol engines (`websockets`, `websockets-sansio`, `wsproto`) with distinct implementations.

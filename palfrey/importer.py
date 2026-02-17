@@ -31,35 +31,31 @@ class ResolvedApp:
 def _import_from_string(target: str) -> object:
     """Import an object from a ``module:attribute`` target string.
 
-    Args:
-        target: Dotted import string with a ``:`` separator.
-
-    Returns:
-        Imported Python object.
-
-    Raises:
-        AppImportError: If the target cannot be resolved.
+    This follows Uvicorn's importer behavior:
+    - validates ``<module>:<attribute>``
+    - supports dotted attribute traversal (``module:obj.attr``)
+    - re-raises nested import errors so internal module failures are not masked
     """
 
-    module_name, separator, attribute_name = target.partition(":")
-    if not separator or not module_name or not attribute_name:
-        raise AppImportError(
-            f"Invalid app import string '{target}'. Expected format 'module:attribute'."
-        )
+    module_name, separator, attrs = target.partition(":")
+    if not separator or not module_name or not attrs:
+        raise AppImportError(f'Import string "{target}" must be in format "<module>:<attribute>".')
 
     try:
         module = importlib.import_module(module_name)
-    except Exception as exc:  # noqa: BLE001
-        raise AppImportError(
-            f"Unable to import module '{module_name}'. Original error: {exc!r}"
-        ) from exc
+    except ModuleNotFoundError as exc:
+        if exc.name != module_name:
+            raise
+        raise AppImportError(f'Could not import module "{module_name}".') from exc
 
+    instance: object = module
     try:
-        return getattr(module, attribute_name)
+        for attr in attrs.split("."):
+            instance = getattr(instance, attr)
     except AttributeError as exc:
-        raise AppImportError(
-            f"Module '{module_name}' does not expose attribute '{attribute_name}'."
-        ) from exc
+        raise AppImportError(f'Attribute "{attrs}" not found in module "{module_name}".') from exc
+
+    return instance
 
 
 def _infer_interface(app: object) -> str:

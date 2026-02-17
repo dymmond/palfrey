@@ -2,7 +2,7 @@
 
 Canonical release entries are tracked in:
 
-- [`CHANGELOG.md`](../../../CHANGELOG.md)
+- [`CHANGELOG.md`](https://github.com/dymmond/palfrey/blob/main/CHANGELOG.md)
 
 ## Current cycle
 

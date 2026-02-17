@@ -101,3 +101,27 @@ def test_is_websocket_upgrade_detects_upgrade_headers() -> None:
         body=b"",
     )
     assert is_websocket_upgrade(request)
+
+
+def test_override_server_header_with_config_default() -> None:
+    response = HTTPResponse(status=200, headers=[])
+    config = PalfreyConfig(
+        app="tests.fixtures.apps:http_app",
+        headers=[("Server", "over-ridden")],
+    )
+    append_default_response_headers(response, config)
+    lowered = [(name.lower(), value) for name, value in response.headers]
+    assert (b"server", b"over-ridden") in lowered
+    assert (b"server", b"palfrey") not in lowered
+    assert any(name == b"date" for name, _ in lowered)
+
+
+def test_override_server_header_multiple_times() -> None:
+    response = HTTPResponse(status=200, headers=[])
+    config = PalfreyConfig(
+        app="tests.fixtures.apps:http_app",
+        headers=[("Server", "one"), ("Server", "two")],
+    )
+    append_default_response_headers(response, config)
+    server_values = [value for name, value in response.headers if name.lower() == b"server"]
+    assert server_values == [b"one", b"two"]

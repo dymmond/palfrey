@@ -95,7 +95,7 @@ from palfrey.runtime import run
 @click.option("--ssl-ca-certs", default=None, type=click.Path(path_type=str))
 @click.option("--ssl-ciphers", default="TLSv1", show_default=True, type=str)
 @click.option("--header", "headers", multiple=True, type=str)
-@click.option("--app-dir", default=None, type=click.Path(path_type=str))
+@click.option("--app-dir", default="", type=click.Path(path_type=str))
 @click.option("--factory", is_flag=True, default=False)
 @click.option("--h11-max-incomplete-event-size", default=None, type=int)
 @click.version_option(version=__version__, prog_name="palfrey")
@@ -145,7 +145,7 @@ def main(
     ssl_ca_certs: str | None,
     ssl_ciphers: str,
     headers: tuple[str, ...],
-    app_dir: str | None,
+    app_dir: str,
     factory: bool,
     h11_max_incomplete_event_size: int | None,
 ) -> None:

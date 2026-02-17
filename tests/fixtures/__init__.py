@@ -1,1 +1,0 @@
-"""ASGI test fixtures."""

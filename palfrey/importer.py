@@ -48,7 +48,9 @@ def _import_from_string(target: str) -> object:
     try:
         module = importlib.import_module(module_name)
     except Exception as exc:  # noqa: BLE001
-        raise AppImportError(f"Unable to import module '{module_name}'.") from exc
+        raise AppImportError(
+            f"Unable to import module '{module_name}'. Original error: {exc!r}"
+        ) from exc
 
     try:
         return getattr(module, attribute_name)

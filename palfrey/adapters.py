@@ -83,15 +83,16 @@ class WSGIAdapter:
         status_code = int(status_line.split(" ", 1)[0])
 
         encoded_headers = [
-            (name.encode("latin-1"), value.encode("latin-1"))
-            for name, value in headers
+            (name.encode("latin-1"), value.encode("latin-1")) for name, value in headers
         ]
 
-        await send({
-            "type": "http.response.start",
-            "status": status_code,
-            "headers": encoded_headers,
-        })
+        await send(
+            {
+                "type": "http.response.start",
+                "status": status_code,
+                "headers": encoded_headers,
+            }
+        )
         await send({"type": "http.response.body", "body": payload, "more_body": False})
 
     @staticmethod

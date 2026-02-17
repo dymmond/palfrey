@@ -71,7 +71,7 @@ class PalfreyConfig:
     ssl_ciphers: str = "TLSv1"
     headers: list[tuple[str, str]] | list[str] = field(default_factory=list)
     use_colors: bool | None = None
-    app_dir: str | None = None
+    app_dir: str | None = ""
     factory: bool = False
     h11_max_incomplete_event_size: int | None = None
 

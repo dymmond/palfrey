@@ -148,9 +148,8 @@ ignore = ["E501"]
 [tool.ruff.lint.isort]
 combine-as-imports = true
 
-[tool.ty]
-src = ["palfrey", "tests", "benchmarks"]
-python-version = "3.10"
+#[tool.ty]
+#src = ["palfrey", "tests", "benchmarks"]
 
 [tool.pytest.ini_options]
 addopts = [

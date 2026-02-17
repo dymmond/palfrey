@@ -20,11 +20,7 @@ def test_parse_header_items_rejects_invalid(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_parse_request_head_python_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(acceleration, "HAS_RUST_EXTENSION", False)
-    request_head = (
-        b"GET /health HTTP/1.1\r\n"
-        b"host: example.com\r\n"
-        b"x-test: yes\r\n\r\n"
-    )
+    request_head = b"GET /health HTTP/1.1\r\nhost: example.com\r\nx-test: yes\r\n\r\n"
     method, target, version, headers = acceleration.parse_request_head(request_head)
     assert method == "GET"
     assert target == "/health"

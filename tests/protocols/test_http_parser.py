@@ -11,12 +11,7 @@ from tests.helpers import make_stream_reader
 
 
 def test_read_http_request_with_content_length_body() -> None:
-    payload = (
-        b"POST /submit HTTP/1.1\r\n"
-        b"Host: test\r\n"
-        b"Content-Length: 5\r\n\r\n"
-        b"hello"
-    )
+    payload = b"POST /submit HTTP/1.1\r\nHost: test\r\nContent-Length: 5\r\n\r\nhello"
     request = asyncio.run(read_http_request(make_stream_reader(payload)))
     assert request is not None
     assert request.method == "POST"
@@ -55,11 +50,7 @@ def test_read_http_request_rejects_malformed_bodies(payload: bytes) -> None:
 
 
 def test_read_http_request_rejects_large_content_length() -> None:
-    payload = (
-        b"POST / HTTP/1.1\r\n"
-        b"Host: x\r\n"
-        b"Content-Length: 999\r\n\r\n"
-    )
+    payload = b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 999\r\n\r\n"
     with pytest.raises(ValueError, match="HTTP body exceeds configured limit"):
         asyncio.run(read_http_request(make_stream_reader(payload), body_limit=16))
 

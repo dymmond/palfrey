@@ -25,11 +25,7 @@ WSGIApplication: TypeAlias = Callable[
     list[bytes] | tuple[bytes, ...],
 ]
 AppType: TypeAlias = (
-    ASGIApplication
-    | ASGI2Application
-    | ASGIApplicationFactory
-    | WSGIApplication
-    | str
+    ASGIApplication | ASGI2Application | ASGIApplicationFactory | WSGIApplication | str
 )
 Headers: TypeAlias = list[tuple[bytes, bytes]]
 ClientAddress: TypeAlias = tuple[str, int]

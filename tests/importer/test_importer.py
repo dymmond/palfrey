@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from typing import Any
 
 import pytest
@@ -74,3 +76,29 @@ def test_factory_requires_callable() -> None:
     config = PalfreyConfig(app=42, factory=True)
     with pytest.raises(AppImportError):
         resolve_application(config)
+
+
+def test_default_app_dir_resolves_current_working_directory(tmp_path) -> None:
+    module_file = tmp_path / "demoapp.py"
+    module_file.write_text(
+        (
+            "async def app(scope, receive, send):\n"
+            "    if scope['type'] == 'http':\n"
+            "        await send({'type': 'http.response.start', 'status': 200, 'headers': []})\n"
+            "        await send({'type': 'http.response.body', 'body': b'ok'})\n"
+        ),
+        encoding="utf-8",
+    )
+
+    current = os.getcwd()
+    original_sys_path = list(sys.path)
+    try:
+        os.chdir(tmp_path)
+        sys.path = [item for item in sys.path if str(tmp_path) not in str(item)]
+
+        config = PalfreyConfig(app="demoapp:app")
+        resolved = resolve_application(config)
+        assert callable(resolved.app)
+    finally:
+        os.chdir(current)
+        sys.path = original_sys_path

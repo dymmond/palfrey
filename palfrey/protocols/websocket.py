@@ -58,8 +58,7 @@ def build_websocket_scope(
         "query_string": query.encode("latin-1"),
         "root_path": root_path,
         "headers": [
-            (name.lower().encode("latin-1"), value.encode("latin-1"))
-            for name, value in headers
+            (name.lower().encode("latin-1"), value.encode("latin-1")) for name, value in headers
         ],
         "client": client,
         "server": server,

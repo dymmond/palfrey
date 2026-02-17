@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from palfrey.config import PalfreyConfig
-from palfrey.protocols.http import HTTPResponse, append_default_response_headers, encode_http_response
+from palfrey.protocols.http import (
+    HTTPResponse,
+    append_default_response_headers,
+    encode_http_response,
+)
 
 
 def test_default_headers_are_added() -> None:

@@ -9,9 +9,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 try:
-    from palfrey_rust import parse_header_items as _parse_header_items
-    from palfrey_rust import parse_request_head as _parse_request_head
-    from palfrey_rust import split_csv_values as _split_csv_values
+    from palfrey_rust import (
+        parse_header_items as _parse_header_items,
+        parse_request_head as _parse_request_head,
+        split_csv_values as _split_csv_values,
+    )
 
     HAS_RUST_EXTENSION = True
 except ImportError:  # pragma: no cover - executed when Rust extension is absent.

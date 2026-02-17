@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable
 from dataclasses import dataclass, field
 
 from palfrey.logging_config import get_logger
-from palfrey.types import ASGIApplication, Message, ReceiveCallable, Scope, SendCallable
+from palfrey.types import ASGIApplication, Message, Scope
 
 logger = get_logger("palfrey.lifespan")
 

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 from palfrey.adapters import ASGI2Adapter, WSGIAdapter
 from palfrey.config import PalfreyConfig
-from palfrey.types import ASGIApplication, AppType
+from palfrey.types import AppType, ASGIApplication
 
 
 class AppImportError(RuntimeError):

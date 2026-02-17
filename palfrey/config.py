@@ -96,7 +96,7 @@ class PalfreyConfig:
         port: int = 8000,
         app_dir: str | Path | None = None,
         **kwargs: object,
-    ) -> "PalfreyConfig":
+    ) -> PalfreyConfig:
         """Build a config from a `module:attribute` import target.
 
         Args:

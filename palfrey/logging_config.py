@@ -1,0 +1,60 @@
+"""Logging setup utilities for Palfrey."""
+
+from __future__ import annotations
+
+import json
+import logging
+import logging.config
+from pathlib import Path
+from typing import Any
+
+from palfrey.config import PalfreyConfig
+
+TRACE_LEVEL = 5
+logging.addLevelName(TRACE_LEVEL, "TRACE")
+
+
+def _to_logging_level(level: str | None) -> int:
+    """Map configured log level names to Python logging level integers."""
+
+    if level is None:
+        return logging.INFO
+
+    if level == "trace":
+        return TRACE_LEVEL
+
+    mapping: dict[str, int] = {
+        "critical": logging.CRITICAL,
+        "error": logging.ERROR,
+        "warning": logging.WARNING,
+        "info": logging.INFO,
+        "debug": logging.DEBUG,
+    }
+    return mapping.get(level, logging.INFO)
+
+
+def configure_logging(config: PalfreyConfig) -> None:
+    """Configure logger hierarchy from explicit config or defaults.
+
+    Args:
+        config: Runtime configuration.
+    """
+
+    if config.log_config:
+        path = Path(config.log_config)
+        if path.suffix.lower() == ".json":
+            with path.open("r", encoding="utf-8") as file:
+                payload: dict[str, Any] = json.load(file)
+            logging.config.dictConfig(payload)
+            return
+
+    logging.basicConfig(
+        level=_to_logging_level(config.log_level),
+        format="%(levelname)s [%(name)s] %(message)s",
+    )
+
+
+def get_logger(name: str) -> logging.Logger:
+    """Return a named logger used by Palfrey internals."""
+
+    return logging.getLogger(name)

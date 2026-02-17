@@ -42,10 +42,19 @@ plugins:
       trim: false
 
 nav:
-  - Introduction: "index.md"
-  - Contributing: "contributing.md"
-  - Sponsorship: "sponsorship.md"
-  - Release Notes: "release-notes.md"
+  - Overview: index.md
+  - Install: guides/usage/install.md
+  - Quickstart: guides/usage/quickstart.md
+  - CLI Reference: guides/reference/cli-reference.md
+  - Config Reference: guides/reference/config-reference.md
+  - Deployment: guides/operations/deployment.md
+  - Reload and Dev: guides/operations/reload-dev.md
+  - Workers and Process Model: guides/operations/workers-process-model.md
+  - Protocols: guides/reference/protocols.md
+  - Logging: guides/operations/logging.md
+  - Parity Matrix: parity-matrix.md
+  - Benchmarks: benchmarks.md
+  - Release Process: release-process.md
 markdown_extensions:
   - toc:
       permalink: true

@@ -24,6 +24,7 @@ def test_cli_help_lists_parity_options() -> None:
         "--ssl-keyfile",
         "--ssl-certfile",
         "--ws-max-size",
+        "--limit-max-requests-jitter",
         "--h11-max-incomplete-event-size",
         "--factory",
     ):
@@ -41,4 +42,7 @@ def test_cli_version_option() -> None:
     runner = CliRunner()
     result = runner.invoke(main, ["--version"])
     assert result.exit_code == 0
-    assert "palfrey" in result.output.lower()
+    output = result.output.lower()
+    assert "running palfrey" in output
+    assert "with" in output
+    assert "on" in output

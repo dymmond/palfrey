@@ -6,6 +6,7 @@ users can migrate without relearning flag semantics.
 
 from __future__ import annotations
 
+import platform
 from typing import cast
 
 import click
@@ -21,6 +22,22 @@ from palfrey.config import (
     WSType,
 )
 from palfrey.runtime import run
+
+
+def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> None:
+    """Print detailed version output and exit.
+
+    `--version` callback shape and output fields.
+    """
+
+    if not value or ctx.resilient_parsing:
+        return
+
+    py_implementation = platform.python_implementation()
+    py_version = platform.python_version()
+    system = platform.system()
+    click.echo(f"Running palfrey {__version__} with {py_implementation} {py_version} on {system}")
+    ctx.exit()
 
 
 @click.command(context_settings={"auto_envvar_prefix": "PALFREY"})
@@ -52,7 +69,8 @@ from palfrey.runtime import run
 @click.option("--ws-ping-interval", default=20.0, show_default=True, type=float)
 @click.option("--ws-ping-timeout", default=20.0, show_default=True, type=float)
 @click.option(
-    "--ws-per-message-deflate/--no-ws-per-message-deflate",
+    "--ws-per-message-deflate",
+    type=bool,
     default=True,
     show_default=True,
 )
@@ -68,7 +86,7 @@ from palfrey.runtime import run
     show_default=True,
     type=click.Choice(["auto", "asgi3", "asgi2", "wsgi"], case_sensitive=False),
 )
-@click.option("--reload/--no-reload", default=False, show_default=True)
+@click.option("--reload", is_flag=True, default=False, show_default=True)
 @click.option("--reload-dir", "reload_dirs", multiple=True, type=click.Path(path_type=str))
 @click.option("--reload-include", "reload_includes", multiple=True, type=str)
 @click.option("--reload-exclude", "reload_excludes", multiple=True, type=str)
@@ -94,6 +112,7 @@ from palfrey.runtime import run
 @click.option("--limit-concurrency", default=None, type=int)
 @click.option("--backlog", default=2048, show_default=True, type=int)
 @click.option("--limit-max-requests", default=None, type=int)
+@click.option("--limit-max-requests-jitter", default=0, show_default=True, type=int)
 @click.option("--timeout-keep-alive", default=5, show_default=True, type=int)
 @click.option("--timeout-graceful-shutdown", default=None, type=int)
 @click.option("--timeout-worker-healthcheck", default=5, show_default=True, type=int)
@@ -108,7 +127,13 @@ from palfrey.runtime import run
 @click.option("--app-dir", default="", type=click.Path(path_type=str))
 @click.option("--factory", is_flag=True, default=False)
 @click.option("--h11-max-incomplete-event-size", default=None, type=int)
-@click.version_option(version=__version__, prog_name="palfrey")
+@click.option(
+    "--version",
+    is_flag=True,
+    callback=print_version,
+    expose_value=False,
+    is_eager=True,
+)
 def main(
     app: str,
     host: str,
@@ -144,6 +169,7 @@ def main(
     limit_concurrency: int | None,
     backlog: int,
     limit_max_requests: int | None,
+    limit_max_requests_jitter: int,
     timeout_keep_alive: int,
     timeout_graceful_shutdown: int | None,
     timeout_worker_healthcheck: int,
@@ -196,6 +222,7 @@ def main(
         limit_concurrency: Max active task count.
         backlog: Socket backlog.
         limit_max_requests: Shutdown after processing this many requests.
+        limit_max_requests_jitter: Maximum restart jitter for max-requests shutdown.
         timeout_keep_alive: Keep-alive idle timeout in seconds.
         timeout_graceful_shutdown: Graceful shutdown timeout.
         timeout_worker_healthcheck: Worker health timeout.
@@ -246,6 +273,7 @@ def main(
         limit_concurrency=limit_concurrency,
         backlog=backlog,
         limit_max_requests=limit_max_requests,
+        limit_max_requests_jitter=limit_max_requests_jitter,
         timeout_keep_alive=timeout_keep_alive,
         timeout_graceful_shutdown=timeout_graceful_shutdown,
         timeout_worker_healthcheck=timeout_worker_healthcheck,

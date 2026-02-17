@@ -84,6 +84,11 @@ def test_normalized_headers_accepts_string_values() -> None:
     assert config.normalized_headers == [("x-one", "1"), ("x-two", "2")]
 
 
+def test_limit_max_requests_jitter_must_be_non_negative() -> None:
+    with pytest.raises(ValueError, match="limit_max_requests_jitter must be >= 0"):
+        PalfreyConfig(app="tests.fixtures.apps:http_app", limit_max_requests_jitter=-1)
+
+
 def test_from_import_string_builds_config() -> None:
     config = PalfreyConfig.from_import_string(
         "tests.fixtures.apps:http_app",

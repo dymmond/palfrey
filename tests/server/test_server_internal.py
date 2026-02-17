@@ -102,6 +102,22 @@ def test_service_unavailable_response_contains_default_body() -> None:
     assert response.body_chunks == [b"Service Unavailable"]
 
 
+def test_compute_max_requests_before_exit_none_when_not_configured() -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
+    assert server._compute_max_requests_before_exit() is None
+
+
+def test_compute_max_requests_before_exit_applies_jitter(monkeypatch) -> None:
+    config = PalfreyConfig(
+        app="tests.fixtures.apps:http_app",
+        limit_max_requests=100,
+        limit_max_requests_jitter=7,
+    )
+    server = PalfreyServer(config)
+    monkeypatch.setattr(server_module.random, "randint", lambda start, end: 5)
+    assert server._compute_max_requests_before_exit() == 105
+
+
 def test_build_ssl_context_returns_none_without_certfile() -> None:
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
     assert server._build_ssl_context() is None

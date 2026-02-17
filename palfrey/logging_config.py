@@ -47,6 +47,23 @@ def configure_logging(config: PalfreyConfig) -> None:
                 payload: dict[str, Any] = json.load(file)
             logging.config.dictConfig(payload)
             return
+        if path.suffix.lower() in {".yaml", ".yml"}:
+            try:
+                import yaml
+            except ImportError as exc:  # pragma: no cover - optional dependency branch.
+                raise RuntimeError(
+                    "YAML log config requires PyYAML. Install optional dependencies."
+                ) from exc
+
+            with path.open("r", encoding="utf-8") as file:
+                payload = yaml.safe_load(file)
+            if not isinstance(payload, dict):
+                raise ValueError("YAML log config must deserialize to a dictionary.")
+            logging.config.dictConfig(payload)
+            return
+
+        logging.config.fileConfig(path, disable_existing_loggers=False)
+        return
 
     logging.basicConfig(
         level=_to_logging_level(config.log_level),

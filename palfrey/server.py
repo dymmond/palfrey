@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import random
 import signal
 import socket
 import ssl
@@ -53,6 +54,7 @@ class PalfreyServer:
     _server: asyncio.AbstractServer | None = None
     _lifespan: LifespanManager | None = None
     _request_counter_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    _max_requests_before_exit: int | None = None
 
     @property
     def started(self) -> bool:
@@ -65,6 +67,7 @@ class PalfreyServer:
 
         configure_logging(self.config)
         self._resolved_app = resolve_application(self.config)
+        self._max_requests_before_exit = self._compute_max_requests_before_exit()
 
         if self.config.lifespan != "off":
             self._lifespan = LifespanManager(self._resolved_app.app)
@@ -202,9 +205,11 @@ class PalfreyServer:
                 await self._write_response(writer, response, keep_alive=keep_processing)
 
                 self._requests_processed += 1
+                if self._max_requests_before_exit is None:
+                    self._max_requests_before_exit = self._compute_max_requests_before_exit()
                 if (
-                    self.config.limit_max_requests is not None
-                    and self._requests_processed >= self.config.limit_max_requests
+                    self._max_requests_before_exit is not None
+                    and self._requests_processed >= self._max_requests_before_exit
                 ):
                     self.request_shutdown()
         except ValueError as exc:
@@ -329,3 +334,14 @@ class PalfreyServer:
 
         context.set_ciphers(self.config.ssl_ciphers)
         return context
+
+    def _compute_max_requests_before_exit(self) -> int | None:
+        """Compute effective max requests, including configured jitter."""
+
+        if self.config.limit_max_requests is None:
+            return None
+
+        return self.config.limit_max_requests + random.randint(
+            0,
+            self.config.limit_max_requests_jitter,
+        )

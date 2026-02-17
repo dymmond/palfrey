@@ -59,6 +59,7 @@ class PalfreyConfig:
     limit_concurrency: int | None = None
     backlog: int = 2048
     limit_max_requests: int | None = None
+    limit_max_requests_jitter: int = 0
     timeout_keep_alive: int = 5
     timeout_graceful_shutdown: int | None = None
     timeout_worker_healthcheck: int = 5
@@ -83,6 +84,9 @@ class PalfreyConfig:
             self.workers = int(web_concurrency) if web_concurrency else 1
         elif self.workers < 1:
             raise ValueError("workers must be >= 1")
+
+        if self.limit_max_requests_jitter < 0:
+            raise ValueError("limit_max_requests_jitter must be >= 0")
 
         if self.forwarded_allow_ips is None:
             self.forwarded_allow_ips = os.getenv("FORWARDED_ALLOW_IPS", "127.0.0.1")

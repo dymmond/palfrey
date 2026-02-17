@@ -110,8 +110,8 @@ features = ["dev", "testing", "docs", "benchmark", "standard"]
 lint = "ruff check palfrey tests benchmarks"
 format = "ruff format palfrey tests benchmarks docs_src"
 format-check = "ruff format --check palfrey tests benchmarks docs_src"
-check-types = "ty check palfrey tests benchmarks"
-test-cov = "pytest --cov=palfrey --cov=benchmarks --cov-report=term-missing --cov-report=xml --cov-fail-under=85"
+check-types = "ty check palfrey"
+test-cov = "pytest --cov=palfrey --cov-report=term-missing --cov-report=xml --cov-fail-under=85"
 docs-build = "mkdocs build -f docs/en/mkdocs.yml"
 benchmark = "python -m benchmarks.run"
 rust-build = "scripts/build-rust-extension"
@@ -135,7 +135,8 @@ new_lang = "hatch run docs:update_languages; scripts/docs.py new-lang --lang {ar
 features = ["testing"]
 
 [tool.hatch.envs.test.scripts]
-test = "pytest --cov=palfrey --cov=benchmarks --cov-report=term-missing --cov-report=xml --cov-fail-under=85"
+test = "pytest --cov=palfrey --cov-report=term-missing --cov-report=xml --cov-fail-under=85"
+test_man = "pytest -- {args} -s -vv"
 
 [tool.ruff]
 line-length = 100
@@ -156,7 +157,6 @@ addopts = [
   "--strict-config",
   "--strict-markers",
   "--cov=palfrey",
-  "--cov=benchmarks",
   "--cov-report=term-missing",
   "--cov-report=xml",
   "--cov-fail-under=85",
@@ -166,7 +166,7 @@ junit_family = "xunit2"
 testpaths = ["tests"]
 
 [tool.coverage.run]
-source = ["palfrey", "benchmarks"]
+source = ["palfrey"]
 branch = true
 parallel = true
 

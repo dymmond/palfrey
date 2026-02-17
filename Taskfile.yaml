@@ -54,10 +54,12 @@ tasks:
     desc: Lints the project
     cmds:
       - hatch run lint
+      - hatch run check-types
 
   format:
     desc: Formats the project
     cmds:
+      - task lint
       - hatch run format
 
   mypy:
@@ -81,15 +83,11 @@ tasks:
 
   test:
     desc: Runs the suite tests
-    env:
-      LILYA_SETTINGS_MODULE: tests.settings.TestSettings
     cmds:
       - hatch run test:test {{ .ARGS }}
 
   test_man:
     desc: Runs the manual tests with more output details and python breakpoints allowed
-    env:
-      LILYA_SETTINGS_MODULE: tests.settings.TestSettings
     cmds:
       - hatch run test:test_man {{ .ARGS }}
 

@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 
 from palfrey.config import PalfreyConfig
-from palfrey.logging_config import configure_logging
+from palfrey.logging_config import TRACE_LEVEL, configure_logging
 
 
 def test_configure_logging_with_default_level() -> None:
@@ -42,3 +42,17 @@ def test_configure_logging_from_json_file(tmp_path: Path) -> None:
     configure_logging(config)
     logger = logging.getLogger("palfrey.test")
     assert logger.isEnabledFor(logging.INFO)
+
+
+def test_configure_logging_supports_trace_level() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:http_app", log_level="trace")
+    configure_logging(config)
+    root = logging.getLogger()
+    assert root.level == TRACE_LEVEL
+
+
+def test_configure_logging_defaults_to_info_when_level_missing() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:http_app", log_level=None)
+    configure_logging(config)
+    root = logging.getLogger()
+    assert root.level == logging.INFO

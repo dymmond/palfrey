@@ -7,10 +7,15 @@ import subprocess
 import sys
 import time
 
+import pytest
+
 
 def _available_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
+        try:
+            sock.bind(("127.0.0.1", 0))
+        except PermissionError as exc:
+            pytest.skip(f"Socket bind not permitted in this environment: {exc}")
         return int(sock.getsockname()[1])
 
 

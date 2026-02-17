@@ -30,3 +30,15 @@ def test_load_env_file_does_not_override_existing(tmp_path: Path, monkeypatch) -
     load_env_file(str(env_file))
 
     assert os.environ["THREE"] == "existing"
+
+
+def test_load_env_file_ignores_missing_path(monkeypatch) -> None:
+    monkeypatch.delenv("MISSING", raising=False)
+    load_env_file("/definitely/missing/.env")
+    assert "MISSING" not in os.environ
+
+
+def test_load_env_file_noop_when_path_is_none(monkeypatch) -> None:
+    monkeypatch.delenv("NOT_SET", raising=False)
+    load_env_file(None)
+    assert "NOT_SET" not in os.environ

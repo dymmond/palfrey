@@ -12,6 +12,6 @@ def uvloop_setup() -> None:
         ImportError: If ``uvloop`` cannot be imported.
     """
 
-    import uvloop  # type: ignore[import-not-found]
+    import uvloop
 
     asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())

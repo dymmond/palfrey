@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
 
 import pytest
 
+import palfrey.supervisors.reload as reload_module
 from palfrey.config import PalfreyConfig
 from palfrey.supervisors.reload import ReloadSupervisor, build_reload_argv
 
@@ -81,3 +84,158 @@ def test_changed_paths_respects_include_and_exclude(tmp_path: Path) -> None:
     changed = supervisor._changed_paths()
     assert include_file in changed
     assert exclude_file not in changed
+
+
+def test_watch_roots_defaults_to_current_directory(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:http_app", reload=False, reload_dirs=[])
+    supervisor = ReloadSupervisor(config=config, argv=["python", "-m", "palfrey"])
+    monkeypatch.setattr(Path, "cwd", classmethod(lambda cls: Path("/tmp")))
+    assert supervisor._watch_roots() == [Path("/tmp")]
+
+
+def test_watch_roots_uses_configured_paths(tmp_path: Path) -> None:
+    one = tmp_path / "one"
+    two = tmp_path / "two"
+    one.mkdir()
+    two.mkdir()
+
+    config = PalfreyConfig(
+        app="tests.fixtures.apps:http_app",
+        reload=True,
+        reload_dirs=[str(one), str(two)],
+    )
+    supervisor = ReloadSupervisor(config=config, argv=["python", "-m", "palfrey"])
+    assert supervisor._watch_roots() == [one.resolve(), two.resolve()]
+
+
+def test_spawn_sets_reload_child_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:http_app", reload=True)
+    supervisor = ReloadSupervisor(config=config, argv=["python", "-m", "palfrey"])
+    captured: dict[str, object] = {}
+
+    class FakeProcess:
+        def poll(self) -> int | None:
+            return None
+
+    def fake_popen(argv: list[str], env: dict[str, str]):
+        captured["argv"] = argv
+        captured["env"] = env
+        return FakeProcess()
+
+    monkeypatch.setattr(reload_module.subprocess, "Popen", fake_popen)
+
+    supervisor._spawn()
+    assert captured["argv"] == ["python", "-m", "palfrey"]
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["PALFREY_RELOAD_CHILD"] == "1"
+    assert supervisor._process is not None
+
+
+def test_terminate_kills_process_after_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:http_app", reload=True)
+    supervisor = ReloadSupervisor(config=config, argv=["python", "-m", "palfrey"])
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.signals: list[int] = []
+            self.killed = False
+            self.wait_calls = 0
+
+        def poll(self) -> int | None:
+            return None
+
+        def send_signal(self, signum: int) -> None:
+            self.signals.append(signum)
+
+        def wait(self, timeout: float | None = None) -> None:
+            self.wait_calls += 1
+            if self.wait_calls == 1:
+                raise subprocess.TimeoutExpired(cmd="x", timeout=10)
+
+        def kill(self) -> None:
+            self.killed = True
+
+    process = FakeProcess()
+    supervisor._process = process  # type: ignore[assignment]
+
+    supervisor._terminate()
+    assert process.signals == [signal.SIGINT]
+    assert process.killed is True
+
+
+def test_restart_terminates_then_spawns(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:http_app", reload=True)
+    supervisor = ReloadSupervisor(config=config, argv=["python", "-m", "palfrey"])
+    calls: list[str] = []
+
+    monkeypatch.setattr(ReloadSupervisor, "_terminate", lambda self: calls.append("terminate"))
+    monkeypatch.setattr(ReloadSupervisor, "_spawn", lambda self: calls.append("spawn"))
+
+    supervisor._restart()
+    assert calls == ["terminate", "spawn"]
+
+
+def test_run_restarts_when_changed_paths_detected(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:http_app", reload=True, reload_delay=0)
+    supervisor = ReloadSupervisor(config=config, argv=["python", "-m", "palfrey"])
+    calls: list[str] = []
+
+    class FakeProcess:
+        def poll(self) -> int | None:
+            return None
+
+    def fake_spawn(self: ReloadSupervisor) -> None:
+        calls.append("spawn")
+        self._process = FakeProcess()  # type: ignore[assignment]
+
+    def fake_changed(self: ReloadSupervisor) -> list[Path]:
+        return [Path("changed.py")]
+
+    def fake_restart(self: ReloadSupervisor) -> None:
+        calls.append("restart")
+        self._stop = True
+
+    monkeypatch.setattr(reload_module.signal, "signal", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ReloadSupervisor, "_spawn", fake_spawn)
+    monkeypatch.setattr(ReloadSupervisor, "_changed_paths", fake_changed)
+    monkeypatch.setattr(ReloadSupervisor, "_restart", fake_restart)
+    monkeypatch.setattr(ReloadSupervisor, "_terminate", lambda self: calls.append("terminate"))
+    monkeypatch.setattr(reload_module.time, "sleep", lambda _: None)
+
+    supervisor.run()
+    assert calls == ["spawn", "restart", "terminate"]
+
+
+def test_run_respawns_if_child_process_exits(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:http_app", reload=True, reload_delay=0)
+    supervisor = ReloadSupervisor(config=config, argv=["python", "-m", "palfrey"])
+    spawn_count = 0
+    calls: list[str] = []
+
+    class ExitedProcess:
+        def poll(self) -> int | None:
+            return 1
+
+    class RunningProcess:
+        def poll(self) -> int | None:
+            return None
+
+    def fake_spawn(self: ReloadSupervisor) -> None:
+        nonlocal spawn_count
+        spawn_count += 1
+        calls.append("spawn")
+        if spawn_count == 1:
+            self._process = ExitedProcess()  # type: ignore[assignment]
+        else:
+            self._process = RunningProcess()  # type: ignore[assignment]
+            self._stop = True
+
+    monkeypatch.setattr(reload_module.signal, "signal", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ReloadSupervisor, "_spawn", fake_spawn)
+    monkeypatch.setattr(ReloadSupervisor, "_changed_paths", lambda self: [])
+    monkeypatch.setattr(ReloadSupervisor, "_terminate", lambda self: calls.append("terminate"))
+    monkeypatch.setattr(reload_module.time, "sleep", lambda _: None)
+
+    supervisor.run()
+    assert calls == ["spawn", "spawn", "terminate"]

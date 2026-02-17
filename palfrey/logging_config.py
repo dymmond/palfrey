@@ -51,6 +51,7 @@ def configure_logging(config: PalfreyConfig) -> None:
     logging.basicConfig(
         level=_to_logging_level(config.log_level),
         format="%(levelname)s [%(name)s] %(message)s",
+        force=True,
     )
 
 

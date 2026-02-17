@@ -10,9 +10,14 @@ from palfrey.protocols.http import HTTPRequest, read_http_request, requires_100_
 from tests.helpers import make_stream_reader
 
 
+async def _read(payload: bytes, *, body_limit: int = 4_194_304) -> HTTPRequest | None:
+    reader = await make_stream_reader(payload)
+    return await read_http_request(reader, body_limit=body_limit)
+
+
 def test_read_http_request_with_content_length_body() -> None:
     payload = b"POST /submit HTTP/1.1\r\nHost: test\r\nContent-Length: 5\r\n\r\nhello"
-    request = asyncio.run(read_http_request(make_stream_reader(payload)))
+    request = asyncio.run(_read(payload))
     assert request is not None
     assert request.method == "POST"
     assert request.target == "/submit"
@@ -28,13 +33,13 @@ def test_read_http_request_with_chunked_body() -> None:
         b"6\r\n world\r\n"
         b"0\r\n\r\n"
     )
-    request = asyncio.run(read_http_request(make_stream_reader(payload)))
+    request = asyncio.run(_read(payload))
     assert request is not None
     assert request.body == b"hello world"
 
 
 def test_read_http_request_returns_none_on_eof() -> None:
-    assert asyncio.run(read_http_request(make_stream_reader(b""))) is None
+    assert asyncio.run(_read(b"")) is None
 
 
 @pytest.mark.parametrize(
@@ -46,13 +51,13 @@ def test_read_http_request_returns_none_on_eof() -> None:
 )
 def test_read_http_request_rejects_malformed_bodies(payload: bytes) -> None:
     with pytest.raises(ValueError):
-        asyncio.run(read_http_request(make_stream_reader(payload)))
+        asyncio.run(_read(payload))
 
 
 def test_read_http_request_rejects_large_content_length() -> None:
     payload = b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 999\r\n\r\n"
     with pytest.raises(ValueError, match="HTTP body exceeds configured limit"):
-        asyncio.run(read_http_request(make_stream_reader(payload), body_limit=16))
+        asyncio.run(_read(payload, body_limit=16))
 
 
 def test_requires_100_continue_detects_expect_header() -> None:

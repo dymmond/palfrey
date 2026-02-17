@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 
 
-def make_stream_reader(payload: bytes) -> asyncio.StreamReader:
-    """Create a stream reader preloaded with payload bytes."""
+async def make_stream_reader(payload: bytes) -> asyncio.StreamReader:
+    """Create a stream reader preloaded with payload bytes.
+
+    The reader must be created within a running event loop for Python 3.13+.
+    """
 
     reader = asyncio.StreamReader()
     reader.feed_data(payload)

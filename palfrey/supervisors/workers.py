@@ -68,7 +68,7 @@ class WorkerSupervisor:
 
     def _stop_workers(self) -> None:
         for process in self._workers:
-            if process.is_alive():
+            if process.is_alive() and process.pid is not None:
                 os.kill(process.pid, signal.SIGINT)
 
         deadline = time.monotonic() + self.config.timeout_worker_healthcheck

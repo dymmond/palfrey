@@ -23,7 +23,7 @@ class ReloadSupervisor:
 
     config: PalfreyConfig
     argv: list[str]
-    _process: subprocess.Popen[str] | None = None
+    _process: subprocess.Popen[bytes] | subprocess.Popen[str] | None = None
     _stop: bool = False
     _mtimes: dict[Path, float] = field(default_factory=dict)
 

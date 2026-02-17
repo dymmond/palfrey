@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from palfrey.acceleration import parse_header_items
 from palfrey.types import AppType
@@ -120,7 +120,7 @@ class PalfreyConfig:
         host: str = "127.0.0.1",
         port: int = 8000,
         app_dir: str | Path | None = None,
-        **kwargs: object,
+        **kwargs: Any,
     ) -> PalfreyConfig:
         """Build a config from a `module:attribute` import target.
 
@@ -135,10 +135,11 @@ class PalfreyConfig:
             A configured ``PalfreyConfig`` instance.
         """
 
-        return cls(
-            app=app,
-            host=host,
-            port=port,
-            app_dir=str(app_dir) if app_dir is not None else None,
-            **kwargs,
-        )
+        options: dict[str, Any] = {
+            "app": app,
+            "host": host,
+            "port": port,
+            "app_dir": str(app_dir) if app_dir is not None else None,
+        }
+        options.update(kwargs)
+        return cls(**options)

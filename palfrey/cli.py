@@ -6,10 +6,20 @@ users can migrate without relearning flag semantics.
 
 from __future__ import annotations
 
+from typing import cast
+
 import click
 
 from palfrey import __version__
-from palfrey.config import PalfreyConfig
+from palfrey.config import (
+    HTTPType,
+    InterfaceType,
+    LifespanMode,
+    LogLevel,
+    LoopType,
+    PalfreyConfig,
+    WSType,
+)
 from palfrey.runtime import run
 
 
@@ -208,16 +218,16 @@ def main(
         port=port,
         uds=uds,
         fd=fd,
-        loop=loop,
-        http=http,
-        ws=ws,
+        loop=cast(LoopType, loop),
+        http=cast(HTTPType, http),
+        ws=cast(WSType, ws),
         ws_max_size=ws_max_size,
         ws_max_queue=ws_max_queue,
         ws_ping_interval=ws_ping_interval,
         ws_ping_timeout=ws_ping_timeout,
         ws_per_message_deflate=ws_per_message_deflate,
-        lifespan=lifespan,
-        interface=interface,
+        lifespan=cast(LifespanMode, lifespan),
+        interface=cast(InterfaceType, interface),
         reload=reload,
         reload_dirs=list(reload_dirs),
         reload_includes=list(reload_includes),
@@ -226,7 +236,7 @@ def main(
         workers=workers,
         env_file=env_file,
         log_config=log_config,
-        log_level=log_level,
+        log_level=cast(LogLevel | None, log_level),
         access_log=access_log,
         proxy_headers=proxy_headers,
         server_header=server_header,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from email.utils import format_datetime
 from urllib.parse import unquote
 
@@ -29,14 +29,8 @@ class HTTPResponse:
     """HTTP response assembled from ASGI send events."""
 
     status: int = 500
-    headers: Headers | None = None
-    body_chunks: list[bytes] | None = None
-
-    def __post_init__(self) -> None:
-        if self.headers is None:
-            self.headers = []
-        if self.body_chunks is None:
-            self.body_chunks = []
+    headers: Headers = field(default_factory=list)
+    body_chunks: list[bytes] = field(default_factory=list)
 
 
 def _http_date_header() -> bytes:

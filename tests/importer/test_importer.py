@@ -10,6 +10,7 @@ import pytest
 
 from palfrey.config import PalfreyConfig
 from palfrey.importer import AppImportError, resolve_application
+from palfrey.middleware.message_logger import MessageLoggerMiddleware
 from palfrey.middleware.proxy_headers import ProxyHeadersMiddleware
 
 
@@ -76,6 +77,40 @@ def test_factory_requires_callable() -> None:
     config = PalfreyConfig(app=42, factory=True)
     with pytest.raises(AppImportError):
         resolve_application(config)
+
+
+def test_resolve_import_string_missing_module_reports_original_error() -> None:
+    config = PalfreyConfig(app="doesnotexist.module:app")
+    with pytest.raises(AppImportError, match="Original error"):
+        resolve_application(config)
+
+
+def test_resolve_import_string_missing_attribute() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:not_there")
+    with pytest.raises(AppImportError, match="does not expose attribute"):
+        resolve_application(config)
+
+
+def test_invalid_factory_result_is_rejected() -> None:
+    def factory():
+        return 123
+
+    config = PalfreyConfig(app=factory, factory=True)
+    with pytest.raises(AppImportError, match="Resolved WSGI app is not callable"):
+        resolve_application(config)
+
+
+def test_invalid_interface_mode_is_rejected() -> None:
+    config = PalfreyConfig(app=asgi3_app)
+    config.interface = "invalid"  # type: ignore[assignment]
+    with pytest.raises(AppImportError, match="Unsupported interface mode"):
+        resolve_application(config)
+
+
+def test_trace_log_level_wraps_message_logger_middleware() -> None:
+    config = PalfreyConfig(app=asgi3_app, log_level="trace")
+    resolved = resolve_application(config)
+    assert isinstance(resolved.app, MessageLoggerMiddleware)
 
 
 def test_default_app_dir_resolves_current_working_directory(tmp_path) -> None:

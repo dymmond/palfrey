@@ -8,7 +8,7 @@ import signal
 import socket
 import ssl
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from palfrey.config import PalfreyConfig
 from palfrey.importer import ResolvedApp, resolve_application
@@ -227,6 +227,9 @@ class PalfreyServer:
         request: HTTPRequest,
         context: ConnectionContext,
     ) -> HTTPResponse:
+        if self._resolved_app is None:
+            raise RuntimeError("Application is not resolved.")
+
         scope = build_http_scope(
             request,
             client=context.client,
@@ -322,7 +325,7 @@ class PalfreyServer:
             context.load_verify_locations(self.config.ssl_ca_certs)
 
         if self.config.ssl_cert_reqs is not None:
-            context.verify_mode = self.config.ssl_cert_reqs
+            context.verify_mode = cast(ssl.VerifyMode, self.config.ssl_cert_reqs)
 
         context.set_ciphers(self.config.ssl_ciphers)
         return context

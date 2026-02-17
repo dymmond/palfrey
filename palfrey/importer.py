@@ -5,13 +5,15 @@ from __future__ import annotations
 import importlib
 import inspect
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import cast
 
 from palfrey.adapters import ASGI2Adapter, WSGIAdapter
 from palfrey.config import PalfreyConfig
 from palfrey.middleware.message_logger import MessageLoggerMiddleware
 from palfrey.middleware.proxy_headers import ProxyHeadersMiddleware
-from palfrey.types import AppType, ASGIApplication
+from palfrey.types import AppType, ASGI2Application, ASGIApplication
 
 
 class AppImportError(RuntimeError):
@@ -102,7 +104,8 @@ def resolve_application(config: PalfreyConfig) -> ResolvedApp:
     if config.factory:
         if not callable(app_object):
             raise AppImportError("`--factory` requires the target to be callable.")
-        app_object = app_object()
+        factory = cast(Callable[[], object], app_object)
+        app_object = factory()
 
     interface = config.interface
     if interface == "auto":
@@ -113,12 +116,12 @@ def resolve_application(config: PalfreyConfig) -> ResolvedApp:
     if interface == "asgi3":
         if not callable(app_object):
             raise AppImportError("Resolved ASGI3 app is not callable.")
-        wrapped_app = app_object
+        wrapped_app = cast(ASGIApplication, app_object)
 
     elif interface == "asgi2":
         if not callable(app_object):
             raise AppImportError("Resolved ASGI2 app is not callable.")
-        wrapped_app = ASGI2Adapter(app_object)
+        wrapped_app = ASGI2Adapter(cast(ASGI2Application, app_object))
 
     elif interface == "wsgi":
         if not callable(app_object):

@@ -210,64 +210,65 @@ async def handle_websocket(
         nonlocal closed, fragmented_opcode
 
         async with receive_lock:
-            if closed:
-                return {"type": "websocket.disconnect", "code": 1000}
+            while True:
+                if closed:
+                    return {"type": "websocket.disconnect", "code": 1000}
 
-            frame = await _read_frame(reader, config.ws_max_size)
+                frame = await _read_frame(reader, config.ws_max_size)
 
-            if frame.opcode == 0x8:
-                closed = True
-                code = 1000
-                if len(frame.payload) >= 2:
-                    code = struct.unpack("!H", frame.payload[:2])[0]
-                return {"type": "websocket.disconnect", "code": code}
+                if frame.opcode == 0x8:
+                    closed = True
+                    code = 1000
+                    if len(frame.payload) >= 2:
+                        code = struct.unpack("!H", frame.payload[:2])[0]
+                    return {"type": "websocket.disconnect", "code": code}
 
-            if frame.opcode == 0x9:
-                writer.write(_encode_frame(0xA, frame.payload))
-                await writer.drain()
-                return await receive()
+                if frame.opcode == 0x9:
+                    writer.write(_encode_frame(0xA, frame.payload))
+                    await writer.drain()
+                    continue
 
-            if frame.opcode == 0xA:
-                return await receive()
+                if frame.opcode == 0xA:
+                    continue
 
-            if frame.opcode == 0x0:
-                if fragmented_opcode is None:
+                if frame.opcode == 0x0:
+                    if fragmented_opcode is None:
+                        return {"type": "websocket.disconnect", "code": 1002}
+                    fragmented_chunks.append(frame.payload)
+                    if not frame.fin:
+                        continue
+                    payload = b"".join(fragmented_chunks)
+                    opcode = fragmented_opcode
+                    fragmented_opcode = None
+                    fragmented_chunks.clear()
+                    if opcode == 0x1:
+                        try:
+                            return {"type": "websocket.receive", "text": payload.decode("utf-8")}
+                        except UnicodeDecodeError:
+                            return {"type": "websocket.disconnect", "code": 1007}
+                    return {"type": "websocket.receive", "bytes": payload}
+
+                if (frame.opcode & 0x08) == 0 and frame.opcode not in {0x1, 0x2}:
                     return {"type": "websocket.disconnect", "code": 1002}
-                fragmented_chunks.append(frame.payload)
-                if not frame.fin:
-                    return await receive()
-                payload = b"".join(fragmented_chunks)
-                opcode = fragmented_opcode
-                fragmented_opcode = None
-                fragmented_chunks.clear()
-                if opcode == 0x1:
+
+                if frame.opcode == 0x1:
+                    if not frame.fin:
+                        fragmented_opcode = 0x1
+                        fragmented_chunks.append(frame.payload)
+                        continue
                     try:
-                        return {"type": "websocket.receive", "text": payload.decode("utf-8")}
+                        return {"type": "websocket.receive", "text": frame.payload.decode("utf-8")}
                     except UnicodeDecodeError:
                         return {"type": "websocket.disconnect", "code": 1007}
-                return {"type": "websocket.receive", "bytes": payload}
 
-            if (frame.opcode & 0x08) == 0 and frame.opcode not in {0x1, 0x2}:
+                if frame.opcode == 0x2:
+                    if not frame.fin:
+                        fragmented_opcode = 0x2
+                        fragmented_chunks.append(frame.payload)
+                        continue
+                    return {"type": "websocket.receive", "bytes": frame.payload}
+
                 return {"type": "websocket.disconnect", "code": 1002}
-
-            if frame.opcode == 0x1:
-                if not frame.fin:
-                    fragmented_opcode = 0x1
-                    fragmented_chunks.append(frame.payload)
-                    return await receive()
-                try:
-                    return {"type": "websocket.receive", "text": frame.payload.decode("utf-8")}
-                except UnicodeDecodeError:
-                    return {"type": "websocket.disconnect", "code": 1007}
-
-            if frame.opcode == 0x2:
-                if not frame.fin:
-                    fragmented_opcode = 0x2
-                    fragmented_chunks.append(frame.payload)
-                    return await receive()
-                return {"type": "websocket.receive", "bytes": frame.payload}
-
-            return {"type": "websocket.disconnect", "code": 1002}
 
     async def send(message: Message) -> None:
         nonlocal accepted, closed, accept_subprotocol

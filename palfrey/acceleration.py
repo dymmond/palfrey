@@ -6,7 +6,15 @@ code, but uses Rust implementations when available for parsing hot paths.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+
+ParseHeaderItemsFn = Callable[[list[str]], list[tuple[str, str]]]
+ParseRequestHeadFn = Callable[[bytes], tuple[str, str, str, list[tuple[str, str]]]]
+SplitCSVValuesFn = Callable[[str], list[str]]
+
+_parse_header_items: ParseHeaderItemsFn | None = None
+_parse_request_head: ParseRequestHeadFn | None = None
+_split_csv_values: SplitCSVValuesFn | None = None
 
 try:
     from palfrey_rust import (
@@ -17,9 +25,6 @@ try:
 
     HAS_RUST_EXTENSION = True
 except ImportError:  # pragma: no cover - executed when Rust extension is absent.
-    _parse_header_items = None
-    _parse_request_head = None
-    _split_csv_values = None
     HAS_RUST_EXTENSION = False
 
 
@@ -43,7 +48,7 @@ def parse_header_items(headers: Sequence[str]) -> list[tuple[str, str]]:
     if not headers:
         return []
 
-    if HAS_RUST_EXTENSION:
+    if HAS_RUST_EXTENSION and _parse_header_items is not None:
         try:
             return list(_parse_header_items(list(headers)))
         except ValueError as exc:  # pragma: no cover - rust-only path.
@@ -68,7 +73,7 @@ def split_csv_values(value: str) -> list[str]:
         List of trimmed, non-empty values.
     """
 
-    if HAS_RUST_EXTENSION:
+    if HAS_RUST_EXTENSION and _split_csv_values is not None:
         return list(_split_csv_values(value))
     return [segment.strip() for segment in value.split(",") if segment.strip()]
 
@@ -86,7 +91,7 @@ def parse_request_head(data: bytes) -> tuple[str, str, str, list[tuple[str, str]
         ValueError: If the payload cannot be parsed as a valid HTTP request head.
     """
 
-    if HAS_RUST_EXTENSION:
+    if HAS_RUST_EXTENSION and _parse_request_head is not None:
         return _parse_request_head(data)
 
     try:

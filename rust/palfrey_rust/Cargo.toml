@@ -1,0 +1,13 @@
+[package]
+name = "palfrey_rust"
+version = "0.3.0"
+edition = "2021"
+license = "MIT"
+description = "Rust acceleration primitives for Palfrey"
+
+[lib]
+name = "palfrey_rust"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22.6", features = ["extension-module"] }

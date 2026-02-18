@@ -1,0 +1,29 @@
+:root {
+  --md-primary-fg-color: #0f766e;
+  --md-primary-fg-color--light: #14b8a6;
+  --md-primary-fg-color--dark: #0b4f4a;
+}
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3 {
+  letter-spacing: 0.01em;
+}
+
+.md-typeset code {
+  font-weight: 500;
+}
+
+.md-typeset .admonition,
+.md-typeset details {
+  border-radius: 0.6rem;
+}
+
+.md-typeset .grid.cards > ul > li {
+  border-radius: 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--md-default-fg-color--lightest), transparent 30%);
+}
+
+.md-header {
+  backdrop-filter: saturate(130%) blur(8px);
+}

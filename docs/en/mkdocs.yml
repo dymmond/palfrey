@@ -1,72 +1,110 @@
 site_name: Palfrey
-site_description: A distinctively robust ASGI server designed for high-concurrency production environments..
+site_description: A clean-room, high-performance ASGI server for Python.
 site_url: https://palfrey.dymmond.com
-
-theme:
-  name: "material"
-  language: en
-  palette:
-    - scheme: "default"
-      primary: "purple"
-      accent: "amber"
-      media: "(prefers-color-scheme: light)"
-      toggle:
-            icon: "material/lightbulb"
-            name: "Switch to dark mode"
-    - scheme: "slate"
-      media: "(prefers-color-scheme: dark)"
-      primary: "purple"
-      accent: "amber"
-      toggle:
-            icon: "material/lightbulb-outline"
-            name: "Switch to light mode"
-  favicon: statics/images/favicon.ico
-  logo: statics/images/logo-white.svg
-  features:
-    - search.suggest
-    - search.highlight
-    - content.tabs.link
-    - content.code.copy
-
 repo_name: dymmond/palfrey
 repo_url: https://github.com/dymmond/palfrey
-edit_uri: ""
+edit_uri: ''
+strict: true
+theme:
+  name: material
+  language: en
+  icon:
+    logo: material/speedometer
+    repo: fontawesome/brands/github
+  palette:
+  - scheme: default
+    media: '(prefers-color-scheme: light)'
+    primary: teal
+    accent: amber
+    toggle:
+      icon: material/weather-night
+      name: Switch to dark mode
+  - scheme: slate
+    media: '(prefers-color-scheme: dark)'
+    primary: cyan
+    accent: lime
+    toggle:
+      icon: material/weather-sunny
+      name: Switch to light mode
+  font:
+    text: Source Sans 3
+    code: JetBrains Mono
+  features:
+  - navigation.instant
+  - navigation.sections
+  - navigation.expand
+  - navigation.top
+  - navigation.path
+  - content.code.copy
+  - content.code.annotate
+  - search.suggest
+  - search.highlight
+  - toc.follow
 plugins:
-  - search
-  - meta-descriptions:
-      export_csv: false
-      quiet: false
-      enable_checks: false
-      min_length: 50
-      max_length: 160
-      trim: false
-
+- search
+- meta-descriptions:
+    export_csv: false
+    quiet: false
+    enable_checks: false
+    min_length: 50
+    max_length: 160
+    trim: false
 nav:
-  - Introduction: "index.md"
-  - Contributing: "contributing.md"
-  - Sponsorship: "sponsorship.md"
-  - Release Notes: "release-notes.md"
+- Welcome: index.md
+- Getting Started:
+  - Installation: getting-started/installation.md
+  - Quickstart: getting-started/quickstart.md
+- Concepts:
+  - Terms and Mental Models: concepts/terms-and-mental-models.md
+  - ASGI Fundamentals: concepts/asgi.md
+  - Event Loop: concepts/event-loop.md
+  - HTTP: concepts/http.md
+  - WebSockets: concepts/websockets.md
+  - Lifespan: concepts/lifespan.md
+  - Middleware: concepts/middleware.md
+  - Server Behavior: concepts/server-behavior.md
+- Reference:
+  - CLI: reference/cli.md
+  - Configuration: reference/configuration.md
+  - Protocols: reference/protocols.md
+  - Logging: reference/logging.md
+- Guides:
+  - Zero to Production: guides/from-zero-to-production.md
+  - Reverse Proxy (Nginx): guides/reverse-proxy-nginx.md
+  - HTTPS / TLS: guides/https-tls.md
+  - Troubleshooting: guides/troubleshooting.md
+- Operations:
+  - Deployment: operations/deployment.md
+  - Docker: operations/docker.md
+  - Reload: operations/reload.md
+  - Workers: operations/workers.md
+  - Benchmarks: operations/benchmarks.md
+  - Release Process: operations/release-process.md
+- Project:
+  - Contributing: contributing.md
+  - Release Notes: release-notes.md
+  - Sponsorship: sponsorship.md
 markdown_extensions:
-  - toc:
-      permalink: true
-  - mdx_include:
-      base_path: docs
-  - admonition
-  - extra
-  - pymdownx.superfences:
-      custom_fences:
-        - name: mermaid
-          class: mermaid
-          format: !!python/name:pymdownx.superfences.fence_code_format ""
-  - pymdownx.tabbed:
-      alternate_style: true
-  - attr_list
-  - md_in_html
-
+- toc:
+    permalink: true
+- mdx_include:
+    base_path: docs/
+- admonition
+- extra
+- pymdownx.superfences:
+    custom_fences:
+    - name: mermaid
+      class: mermaid
+      format: !!python/name:pymdownx.superfences.fence_code_format ''
+- pymdownx.tabbed:
+    alternate_style: true
+- attr_list
+- md_in_html
+extra_css:
+- stylesheets/extra.css
 extra:
   alternate:
-    - link: /
-      name: English
-      lang: en
+  - link: /
+    name: en - English
 hooks:
 - ../../scripts/hooks.py

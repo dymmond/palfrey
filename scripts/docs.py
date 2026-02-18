@@ -44,12 +44,16 @@ def get_en_config() -> dict[str, Any]:
 
 def get_lang_paths() -> list[Path]:
     """
-    Returns a sorted list of paths to language files.
+    Return language directories that contain a MkDocs config file.
 
     Returns:
-        List[Path]: A sorted list of paths to language files.
+        List[Path]: A sorted list of language directory paths.
     """
-    return sorted(docs_path.iterdir())
+    return sorted(
+        path
+        for path in docs_path.iterdir()
+        if path.is_dir() and (path / mkdocs_name).is_file()
+    )
 
 
 def complete_existing_lang(incomplete: str):
@@ -63,7 +67,7 @@ def complete_existing_lang(incomplete: str):
         str: The names of the existing languages that start with the given incomplete string.
     """
     for lang_path in get_lang_paths():
-        if lang_path.is_dir() and lang_path.name.startswith(incomplete):
+        if lang_path.name.startswith(incomplete):
             yield lang_path.name
 
 
@@ -138,7 +142,8 @@ def build_site(lang: str = "en") -> None:
         None
     """
     lang_path = Path("docs") / lang
-    if not lang_path.is_dir():
+    config_path = lang_path / mkdocs_name
+    if not config_path.is_file():
         click.echo(f"Language not found: {lang}")
         raise click.Abort()
 
@@ -146,12 +151,12 @@ def build_site(lang: str = "en") -> None:
     build_site_dist_path = build_site_path / lang
     dist_path = site_path if lang == "en" else site_path / lang
 
-    current_dir = os.getcwd()
-    os.chdir(lang_path)
     shutil.rmtree(build_site_dist_path, ignore_errors=True)
-    subprocess.run(["mkdocs", "build", "--site-dir", build_site_dist_path], check=True)
+    subprocess.run(
+        ["mkdocs", "build", "-f", str(config_path), "--site-dir", str(build_site_dist_path)],
+        check=True,
+    )
     shutil.copytree(build_site_dist_path, dist_path, dirs_exist_ok=True)
-    os.chdir(current_dir)
     click.echo(f"Built site for: {lang}")
 
 
@@ -208,7 +213,7 @@ def build_all() -> None:
     shutil.rmtree(site_path, ignore_errors=True)
 
     # Get a list of all language paths
-    lang_paths = [lang.name for lang in get_lang_paths() if lang.is_dir()]
+    lang_paths = [lang.name for lang in get_lang_paths()]
 
     # Get the number of available CPUs
     cpu_count = os.cpu_count() or 1

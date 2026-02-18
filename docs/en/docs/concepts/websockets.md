@@ -1,23 +1,49 @@
-# WebSockets
+# WebSockets Concepts
 
-Palfrey implements RFC6455 handshake and frame processing for ASGI WebSocket scopes.
+WebSockets upgrade an HTTP connection into a long-lived bidirectional channel.
 
-## Implemented behavior
+## Handshake Overview
 
-- Handshake validation (`Sec-WebSocket-Key`, `Sec-WebSocket-Version: 13`).
-- Upgrade response with `Sec-WebSocket-Accept`.
-- Client masked-frame enforcement.
-- Text/binary frame receive and send support.
-- Ping/Pong handling.
-- Close frame handling and disconnect propagation.
+Client sends upgrade headers (`Upgrade`, `Connection`, `Sec-WebSocket-*`).
+Palfrey validates handshake and then exposes ASGI websocket events.
 
-## Example
+## Application acceptance model
+
+- App can accept (`websocket.accept`) and exchange messages.
+- App can close (`websocket.close`) to reject or terminate.
+
+Basic echo example:
 
 ```python
-{!> ../../../docs_src//protocols/websocket_echo.py !}
+{!> ../../../docs_src/concepts/websocket_echo.py !}
 ```
 
-## Related tests
+Authenticated gate example:
 
-- `tests/protocols/test_websocket_protocol.py`
-- `tests/integration/test_websocket_integration.py`
+```python
+{!> ../../../docs_src/concepts/websocket_auth_gate.py !}
+```
+
+Room fanout example:
+
+```python
+{!> ../../../docs_src/concepts/websocket_chat_room.py !}
+```
+
+## Operational controls
+
+- `--ws none` to disable WebSocket upgrades.
+- `--ws-max-size` to cap frame payload size.
+- Ping-related flags are available for compatibility-focused configurations.
+
+## Failure modes to test
+
+- Invalid handshake headers.
+- Oversized frames.
+- abrupt client disconnects.
+- invalid UTF-8 text frames.
+
+## Non-Technical explanation
+
+HTTP is like sending letters.
+WebSockets are like opening a phone call and talking both ways until one side hangs up.

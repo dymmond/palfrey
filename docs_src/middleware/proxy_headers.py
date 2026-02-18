@@ -1,5 +1,3 @@
-"""Proxy headers configuration example."""
-
 from palfrey import run
 
 

@@ -1,5 +1,3 @@
-"""Reload development commands."""
-
 # Watch the current directory for Python changes.
 # palfrey myapp.main:app --reload
 

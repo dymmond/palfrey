@@ -1,20 +1,35 @@
 # Middleware
 
-Palfrey includes middleware primitives aligned with Uvicorn ecosystem expectations.
+Middleware wraps an ASGI app to add cross-cutting behavior without changing business handlers.
 
-## Proxy headers middleware
+## Common middleware concerns
 
-`ProxyHeadersMiddleware` adjusts `scope["client"]` and `scope["scheme"]` from trusted `X-Forwarded-*` headers.
+- request logging
+- proxy header normalization
+- authentication gates
+- timing and tracing
+
+Proxy header wrapper example:
 
 ```python
-{!> ../../../docs_src//middleware/proxy_headers.py !}
+{!> ../../../docs_src/concepts/proxy_headers_middleware.py !}
 ```
 
-## Message logger middleware
+## Ordering guidance
 
-`MessageLoggerMiddleware` logs ASGI receive/send events (with payload size placeholders) for deep protocol debugging.
+Order matters because each middleware sees transformed scope/messages from previous layers.
 
-## Source mapping
+Typical pattern:
 
-- Uvicorn source: `uvicorn/middleware/proxy_headers.py`
-- Uvicorn source: `uvicorn/middleware/message_logger.py`
+1. trusted-proxy normalization
+2. security/auth controls
+3. observability/logging
+4. application routing layer
+
+## Non-Technical explanation
+
+If the app is the core service desk, middleware are specialist staff that pre-check IDs, stamp tickets, and log each interaction.
+
+## Practical caution
+
+Do not trust proxy headers from untrusted sources. Always combine middleware usage with explicit trusted IP policy.

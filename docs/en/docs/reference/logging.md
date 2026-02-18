@@ -1,18 +1,52 @@
-# Logging Reference
+# Logging
 
-## Built-in options
+Palfrey supports default logging and external logging config files.
 
-- `--log-level`
-- `--log-config`
-- `--access-log`
-- `--use-colors`
+## Log levels
 
-## JSON log config example
+Supported runtime levels:
 
-```python
-{!> ../../../docs_src//logging/logging_json.py !}
+- `critical`
+- `error`
+- `warning`
+- `info`
+- `debug`
+- `trace`
+
+## Quick examples
+
+```bash
+palfrey myapp.main:app --log-level info
+palfrey myapp.main:app --log-level trace --access-log
 ```
 
-## Message logger middleware
+## JSON/dictConfig setup
 
-At `--log-level trace`, Palfrey wraps the app with `MessageLoggerMiddleware` and logs ASGI message flow.
+```python
+{!> ../../../docs_src/reference/logging_json.py !}
+```
+
+Then run:
+
+```bash
+palfrey myapp.main:app --log-config logging.json
+```
+
+## File formats
+
+- `.json` and `.yaml/.yml` are loaded as dictionary configs.
+- Other files are treated as `logging.fileConfig` inputs.
+
+## Access logs
+
+Access logs can be toggled independently:
+
+```bash
+palfrey myapp.main:app --no-access-log
+```
+
+## Operator notes
+
+- Keep application logs structured in production for searchability.
+- Ensure request IDs/trace IDs are included by your application or middleware.
+- Treat log format changes as deployment-impacting changes and validate with downstream collectors.

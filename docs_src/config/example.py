@@ -1,5 +1,3 @@
-"""Programmatic config example."""
-
 from palfrey import PalfreyConfig, PalfreyServer
 
 

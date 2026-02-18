@@ -1,12 +1,15 @@
 # Release Notes
 
-Canonical release entries are tracked in:
+This page summarizes notable milestones.
 
-- [`CHANGELOG.md`](https://github.com/dymmond/palfrey/blob/main/CHANGELOG.md)
+For full detail, see [`CHANGELOG.md`](https://github.com/dymmond/palfrey/blob/main/CHANGELOG.md).
 
-## Current cycle
+## Upcoming
 
-- Runtime: clean-room ASGI server architecture with HTTP, WebSocket, lifespan.
-- Operations: reload and worker supervisors.
-- Middleware: proxy headers and ASGI message logger.
-- Tooling: Ty, pytest-cov, mkdocs-material CI gates.
+- Expanded documentation architecture and migration guides.
+- Improved conceptual coverage for ASGI, server behavior, and deployment modes.
+- Additional operational guides for Docker, TLS, and troubleshooting.
+
+## Previous entries
+
+Track all shipped behavior and fixes in changelog with semantic version tags.

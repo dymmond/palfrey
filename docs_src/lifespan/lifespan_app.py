@@ -1,5 +1,3 @@
-"""ASGI app with explicit lifespan handling."""
-
 from palfrey import run
 
 

@@ -48,7 +48,5 @@ hatch run docs-build
 ## Docs
 
 - [Overview](docs/en/docs/index.md)
-- [Parity Matrix](docs/en/docs/parity-matrix.md)
 - [Benchmarks](docs/en/docs/operations/benchmarks.md)
-- [Testing Strategy](docs/en/docs/testing/testing-strategy.md)
 - [Release Process](docs/en/docs/operations/release-process.md)

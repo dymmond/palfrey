@@ -1,32 +1,106 @@
-# Palfrey
+# Palfrey Documentation
 
-Palfrey is a clean-room ASGI server implementation focused on production runtime behavior parity with Uvicorn while
-remaining fully independent at runtime.
+Palfrey is an ASGI server for Python applications.
+This documentation is intentionally written for two audiences:
 
-## What Palfrey provides
+- Platform and product teams who need plain-language operational guidance.
+- Backend engineers who need protocol-level detail and reproducible behavior.
 
-- Click CLI with Uvicorn-compatible option names (where confirmed by source docs/code).
-- HTTP/1.1 request handling and response lifecycle.
-- WebSocket handshake and frame handling.
-- Lifespan startup/shutdown flow.
-- Process supervision for reload mode and worker mode.
-- Proxy-header and message-logger middleware support.
-- Optional Rust acceleration for parser hot paths.
+## What Palfrey Is
 
-## Documentation structure
+Palfrey is the runtime process that sits between the network and your ASGI app.
+It accepts connections, parses requests, runs your app callable, and writes responses back to clients.
 
-- **Getting Started**: installation, quickstart, migration.
-- **Concepts**: event loop, HTTP, WebSockets, lifespan, middleware.
-- **Reference**: CLI, config, protocols, logging.
-- **Operations**: deploy, reload, workers, benchmarks, release process.
-- **Validation**: parity matrix and testing strategy.
+In short:
 
-## Source-backed parity policy
+- Your app decides business behavior.
+- Palfrey decides network/process behavior.
 
-Palfrey only claims parity for behavior grounded in:
+## Who Should Read What
 
-- Uvicorn docs at [uvicorn.dev](https://uvicorn.dev/)
-- Uvicorn source files under [`uvicorn/`](https://github.com/Kludex/uvicorn/tree/main/uvicorn)
-- Click docs/source for command parsing semantics
+If you are new to ASGI:
 
-See [Parity Matrix](parity-matrix.md) for detailed mapping.
+1. [Installation](getting-started/installation.md)
+2. [Quickstart](getting-started/quickstart.md)
+3. [Terms and Mental Models](concepts/terms-and-mental-models.md)
+4. [Deployment](operations/deployment.md)
+
+If you run Uvicorn today and want to move safely:
+
+1. [CLI Reference](reference/cli.md)
+2. [Configuration Reference](reference/configuration.md)
+3. [Server Behavior](concepts/server-behavior.md)
+
+If your priority is reliability/performance:
+
+1. [Event Loop](concepts/event-loop.md)
+2. [Protocols](reference/protocols.md)
+3. [Workers](operations/workers.md)
+4. [Benchmarks](operations/benchmarks.md)
+
+## First 60 Seconds
+
+Create `main.py`:
+
+```python
+{!> ../../../docs_src/getting_started/hello_world.py !}
+```
+
+Start Palfrey:
+
+```bash
+palfrey main:app --host 127.0.0.1 --port 8000
+```
+
+Verify:
+
+```bash
+curl http://127.0.0.1:8000
+```
+
+## Documentation Map
+
+## Getting Started
+
+- Install dependencies and optional extras.
+- Run first HTTP app.
+- Migrate baseline Uvicorn commands.
+
+## Concepts
+
+- ASGI callable and message model.
+- Event loop selection.
+- HTTP/WebSocket/lifespan lifecycle.
+- Middleware and trust boundaries.
+- Server behavior under load, errors, and shutdown.
+
+## Reference
+
+- Full CLI behavior and precedence.
+- Configuration fields, defaults, interactions.
+- Protocol surface and limits.
+- Logging setup and structured config.
+
+## Guides
+
+- End-to-end production rollout.
+- Reverse proxy integration.
+- TLS setup.
+- Troubleshooting cookbook.
+
+## Operations
+
+- Process model decisions.
+- Reload and worker supervision.
+- Docker pattern.
+- Benchmark method and interpretation.
+- Release process.
+
+## Design Notes For Non-Technical Stakeholders
+
+When someone asks, "what does this server buy us?", the answer is:
+
+- Predictable startup and shutdown behavior.
+- Clear process controls (single process, reload, workers).
+- Explicit runtime configuration for repeatable deploys.
+- Standard ASGI compatibility with modern Python frameworks.

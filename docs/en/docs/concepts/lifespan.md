@@ -1,18 +1,41 @@
 # Lifespan
 
-Palfrey supports ASGI lifespan startup/shutdown messaging.
+The ASGI lifespan protocol handles application startup and shutdown routines.
+
+## Why use lifespan
+
+Use it for resources that should exist for the process lifetime:
+
+- database pools
+- cache clients
+- telemetry exporters
+- warmup data
+
+Example:
+
+```python
+{!> ../../../docs_src/concepts/lifespan_state.py !}
+```
 
 ## Modes
 
-- `auto`
-- `on`
-- `off`
+- `--lifespan auto`: run when app supports it.
+- `--lifespan on`: require lifespan handling.
+- `--lifespan off`: skip lifespan protocol.
 
-## Runtime behavior
+## Worker model note
 
-When lifespan is enabled, Palfrey starts a dedicated lifespan manager task before accepting traffic and performs
-coordinated shutdown after the listener closes.
+Each worker process runs its own lifespan cycle.
+If you run 4 workers, startup hooks run 4 times (once per worker).
 
-## Related tests
+## Shutdown expectations
 
-- `tests/runtime/test_lifespan.py`
+On shutdown, Palfrey stops accepting new work, waits for in-flight tasks within configured limits, and then triggers lifespan shutdown.
+
+## Non-Technical explanation
+
+Lifespan is your open/close checklist:
+
+- open the shop (startup)
+- serve customers
+- close cleanly (shutdown)

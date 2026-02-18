@@ -1,10 +1,11 @@
-"""Common Palfrey CLI invocations."""
+from __future__ import annotations
 
-# Basic startup
-# palfrey myapp.main:app --host 127.0.0.1 --port 8000
+COMMANDS = [
+    "palfrey myapp.main:app",
+    "palfrey myapp.main:app --reload --reload-dir src",
+    "palfrey myapp.main:app --workers 4 --host 0.0.0.0 --port 8000",
+    "palfrey myapp.main:app --proxy-headers --forwarded-allow-ips 10.0.0.0/8,127.0.0.1",
+]
 
-# Load application from a custom import root
-# palfrey api.app:app --app-dir src
-
-# Enable trace-level ASGI message logging
-# palfrey myapp.main:app --log-level trace
+for command in COMMANDS:
+    print(command)

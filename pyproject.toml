@@ -95,7 +95,7 @@ include = [
   "/benchmarks",
   "/tests",
   "/docs",
-  "/../../../docs_src/",
+  "/docs_src",
   "/rust",
   "/scripts",
   "/mkdocs.yml",
@@ -108,8 +108,8 @@ features = ["dev", "testing", "docs", "benchmark", "standard"]
 
 [tool.hatch.envs.default.scripts]
 lint = "ruff check palfrey tests benchmarks"
-format = "ruff format palfrey tests benchmarks ../../../docs_src/"
-format-check = "ruff format --check palfrey tests benchmarks ../../../docs_src/"
+format = "ruff format palfrey tests benchmarks"
+format-check = "ruff format --check palfrey tests benchmarks"
 check-types = "ty check palfrey"
 test-cov = "pytest --cov=palfrey --cov-report=term-missing --cov-report=xml --cov-fail-under=85"
 docs-build = "mkdocs build -f docs/en/mkdocs.yml --strict"

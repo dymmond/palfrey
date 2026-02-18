@@ -1,20 +1,37 @@
 # Benchmarks
 
-## Run commands
+Benchmarks are useful only when they are reproducible and representative.
+
+## Benchmark principles
+
+- compare equivalent startup modes and protocol settings
+- include warmup and steady-state windows
+- measure latency distribution, not only average throughput
+- keep hardware/software environment documented
+
+## Example command builder
 
 ```python
-{!> ../../../docs_src//benchmarks/run_benchmarks.py !}
+{!> ../../../docs_src/operations/benchmark_plan.py !}
 ```
 
-## Current status
+## Suggested scenario matrix
 
-- Target: 25-50% faster than Uvicorn in at least two realistic scenarios.
-- Current project status: benchmark harness exists; verifiable numbers depend on environment allowing socket benchmarks.
+1. JSON API, small payload, high concurrency
+2. mixed read/write payloads with keep-alive traffic
+3. WebSocket echo throughput and frame-size distribution
+4. proxy-terminated deployment shape
 
-## Last local sandbox run (February 17, 2026)
+## Reporting template
 
-- Command: `python3 -m benchmarks.run --http-requests 20 --http-concurrency 2 --ws-clients 2 --ws-messages 2`
-- `Benchmark for uvicorn failed: [Errno 1] Operation not permitted`
-- `Benchmark for palfrey failed: [Errno 1] Operation not permitted`
+For each scenario capture:
 
-No performance claim is made without measured successful benchmark output.
+- requests/sec or messages/sec
+- p50/p95/p99 latency
+- CPU and memory
+- error rate/timeouts
+- exact runtime command lines
+
+## Communication guidance
+
+Do not claim performance gains without published reproducible measurements and environment details.

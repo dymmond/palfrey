@@ -48,7 +48,9 @@ tasks:
   build_with_checks:
     desc: Builds the project with checks
     cmds:
-      - hatch run build_with_check
+      - task lint
+      - task test
+      - task build
 
   lint:
     desc: Lints the project

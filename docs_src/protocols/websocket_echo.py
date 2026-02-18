@@ -1,5 +1,3 @@
-"""Minimal WebSocket-capable ASGI app."""
-
 from palfrey import run
 
 

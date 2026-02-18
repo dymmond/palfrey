@@ -1,15 +1,38 @@
 # Workers and Process Model
 
-Worker mode uses a parent supervisor process that manages child server processes.
+Workers increase parallelism by running multiple server processes.
 
-## Behavior
+## Why workers
 
-- Spawns `N` workers (`--workers`)
-- Replaces dead workers
-- Handles SIGINT/SIGTERM for coordinated shutdown
-- Applies worker health timeout (`--timeout-worker-healthcheck`)
+- better CPU utilization for concurrent workloads
+- isolation from single-process crashes
+- rolling worker replacement strategies
 
-## Source mapping
+## Starter example
 
-- Uvicorn source: `uvicorn/supervisors/multiprocess.py`
-- Uvicorn source: `uvicorn/supervisors/process.py`
+```python
+{!> ../../../docs_src/operations/workers_cpu_bound.py !}
+```
+
+CLI equivalent:
+
+```bash
+palfrey myapp.main:app --workers 4 --host 0.0.0.0 --port 8000
+```
+
+## Health and restart controls
+
+- `--timeout-worker-healthcheck`
+- `--limit-max-requests`
+- `--limit-max-requests-jitter`
+
+## Capacity planning guidance
+
+- start with worker count near available CPU cores
+- benchmark with realistic concurrency and payload patterns
+- adjust for memory constraints and external dependency bottlenecks
+
+## Non-Technical translation
+
+More workers are like more checkout counters.
+They increase throughput, but each counter consumes staff/resources.

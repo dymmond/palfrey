@@ -1,5 +1,3 @@
-"""TLS configuration command examples."""
-
 # Serve HTTPS traffic directly from Palfrey.
 # palfrey myapp.main:app --ssl-keyfile ./key.pem --ssl-certfile ./cert.pem
 

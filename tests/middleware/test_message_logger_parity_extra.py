@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 
-from palfrey.middleware.message_logger import MessageLoggerMiddleware
+import pytest
+
+from palfrey.middleware.message_logger import MessageLoggerMiddleware, message_with_placeholders
 from palfrey.types import Message
 
 
@@ -23,7 +24,7 @@ def test_message_logger_masks_websocket_bytes_payload(caplog) -> None:
     async def send(_message: Message) -> None:
         return None
 
-    with caplog.at_level(logging.DEBUG, logger="tests.asgi.ws"):
+    with caplog.at_level(5, logger="tests.asgi.ws"):
         asyncio.run(middleware({"type": "websocket"}, receive, send))
 
     logs = "\n".join(record.getMessage() for record in caplog.records)
@@ -53,6 +54,25 @@ def test_message_logger_wraps_send_without_mutating_message() -> None:
 
 
 def test_message_logger_masks_empty_body_as_zero_bytes() -> None:
-    middleware = MessageLoggerMiddleware(lambda scope, receive, send: None)  # type: ignore[arg-type]
-    masked = middleware._message_with_placeholders({"type": "http.request", "body": b""})
+    masked = message_with_placeholders({"type": "http.request", "body": b""})
     assert masked["body"] == "<0 bytes>"
+
+
+def test_message_logger_logs_raised_exception(caplog) -> None:
+    async def app(scope, receive, send):
+        raise RuntimeError("boom")
+
+    middleware = MessageLoggerMiddleware(app, logger_name="tests.asgi.exc")
+
+    async def receive() -> Message:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(_message: Message) -> None:
+        return None
+
+    with caplog.at_level(5, logger="tests.asgi.exc"):
+        with pytest.raises(RuntimeError, match="boom"):
+            asyncio.run(middleware({"type": "http"}, receive, send))
+
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert "Raised exception" in logs

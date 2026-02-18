@@ -102,6 +102,7 @@ async def read_http_request(
     *,
     max_head_size: int = 1_048_576,
     body_limit: int = 4_194_304,
+    parser_mode: str = "auto",
 ) -> HTTPRequest | None:
     """Read and parse one HTTP request from a stream.
 
@@ -127,7 +128,7 @@ async def read_http_request(
     if len(head) > max_head_size:
         raise ValueError("HTTP head exceeds configured limit")
 
-    method, target, version, headers = parse_request_head(head)
+    method, target, version, headers = _parse_request_head(head, parser_mode)
 
     content_length_raw = _header_lookup(headers, "content-length")
     transfer_encoding = (_header_lookup(headers, "transfer-encoding") or "").lower()
@@ -155,6 +156,103 @@ async def read_http_request(
         headers=headers,
         body=body,
     )
+
+
+def _parse_request_head(
+    head: bytes,
+    parser_mode: str,
+) -> tuple[str, str, str, list[tuple[str, str]]]:
+    """Parse request head bytes with configured backend mode.
+
+    Args:
+        head: Raw request head bytes ending with CRLFCRLF.
+        parser_mode: HTTP parser mode.
+
+    Returns:
+        Parsed request line and headers.
+
+    Raises:
+        ValueError: If the parser mode cannot decode request bytes.
+    """
+
+    if parser_mode == "h11":
+        return _parse_request_head_h11(head)
+    if parser_mode == "httptools":
+        return _parse_request_head_httptools(head)
+    return parse_request_head(head)
+
+
+def _parse_request_head_h11(
+    head: bytes,
+) -> tuple[str, str, str, list[tuple[str, str]]]:
+    """Parse HTTP request head using ``h11`` for parity mode."""
+
+    try:
+        import h11
+    except ImportError as exc:  # pragma: no cover - dependency validation in config.
+        raise ValueError("h11 parser is unavailable") from exc
+
+    connection = h11.Connection(h11.SERVER)
+    connection.receive_data(head)
+    event = connection.next_event()
+    if not isinstance(event, h11.Request):
+        raise ValueError("Invalid HTTP request line")
+
+    method = event.method.decode("latin-1")
+    target = event.target.decode("latin-1")
+    version = f"HTTP/{event.http_version.decode('latin-1')}"
+    headers = [
+        (name.decode("latin-1"), value.decode("latin-1")) for name, value in list(event.headers)
+    ]
+    return method, target, version, headers
+
+
+def _parse_request_head_httptools(
+    head: bytes,
+) -> tuple[str, str, str, list[tuple[str, str]]]:
+    """Parse HTTP request head using ``httptools`` for parity mode."""
+
+    try:
+        import httptools
+    except ImportError as exc:  # pragma: no cover - dependency validation in config.
+        raise ValueError("httptools parser is unavailable") from exc
+
+    class ParserProtocol:
+        method: str
+        target: str
+        http_version: str
+        headers: list[tuple[str, str]]
+
+        def __init__(self) -> None:
+            self.method = ""
+            self.target = ""
+            self.http_version = "HTTP/1.1"
+            self.headers = []
+            self._current_header_name: str | None = None
+
+        def on_url(self, url: bytes) -> None:
+            self.target = url.decode("latin-1")
+
+        def on_header(self, name: bytes, value: bytes) -> None:
+            self.headers.append((name.decode("latin-1"), value.decode("latin-1")))
+
+        def on_headers_complete(self) -> None:
+            self.http_version = f"HTTP/{parser.get_http_version()}"
+            self.method = parser.get_method().decode("latin-1")
+
+        def on_message_complete(self) -> None:
+            return None
+
+    protocol = ParserProtocol()
+    parser = httptools.HttpRequestParser(protocol)
+    try:
+        parser.feed_data(head)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError("Invalid HTTP request line") from exc
+
+    if not protocol.method:
+        raise ValueError("Invalid HTTP request line")
+    return protocol.method, protocol.target, protocol.http_version, protocol.headers
 
 
 def build_http_scope(

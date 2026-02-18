@@ -9,6 +9,7 @@ import signal
 import socket
 import ssl
 from dataclasses import dataclass, field
+from importlib.util import find_spec
 from typing import Any, cast
 
 from palfrey.config import PalfreyConfig
@@ -32,6 +33,7 @@ from palfrey.protocols.websocket import handle_websocket
 from palfrey.types import ClientAddress, ServerAddress
 
 logger = get_logger("palfrey.server")
+access_logger = get_logger("palfrey.access")
 
 
 @dataclass(slots=True)
@@ -41,6 +43,16 @@ class ConnectionContext:
     client: ClientAddress
     server: ServerAddress
     is_tls: bool
+
+
+@dataclass(slots=True)
+class ServerState:
+    """Shared server state container, compatible with Uvicorn concepts."""
+
+    total_requests: int = 0
+    connections: set[Any] = field(default_factory=set)
+    tasks: set[asyncio.Task[None]] = field(default_factory=set)
+    default_headers: list[tuple[bytes, bytes]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -56,23 +68,29 @@ class PalfreyServer:
     _lifespan: LifespanManager | None = None
     _request_counter_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _max_requests_before_exit: int | None = None
+    _started: bool = False
 
     @property
     def started(self) -> bool:
-        """Return whether the server socket is currently accepting connections."""
+        """Return whether the server reached listening state."""
 
-        return self._server is not None
+        return self._started or self._server is not None
 
     async def serve(self) -> None:
         """Start server, run until shutdown, and gracefully clean up resources."""
 
         configure_logging(self.config)
+        self._validate_protocol_backends()
         self._resolved_app = resolve_application(self.config)
         self._max_requests_before_exit = self._compute_max_requests_before_exit()
 
         if self.config.lifespan != "off":
             self._lifespan = LifespanManager(self._resolved_app.app)
-            await self._lifespan.startup()
+            try:
+                await self._lifespan.startup()
+            except RuntimeError as exc:
+                logger.error("Application startup failed: %s", exc)
+                return
 
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -81,35 +99,42 @@ class PalfreyServer:
 
         ssl_context = self._build_ssl_context()
 
-        if self.config.fd is not None:
-            server_socket = socket.fromfd(self.config.fd, socket.AF_INET, socket.SOCK_STREAM)
-            server_socket.setblocking(False)
-            self._server = await asyncio.start_server(
-                self._handle_connection,
-                sock=server_socket,
-                ssl=ssl_context,
-                backlog=self.config.backlog,
-            )
-        elif self.config.uds:
-            self._server = await asyncio.start_unix_server(
-                self._handle_connection,
-                path=self.config.uds,
-                backlog=self.config.backlog,
-                ssl=ssl_context,
-            )
-        else:
-            self._server = await asyncio.start_server(
-                self._handle_connection,
-                host=self.config.host,
-                port=self.config.port,
-                backlog=self.config.backlog,
-                ssl=ssl_context,
-                reuse_port=self.config.workers_count > 1,
-            )
+        try:
+            if self.config.fd is not None:
+                server_socket = socket.fromfd(self.config.fd, socket.AF_INET, socket.SOCK_STREAM)
+                server_socket.setblocking(False)
+                self._server = await asyncio.start_server(
+                    self._handle_connection,
+                    sock=server_socket,
+                    ssl=ssl_context,
+                    backlog=self.config.backlog,
+                )
+            elif self.config.uds:
+                self._server = await asyncio.start_unix_server(
+                    self._handle_connection,
+                    path=self.config.uds,
+                    backlog=self.config.backlog,
+                    ssl=ssl_context,
+                )
+            else:
+                self._server = await asyncio.start_server(
+                    self._handle_connection,
+                    host=self.config.host,
+                    port=self.config.port,
+                    backlog=self.config.backlog,
+                    ssl=ssl_context,
+                    reuse_port=self.config.workers_count > 1,
+                )
+        except OSError as exc:
+            logger.error("%s", exc)
+            if self._lifespan is not None:
+                await self._lifespan.shutdown()
+            return
 
         sockets = self._server.sockets or []
         for sock in sockets:
             logger.info("Listening on %s", sock.getsockname())
+        self._started = True
 
         await self._shutdown_event.wait()
 
@@ -162,6 +187,7 @@ class PalfreyServer:
                         read_http_request(
                             reader,
                             max_head_size=self.config.h11_max_incomplete_event_size or 1_048_576,
+                            parser_mode=self.config.effective_http,
                         ),
                         timeout=self.config.timeout_keep_alive,
                     )
@@ -170,7 +196,7 @@ class PalfreyServer:
                 if request is None:
                     break
 
-                if self.config.ws != "none" and is_websocket_upgrade(request):
+                if self.config.effective_ws != "none" and is_websocket_upgrade(request):
                     await handle_websocket(
                         self._resolved_app.app,
                         self.config,
@@ -249,7 +275,7 @@ class PalfreyServer:
 
         if self.config.access_log:
             request_path = get_path_with_query_string(scope)
-            logger.info(
+            access_logger.info(
                 '%s - "%s %s HTTP/%s" %s',
                 scope["client"][0],
                 scope["method"],
@@ -318,8 +344,10 @@ class PalfreyServer:
         return default_host, default_port
 
     def _build_ssl_context(self) -> ssl.SSLContext | None:
-        if not self.config.ssl_certfile:
+        if not self.config.is_ssl:
             return None
+        if not self.config.ssl_certfile:
+            raise ValueError("ssl_certfile is required when TLS is enabled")
 
         ssl_version = self.config.ssl_version or ssl.PROTOCOL_TLS_SERVER
         context = ssl.SSLContext(ssl_version)
@@ -348,3 +376,17 @@ class PalfreyServer:
             0,
             self.config.limit_max_requests_jitter,
         )
+
+    def _validate_protocol_backends(self) -> None:
+        """Validate that selected protocol backend dependencies are importable.
+
+        Raises:
+            RuntimeError: If an explicitly selected backend is unavailable.
+        """
+
+        if self.config.http == "httptools" and find_spec("httptools") is None:
+            raise RuntimeError("HTTP mode 'httptools' requires the 'httptools' package.")
+
+        selected_ws = self.config.effective_ws
+        if selected_ws == "none":
+            return

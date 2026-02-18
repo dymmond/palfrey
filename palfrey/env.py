@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -18,6 +19,18 @@ def load_env_file(path: str | None) -> None:
 
     env_path = Path(path)
     if not env_path.exists():
+        return
+
+    dotenv_loader: Callable[..., bool] | None = None
+    try:
+        from dotenv import load_dotenv as imported_loader
+    except ImportError:
+        pass
+    else:
+        dotenv_loader = imported_loader
+
+    if dotenv_loader is not None:
+        dotenv_loader(dotenv_path=env_path, override=False)
         return
 
     for raw_line in env_path.read_text(encoding="utf-8").splitlines():

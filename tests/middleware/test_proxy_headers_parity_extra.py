@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 
-from palfrey.middleware.proxy_headers import ProxyHeadersMiddleware
+import pytest
+
+from palfrey.middleware.proxy_headers import ProxyHeadersMiddleware, _TrustedHosts
 from palfrey.types import Message, Scope
 
 
@@ -31,7 +33,7 @@ def test_proxy_headers_trusts_comma_separated_hosts() -> None:
     }
 
     asyncio.run(middleware(scope, _noop_receive, _noop_send))
-    assert captured_scope["client"] == ("198.51.100.1", 5000)
+    assert captured_scope["client"] == ("198.51.100.1", 0)
 
 
 def test_proxy_headers_updates_websocket_scope() -> None:
@@ -52,7 +54,7 @@ def test_proxy_headers_updates_websocket_scope() -> None:
     }
 
     asyncio.run(middleware(scope, _noop_receive, _noop_send))
-    assert captured_scope["client"] == ("203.0.113.9", 1234)
+    assert captured_scope["client"] == ("203.0.113.9", 0)
     assert captured_scope["scheme"] == "wss"
 
 
@@ -71,10 +73,10 @@ def test_proxy_headers_uses_first_forwarded_for_value() -> None:
     }
 
     asyncio.run(middleware(scope, _noop_receive, _noop_send))
-    assert captured_scope["client"] == ("198.51.100.1", 4321)
+    assert captured_scope["client"] == ("198.51.100.2", 0)
 
 
-def test_proxy_headers_uses_first_forwarded_proto_value() -> None:
+def test_proxy_headers_ignores_comma_separated_forwarded_proto_value() -> None:
     captured_scope: Scope = {}
 
     async def app(scope, receive, send):
@@ -89,7 +91,7 @@ def test_proxy_headers_uses_first_forwarded_proto_value() -> None:
     }
 
     asyncio.run(middleware(scope, _noop_receive, _noop_send))
-    assert captured_scope["scheme"] == "https"
+    assert captured_scope["scheme"] == "http"
 
 
 def test_proxy_headers_ignores_invalid_forwarded_proto_values() -> None:
@@ -124,5 +126,26 @@ def test_proxy_headers_no_client_keeps_scope_unchanged() -> None:
     }
 
     asyncio.run(middleware(scope, _noop_receive, _noop_send))
-    assert "client" not in captured_scope
+    assert captured_scope["client"] == ("203.0.113.9", 0)
     assert captured_scope["scheme"] == "http"
+
+
+@pytest.mark.parametrize(
+    ("trusted_hosts", "client_host", "expected"),
+    [
+        ([], "127.0.0.1", False),
+        ("*", "127.0.0.1", True),
+        ("127.0.0.1,10.0.0.1", "10.0.0.1", True),
+        ("127.0.0.0/8", "127.1.2.3", True),
+        ("127.0.0.0/8", "192.168.0.1", False),
+        ("unix:///tmp/app.sock", "unix:///tmp/app.sock", True),
+    ],
+)
+def test_trusted_hosts_membership(trusted_hosts, client_host: str, expected: bool) -> None:
+    assert (client_host in _TrustedHosts(trusted_hosts)) is expected
+
+
+def test_trusted_hosts_returns_untrusted_forwarded_client() -> None:
+    trusted = _TrustedHosts("10.0.0.1")
+    host = trusted.get_trusted_client_host("203.0.113.10,10.0.0.1")
+    assert host == "203.0.113.10"

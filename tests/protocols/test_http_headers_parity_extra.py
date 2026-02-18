@@ -35,7 +35,9 @@ def test_default_server_header_not_added_when_existing() -> None:
 
 
 def test_default_date_header_not_added_when_existing() -> None:
-    response = HTTPResponse(status=200, headers=[(b"date", b"Tue, 01 Jan 2030 00:00:00 GMT")], body_chunks=[b"ok"])
+    response = HTTPResponse(
+        status=200, headers=[(b"date", b"Tue, 01 Jan 2030 00:00:00 GMT")], body_chunks=[b"ok"]
+    )
     append_default_response_headers(response, PalfreyConfig(app="tests.fixtures.apps:http_app"))
     headers = _response_header_map(response)
     assert headers[b"date"] == [b"Tue, 01 Jan 2030 00:00:00 GMT"]
@@ -61,7 +63,9 @@ def test_configured_date_header_blocks_default_date_header() -> None:
 
 
 def test_multiple_custom_headers_preserve_all_values() -> None:
-    config = PalfreyConfig(app="tests.fixtures.apps:http_app", headers=["x-a: one", "x-a: two", "x-b: three"])
+    config = PalfreyConfig(
+        app="tests.fixtures.apps:http_app", headers=["x-a: one", "x-a: two", "x-b: three"]
+    )
     response = HTTPResponse(status=200, headers=[], body_chunks=[b"ok"])
     append_default_response_headers(response, config)
     headers = _response_header_map(response)
@@ -70,12 +74,16 @@ def test_multiple_custom_headers_preserve_all_values() -> None:
 
 
 def test_encode_http_response_uses_default_reason_for_unknown_status() -> None:
-    payload = encode_http_response(HTTPResponse(status=299, headers=[], body_chunks=[b"ok"]), keep_alive=True)
+    payload = encode_http_response(
+        HTTPResponse(status=299, headers=[], body_chunks=[b"ok"]), keep_alive=True
+    )
     assert payload.startswith(b"HTTP/1.1 299 OK")
 
 
 def test_encode_http_response_emits_keep_alive_header_when_enabled() -> None:
-    payload = encode_http_response(HTTPResponse(status=200, headers=[], body_chunks=[b"ok"]), keep_alive=True)
+    payload = encode_http_response(
+        HTTPResponse(status=200, headers=[], body_chunks=[b"ok"]), keep_alive=True
+    )
     assert b"connection: keep-alive" in payload.lower()
 
 

@@ -8,20 +8,11 @@ from __future__ import annotations
 
 import platform
 import ssl
-from typing import cast
 
 import click
 
 from palfrey import __version__
-from palfrey.config import (
-    HTTPType,
-    InterfaceType,
-    LifespanMode,
-    LogLevel,
-    LoopType,
-    PalfreyConfig,
-    WSType,
-)
+from palfrey.config import PalfreyConfig
 from palfrey.importer import AppImportError
 from palfrey.runtime import run
 
@@ -52,22 +43,19 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
     "--loop",
     default="auto",
     show_default=True,
-    type=click.Choice(["none", "auto", "asyncio", "uvloop"], case_sensitive=False),
+    type=str,
 )
 @click.option(
     "--http",
     default="auto",
     show_default=True,
-    type=click.Choice(["auto", "h11", "httptools"], case_sensitive=False),
+    type=str,
 )
 @click.option(
     "--ws",
     default="auto",
     show_default=True,
-    type=click.Choice(
-        ["auto", "none", "websockets", "websockets-sansio", "wsproto"],
-        case_sensitive=False,
-    ),
+    type=str,
 )
 @click.option("--ws-max-size", default=16_777_216, show_default=True, type=int)
 @click.option("--ws-max-queue", default=32, show_default=True, type=int)
@@ -83,13 +71,13 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
     "--lifespan",
     default="auto",
     show_default=True,
-    type=click.Choice(["auto", "on", "off"], case_sensitive=False),
+    type=str,
 )
 @click.option(
     "--interface",
     default="auto",
     show_default=True,
-    type=click.Choice(["auto", "asgi3", "asgi2", "wsgi"], case_sensitive=False),
+    type=str,
 )
 @click.option("--reload", is_flag=True, default=False, show_default=True)
 @click.option("--reload-dir", "reload_dirs", multiple=True, type=click.Path(path_type=str))
@@ -102,10 +90,7 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
 @click.option(
     "--log-level",
     default=None,
-    type=click.Choice(
-        ["critical", "error", "warning", "info", "debug", "trace"],
-        case_sensitive=False,
-    ),
+    type=str,
 )
 @click.option("--access-log/--no-access-log", default=True, show_default=True)
 @click.option("--use-colors/--no-use-colors", default=None)
@@ -244,58 +229,58 @@ def main(
         h11_max_incomplete_event_size: Maximum request head size.
     """
 
-    config = PalfreyConfig(
-        app=app,
-        host=host,
-        port=port,
-        uds=uds,
-        fd=fd,
-        loop=cast(LoopType, loop),
-        http=cast(HTTPType, http),
-        ws=cast(WSType, ws),
-        ws_max_size=ws_max_size,
-        ws_max_queue=ws_max_queue,
-        ws_ping_interval=ws_ping_interval,
-        ws_ping_timeout=ws_ping_timeout,
-        ws_per_message_deflate=ws_per_message_deflate,
-        lifespan=cast(LifespanMode, lifespan),
-        interface=cast(InterfaceType, interface),
-        reload=reload,
-        reload_dirs=list(reload_dirs),
-        reload_includes=list(reload_includes),
-        reload_excludes=list(reload_excludes),
-        reload_delay=reload_delay,
-        workers=workers,
-        env_file=env_file,
-        log_config=log_config,
-        log_level=cast(LogLevel | None, log_level),
-        access_log=access_log,
-        proxy_headers=proxy_headers,
-        server_header=server_header,
-        date_header=date_header,
-        forwarded_allow_ips=forwarded_allow_ips,
-        root_path=root_path,
-        limit_concurrency=limit_concurrency,
-        backlog=backlog,
-        limit_max_requests=limit_max_requests,
-        limit_max_requests_jitter=limit_max_requests_jitter,
-        timeout_keep_alive=timeout_keep_alive,
-        timeout_graceful_shutdown=timeout_graceful_shutdown,
-        timeout_worker_healthcheck=timeout_worker_healthcheck,
-        ssl_keyfile=ssl_keyfile,
-        ssl_certfile=ssl_certfile,
-        ssl_keyfile_password=ssl_keyfile_password,
-        ssl_version=ssl_version,
-        ssl_cert_reqs=ssl_cert_reqs,
-        ssl_ca_certs=ssl_ca_certs,
-        ssl_ciphers=ssl_ciphers,
-        headers=list(headers),
-        use_colors=use_colors,
-        app_dir=app_dir,
-        factory=factory,
-        h11_max_incomplete_event_size=h11_max_incomplete_event_size,
-    )
     try:
+        config = PalfreyConfig(
+            app=app,
+            host=host,
+            port=port,
+            uds=uds,
+            fd=fd,
+            loop=loop,
+            http=http,
+            ws=ws,
+            ws_max_size=ws_max_size,
+            ws_max_queue=ws_max_queue,
+            ws_ping_interval=ws_ping_interval,
+            ws_ping_timeout=ws_ping_timeout,
+            ws_per_message_deflate=ws_per_message_deflate,
+            lifespan=lifespan,
+            interface=interface,
+            reload=reload,
+            reload_dirs=list(reload_dirs),
+            reload_includes=list(reload_includes),
+            reload_excludes=list(reload_excludes),
+            reload_delay=reload_delay,
+            workers=workers,
+            env_file=env_file,
+            log_config=log_config,
+            log_level=log_level,
+            access_log=access_log,
+            proxy_headers=proxy_headers,
+            server_header=server_header,
+            date_header=date_header,
+            forwarded_allow_ips=forwarded_allow_ips,
+            root_path=root_path,
+            limit_concurrency=limit_concurrency,
+            backlog=backlog,
+            limit_max_requests=limit_max_requests,
+            limit_max_requests_jitter=limit_max_requests_jitter,
+            timeout_keep_alive=timeout_keep_alive,
+            timeout_graceful_shutdown=timeout_graceful_shutdown,
+            timeout_worker_healthcheck=timeout_worker_healthcheck,
+            ssl_keyfile=ssl_keyfile,
+            ssl_certfile=ssl_certfile,
+            ssl_keyfile_password=ssl_keyfile_password,
+            ssl_version=ssl_version,
+            ssl_cert_reqs=ssl_cert_reqs,
+            ssl_ca_certs=ssl_ca_certs,
+            ssl_ciphers=ssl_ciphers,
+            headers=list(headers),
+            use_colors=use_colors,
+            app_dir=app_dir,
+            factory=factory,
+            h11_max_incomplete_event_size=h11_max_incomplete_event_size,
+        )
         run(config)
     except (AppImportError, ImportError, RuntimeError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc

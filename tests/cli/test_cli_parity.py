@@ -39,21 +39,25 @@ def test_cli_argument_overrides_environment_app(monkeypatch) -> None:
     assert captured[0].app == "tests.fixtures.apps:websocket_app"
 
 
-def test_cli_forwards_reload_dirs(monkeypatch) -> None:
+def test_cli_forwards_reload_dirs(monkeypatch, tmp_path) -> None:
     captured, runner = _capture_config(monkeypatch)
+    first = tmp_path / "one"
+    second = tmp_path / "two"
+    first.mkdir()
+    second.mkdir()
     result = runner.invoke(
         main,
         [
             "tests.fixtures.apps:http_app",
             "--reload",
             "--reload-dir",
-            "one",
+            str(first),
             "--reload-dir",
-            "two",
+            str(second),
         ],
     )
     assert result.exit_code == 0
-    assert captured[0].reload_dirs == ["one", "two"]
+    assert captured[0].reload_dirs == sorted([str(first), str(second)])
 
 
 def test_cli_forwards_reload_include_patterns(monkeypatch) -> None:

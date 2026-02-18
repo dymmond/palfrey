@@ -103,7 +103,9 @@ def test_serve_sets_reuse_port_true_with_multiple_workers(monkeypatch) -> None:
     monkeypatch.setattr(server_module.asyncio, "start_server", fake_start_server)
     monkeypatch.setattr(server_module.asyncio, "get_running_loop", lambda: FakeLoop())
 
-    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", workers=2, lifespan="off"))
+    server = PalfreyServer(
+        PalfreyConfig(app="tests.fixtures.apps:http_app", workers=2, lifespan="off")
+    )
     server._shutdown_event.set()
     asyncio.run(server.serve())
 
@@ -123,7 +125,9 @@ def test_serve_uses_start_unix_server_when_uds_is_configured(monkeypatch, tmp_pa
     monkeypatch.setattr(server_module.asyncio, "get_running_loop", lambda: FakeLoop())
 
     uds_path = tmp_path / "palfrey.sock"
-    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", uds=str(uds_path), lifespan="off"))
+    server = PalfreyServer(
+        PalfreyConfig(app="tests.fixtures.apps:http_app", uds=str(uds_path), lifespan="off")
+    )
     server._shutdown_event.set()
     asyncio.run(server.serve())
 

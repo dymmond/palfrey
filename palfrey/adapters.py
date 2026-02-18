@@ -11,7 +11,6 @@ import io
 import sys
 from collections.abc import Iterable
 from typing import Any
-from urllib.parse import quote
 
 from palfrey.types import ASGI2Application, ReceiveCallable, Scope, SendCallable
 
@@ -70,16 +69,18 @@ class WSGIAdapter:
         def start_response(status: str, headers: list[tuple[str, str]], exc_info=None):
             start_response_state["status"] = status
             start_response_state["headers"] = headers
+            start_response_state["exc_info"] = exc_info
             return None
 
-        def run_wsgi() -> tuple[str, list[tuple[str, str]], bytes]:
+        def run_wsgi() -> tuple[str, list[tuple[str, str]], bytes, Any]:
             result = self._app(environ, start_response)
             payload = b"".join(result if isinstance(result, Iterable) else [result])
             status = start_response_state.get("status", "500 Internal Server Error")
             headers = start_response_state.get("headers", [])
-            return status, headers, payload
+            exc_info = start_response_state.get("exc_info")
+            return status, headers, payload, exc_info
 
-        status_line, headers, payload = await asyncio.to_thread(run_wsgi)
+        status_line, headers, payload, exc_info = await asyncio.to_thread(run_wsgi)
         status_code = int(status_line.split(" ", 1)[0])
 
         encoded_headers = [
@@ -95,41 +96,61 @@ class WSGIAdapter:
         )
         await send({"type": "http.response.body", "body": payload, "more_body": False})
 
+        if exc_info is not None:
+            exc_type, exc_value, traceback = exc_info
+            if exc_type is not None and exc_value is not None:
+                raise exc_value.with_traceback(traceback)
+
     @staticmethod
     def _build_wsgi_environ(scope: Scope, body: bytes) -> dict[str, Any]:
         """Translate an ASGI scope into a WSGI environ mapping."""
 
-        path = scope.get("path", "")
-        query_string = scope.get("query_string", b"").decode("latin-1")
+        script_name = scope.get("root_path", "").encode("utf8").decode("latin1")
+        path_info = scope.get("path", "").encode("utf8").decode("latin1")
+        if path_info.startswith(script_name):
+            path_info = path_info[len(script_name) :]
+        query_string = scope.get("query_string", b"").decode("ascii")
 
         environ: dict[str, Any] = {
             "REQUEST_METHOD": scope.get("method", "GET"),
-            "SCRIPT_NAME": scope.get("root_path", ""),
-            "PATH_INFO": quote(path),
+            "SCRIPT_NAME": script_name,
+            "PATH_INFO": path_info,
             "QUERY_STRING": query_string,
             "SERVER_PROTOCOL": f"HTTP/{scope.get('http_version', '1.1')}",
             "wsgi.version": (1, 0),
             "wsgi.url_scheme": scope.get("scheme", "http"),
             "wsgi.input": io.BytesIO(body),
-            "wsgi.errors": sys.stderr,
+            "wsgi.errors": sys.stdout,
             "wsgi.multithread": True,
-            "wsgi.multiprocess": False,
+            "wsgi.multiprocess": True,
             "wsgi.run_once": False,
         }
 
         client = scope.get("client")
         server = scope.get("server")
-        if client:
+        if server is None:
+            server = ("localhost", 80)
+        environ["SERVER_NAME"] = server[0]
+        environ["SERVER_PORT"] = server[1]
+
+        if client is not None:
             environ["REMOTE_ADDR"] = client[0]
-            environ["REMOTE_PORT"] = str(client[1])
-        if server:
-            environ["SERVER_NAME"] = server[0]
-            environ["SERVER_PORT"] = str(server[1])
 
         for header_name, header_value in scope.get("headers", []):
-            key = "HTTP_" + header_name.decode("latin-1").upper().replace("-", "_")
-            environ[key] = header_value.decode("latin-1")
+            name_str = header_name.decode("latin1")
+            if name_str == "content-length":
+                key = "CONTENT_LENGTH"
+            elif name_str == "content-type":
+                key = "CONTENT_TYPE"
+            else:
+                key = "HTTP_" + name_str.upper().replace("-", "_")
+            value_str = header_value.decode("latin1")
+            if key in environ:
+                existing = environ[key]
+                if isinstance(existing, str):
+                    value_str = existing + "," + value_str
+            environ[key] = value_str
 
-        environ["CONTENT_LENGTH"] = str(len(body))
+        environ.setdefault("CONTENT_LENGTH", str(len(body)))
         environ.setdefault("CONTENT_TYPE", "")
         return environ

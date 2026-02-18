@@ -71,6 +71,18 @@ def configure_logging(config: PalfreyConfig) -> None:
         force=True,
     )
 
+    if config.log_level is not None:
+        level = _to_logging_level(config.log_level)
+        logging.getLogger("palfrey").setLevel(level)
+        logging.getLogger("palfrey.error").setLevel(level)
+        logging.getLogger("palfrey.access").setLevel(level)
+        logging.getLogger("palfrey.asgi").setLevel(level)
+
+    if config.access_log is False:
+        access_logger = logging.getLogger("palfrey.access")
+        access_logger.handlers = []
+        access_logger.propagate = False
+
 
 def get_logger(name: str) -> logging.Logger:
     """Return a named logger used by Palfrey internals."""

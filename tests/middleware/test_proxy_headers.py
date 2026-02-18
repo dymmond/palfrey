@@ -35,7 +35,7 @@ def test_proxy_headers_updates_scope_for_trusted_client() -> None:
 
     asyncio.run(middleware(scope, _noop_receive, send))
 
-    assert captured_scope["client"] == ("198.51.100.10", 12345)
+    assert captured_scope["client"] == ("198.51.100.10", 0)
     assert captured_scope["scheme"] == "https"
 
 
@@ -80,7 +80,7 @@ def test_proxy_headers_supports_wildcard_trust() -> None:
 
     asyncio.run(middleware(scope, _noop_receive, send))
 
-    assert captured_scope["client"] == ("192.0.2.20", 1000)
+    assert captured_scope["client"] == ("192.0.2.20", 0)
 
 
 def test_proxy_headers_does_not_modify_non_http_scopes() -> None:

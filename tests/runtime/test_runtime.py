@@ -45,7 +45,7 @@ def test_run_config_rejects_reload_for_non_import_app() -> None:
         return None
 
     config = PalfreyConfig(app=app, reload=True)
-    with pytest.raises(RuntimeError, match="requires the application to be an import string"):
+    with pytest.raises(RuntimeError, match="enable 'reload' or 'workers'"):
         _run_config(config)
 
 
@@ -54,7 +54,7 @@ def test_run_config_rejects_workers_for_non_import_app() -> None:
         return None
 
     config = PalfreyConfig(app=app, workers=2)
-    with pytest.raises(RuntimeError, match="requires the application to be an import string"):
+    with pytest.raises(RuntimeError, match="enable 'reload' or 'workers'"):
         _run_config(config)
 
 

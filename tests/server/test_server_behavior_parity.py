@@ -99,7 +99,7 @@ def test_handle_http_request_access_log_includes_query_string(
         return HTTPResponse(status=204, headers=[], body_chunks=[])
 
     monkeypatch.setattr(server_module, "run_http_asgi", fake_run_http_asgi)
-    caplog.set_level(logging.INFO, logger="palfrey.server")
+    caplog.set_level(logging.INFO, logger="palfrey.access")
 
     response = asyncio.run(
         server._handle_http_request(
@@ -134,7 +134,7 @@ def test_handle_http_request_skips_access_log_when_disabled(
         return HTTPResponse(status=200, headers=[], body_chunks=[b"ok"])
 
     monkeypatch.setattr(server_module, "run_http_asgi", fake_run_http_asgi)
-    caplog.set_level(logging.INFO, logger="palfrey.server")
+    caplog.set_level(logging.INFO, logger="palfrey.access")
 
     asyncio.run(
         server._handle_http_request(

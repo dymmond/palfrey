@@ -61,6 +61,19 @@ def test_resolve_factory() -> None:
     assert callable(resolved.app)
 
 
+def test_resolve_detects_factory_without_flag(caplog: pytest.LogCaptureFixture) -> None:
+    def factory():
+        async def app(scope, receive, send):
+            return None
+
+        return app
+
+    config = PalfreyConfig(app=factory, factory=False)
+    resolved = resolve_application(config)
+    assert callable(resolved.app)
+    assert "--factory" in caplog.text
+
+
 def test_resolve_wraps_proxy_headers_middleware_when_enabled() -> None:
     config = PalfreyConfig(app=asgi3_app, proxy_headers=True)
     resolved = resolve_application(config)
@@ -96,8 +109,17 @@ def test_invalid_factory_result_is_rejected() -> None:
         return 123
 
     config = PalfreyConfig(app=factory, factory=True)
-    with pytest.raises(AppImportError, match="Resolved WSGI app is not callable"):
+    with pytest.raises(AppImportError, match="Resolved ASGI2 app is not callable"):
         resolve_application(config)
+
+
+def test_auto_interface_prefers_asgi2_for_sync_callables() -> None:
+    def sync_callable(scope, receive, send):
+        return None
+
+    config = PalfreyConfig(app=sync_callable, interface="auto")
+    resolved = resolve_application(config)
+    assert resolved.interface == "asgi2"
 
 
 def test_invalid_interface_mode_is_rejected() -> None:

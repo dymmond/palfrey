@@ -37,8 +37,8 @@ def test_build_http_scope_populates_asgi_fields() -> None:
     assert scope["type"] == "http"
     assert scope["http_version"] == "1.1"
     assert scope["scheme"] == "https"
-    assert scope["path"] == "/a path/resource"
-    assert scope["raw_path"] == b"/a%20path/resource"
+    assert scope["path"] == "/api/a path/resource"
+    assert scope["raw_path"] == b"/api/a%20path/resource"
     assert scope["query_string"] == b"x=1&y=2"
     assert scope["headers"] == [(b"host", b"example.test"), (b"x-token", b"abc")]
 

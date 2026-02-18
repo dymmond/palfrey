@@ -15,6 +15,8 @@ from palfrey.config import PalfreyConfig
 from palfrey.logging_config import get_logger
 
 logger = get_logger("palfrey.supervisors.reload")
+DEFAULT_RELOAD_INCLUDES = ["*.py"]
+DEFAULT_RELOAD_EXCLUDES = [".*", ".py[cod]", ".sw.*", "~*"]
 
 
 @dataclass(slots=True)
@@ -83,10 +85,12 @@ class ReloadSupervisor:
     def _include_patterns(self) -> list[str]:
         if self.config.reload_includes:
             return self.config.reload_includes
-        return ["*.py"]
+        return DEFAULT_RELOAD_INCLUDES
 
     def _exclude_patterns(self) -> list[str]:
-        return self.config.reload_excludes
+        if self.config.reload_excludes:
+            return self.config.reload_excludes
+        return DEFAULT_RELOAD_EXCLUDES
 
     def _changed_paths(self) -> list[Path]:
         include_patterns = self._include_patterns()
@@ -99,9 +103,23 @@ class ReloadSupervisor:
                     continue
 
                 relative = str(path.relative_to(root))
-                if not any(fnmatch.fnmatch(relative, pattern) for pattern in include_patterns):
+                filename = path.name
+                absolute = str(path)
+                include_match = any(
+                    fnmatch.fnmatch(relative, pattern)
+                    or fnmatch.fnmatch(filename, pattern)
+                    or fnmatch.fnmatch(absolute, pattern)
+                    for pattern in include_patterns
+                )
+                if not include_match:
                     continue
-                if any(fnmatch.fnmatch(relative, pattern) for pattern in exclude_patterns):
+                exclude_match = any(
+                    fnmatch.fnmatch(relative, pattern)
+                    or fnmatch.fnmatch(filename, pattern)
+                    or fnmatch.fnmatch(absolute, pattern)
+                    for pattern in exclude_patterns
+                )
+                if exclude_match:
                     continue
 
                 try:

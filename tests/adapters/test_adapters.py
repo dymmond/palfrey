@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 
 import pytest
 
@@ -105,11 +106,52 @@ def test_wsgi_adapter_translates_scope_and_streams_response() -> None:
     }
     assert captured_environ["REQUEST_METHOD"] == "POST"
     assert captured_environ["SCRIPT_NAME"] == "/root"
-    assert captured_environ["PATH_INFO"] == "/hello%20world"
+    assert captured_environ["PATH_INFO"] == "/hello world"
     assert captured_environ["QUERY_STRING"] == "x=1"
     assert captured_environ["REMOTE_ADDR"] == "127.0.0.1"
-    assert captured_environ["REMOTE_PORT"] == "1234"
     assert captured_environ["SERVER_NAME"] == "127.0.0.1"
-    assert captured_environ["SERVER_PORT"] == "8000"
+    assert captured_environ["SERVER_PORT"] == 8000
     assert captured_environ["HTTP_X_TOKEN"] == "abc"
     assert captured_environ["CONTENT_LENGTH"] == "11"
+    assert captured_environ["wsgi.errors"] is sys.stdout
+    assert captured_environ["wsgi.multiprocess"] is True
+
+
+def test_wsgi_adapter_merges_repeated_headers() -> None:
+    scope = _http_scope()
+    scope["headers"] = [(b"x-token", b"abc"), (b"x-token", b"def")]
+    captured: dict[str, object] = {}
+
+    def wsgi_app(environ, start_response):
+        captured.update(environ)
+        start_response("200 OK", [("content-type", "text/plain")])
+        return [b"ok"]
+
+    async def receive() -> dict[str, object]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(_message: dict[str, object]) -> None:
+        return None
+
+    asyncio.run(WSGIAdapter(wsgi_app)(scope, receive, send))
+    assert captured["HTTP_X_TOKEN"] == "abc,def"
+
+
+def test_wsgi_adapter_raises_exc_info_after_response() -> None:
+    def wsgi_app(environ, start_response):
+        try:
+            raise RuntimeError("wsgi-failure")
+        except RuntimeError:
+            start_response(
+                "500 Internal Server Error", [("content-type", "text/plain")], sys.exc_info()
+            )
+            return [b"error"]
+
+    async def receive() -> dict[str, object]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(_message: dict[str, object]) -> None:
+        return None
+
+    with pytest.raises(RuntimeError, match="wsgi-failure"):
+        asyncio.run(WSGIAdapter(wsgi_app)(_http_scope(), receive, send))

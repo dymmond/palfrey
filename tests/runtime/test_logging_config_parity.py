@@ -21,6 +21,30 @@ def test_to_logging_level_unknown_defaults_to_info() -> None:
     assert _to_logging_level("not-a-level") == logging.INFO
 
 
+def test_to_logging_level_integer_passes_through() -> None:
+    assert _to_logging_level(7) == 7
+
+
+def test_configure_logging_with_dict_payload_uses_dictconfig(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "handlers": {"default": {"class": "logging.StreamHandler"}},
+        "root": {"handlers": ["default"], "level": "INFO"},
+    }
+    captured: dict[str, object] = {}
+
+    def fake_dictconfig(value):
+        captured["payload"] = value
+
+    monkeypatch.setattr(logging_config_module.logging.config, "dictConfig", fake_dictconfig)
+
+    configure_logging(PalfreyConfig(app="tests.fixtures.apps:http_app", log_config=payload))
+    assert captured["payload"] == payload
+
+
 def test_configure_logging_with_json_file_uses_dictconfig(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

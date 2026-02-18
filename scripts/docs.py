@@ -153,8 +153,9 @@ def build_site(lang: str = "en") -> None:
 
     shutil.rmtree(build_site_dist_path, ignore_errors=True)
     subprocess.run(
-        ["mkdocs", "build", "-f", str(config_path), "--site-dir", str(build_site_dist_path)],
+        ["mkdocs", "build", "-f", mkdocs_name, "--site-dir", str(build_site_dist_path)],
         check=True,
+        cwd=lang_path,
     )
     shutil.copytree(build_site_dist_path, dist_path, dirs_exist_ok=True)
     click.echo(f"Built site for: {lang}")

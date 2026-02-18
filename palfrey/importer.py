@@ -11,9 +11,12 @@ from typing import cast
 
 from palfrey.adapters import ASGI2Adapter, WSGIAdapter
 from palfrey.config import PalfreyConfig
+from palfrey.logging_config import get_logger
 from palfrey.middleware.message_logger import MessageLoggerMiddleware
 from palfrey.middleware.proxy_headers import ProxyHeadersMiddleware
 from palfrey.types import AppType, ASGI2Application, ASGIApplication
+
+logger = get_logger("palfrey.error")
 
 
 class AppImportError(RuntimeError):
@@ -61,20 +64,14 @@ def _import_from_string(target: str) -> object:
 def _infer_interface(app: object) -> str:
     """Infer interface mode from callable signature and coroutine behavior."""
 
-    if inspect.iscoroutinefunction(app):
-        return "asgi3"
-
-    if callable(app):
-        try:
-            parameter_count = len(inspect.signature(app).parameters)
-        except (TypeError, ValueError):
-            parameter_count = 0
-
-        if parameter_count == 3:
-            return "asgi3"
-        if parameter_count == 1:
-            return "asgi2"
-    return "wsgi"
+    if inspect.isclass(app):
+        use_asgi3 = hasattr(app, "__await__")
+    elif inspect.isfunction(app):
+        use_asgi3 = inspect.iscoroutinefunction(app)
+    else:
+        call = app.__call__ if callable(app) else None
+        use_asgi3 = inspect.iscoroutinefunction(call)
+    return "asgi3" if use_asgi3 else "asgi2"
 
 
 def resolve_application(config: PalfreyConfig) -> ResolvedApp:
@@ -101,7 +98,20 @@ def resolve_application(config: PalfreyConfig) -> ResolvedApp:
         if not callable(app_object):
             raise AppImportError("`--factory` requires the target to be callable.")
         factory = cast(Callable[[], object], app_object)
-        app_object = factory()
+        try:
+            app_object = factory()
+        except TypeError as exc:
+            raise AppImportError(f"Error loading ASGI app factory: {exc}") from exc
+    elif callable(app_object):
+        try:
+            candidate = cast(Callable[[], object], app_object)()
+        except TypeError:
+            candidate = None
+        else:
+            app_object = candidate
+            logger.warning(
+                "ASGI app factory detected. Using it, but please consider setting the --factory flag explicitly."
+            )
 
     interface = config.interface
     if interface == "auto":

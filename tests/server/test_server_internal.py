@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import ssl
 
+import pytest
+
+import palfrey.config as config_module
 import palfrey.server as server_module
 from palfrey.config import PalfreyConfig
 from palfrey.importer import ResolvedApp
@@ -118,6 +121,46 @@ def test_compute_max_requests_before_exit_applies_jitter(monkeypatch) -> None:
     assert server._compute_max_requests_before_exit() == 105
 
 
+def test_validate_protocol_backends_rejects_missing_httptools(monkeypatch) -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", http="httptools"))
+    monkeypatch.setattr(server_module, "find_spec", lambda name: None)
+    with pytest.raises(RuntimeError, match="httptools"):
+        server._validate_protocol_backends()
+
+
+def test_validate_protocol_backends_rejects_missing_wsproto(monkeypatch) -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", ws="wsproto"))
+
+    def fake_find_spec(name: str):
+        if name == "wsproto":
+            return None
+        return object()
+
+    monkeypatch.setattr(server_module, "find_spec", fake_find_spec)
+    with pytest.raises(RuntimeError, match="wsproto"):
+        server._validate_protocol_backends()
+
+
+def test_validate_protocol_backends_rejects_missing_websockets(monkeypatch) -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", ws="websockets"))
+
+    def fake_find_spec(name: str):
+        if name == "websockets":
+            return None
+        return object()
+
+    monkeypatch.setattr(server_module, "find_spec", fake_find_spec)
+    with pytest.raises(RuntimeError, match="websockets"):
+        server._validate_protocol_backends()
+
+
+def test_validate_protocol_backends_allows_auto_when_no_ws_backends(monkeypatch) -> None:
+    monkeypatch.setattr(config_module, "_module_available", lambda name: False)
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", ws="auto"))
+    monkeypatch.setattr(server_module, "find_spec", lambda name: None)
+    server._validate_protocol_backends()
+
+
 def test_build_ssl_context_returns_none_without_certfile() -> None:
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
     assert server._build_ssl_context() is None
@@ -200,7 +243,7 @@ def test_handle_connection_writes_500_on_unhandled_exception(monkeypatch) -> Non
 
 
 def test_handle_connection_switches_to_websocket_upgrade(monkeypatch) -> None:
-    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", ws="auto"))
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", ws="websockets"))
     server._resolved_app = _resolved_app()
     writer = DummyWriter()
     called: list[str] = []
@@ -212,8 +255,13 @@ def test_handle_connection_switches_to_websocket_upgrade(monkeypatch) -> None:
         body=b"",
     )
 
+    calls = {"count": 0}
+
     async def fake_read_request(reader, **kwargs):
-        return request
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return request
+        return None
 
     async def fake_handle_websocket(*args, **kwargs):
         called.append("ws")
@@ -225,6 +273,42 @@ def test_handle_connection_switches_to_websocket_upgrade(monkeypatch) -> None:
     asyncio.run(server._handle_connection(object(), writer))
 
     assert called == ["ws"]
+    assert writer.closed is True
+
+
+def test_handle_connection_returns_400_for_upgrade_when_ws_backend_disabled(monkeypatch) -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", ws="none"))
+    server._resolved_app = _resolved_app()
+    writer = DummyWriter()
+    request = HTTPRequest(
+        method="GET",
+        target="/ws",
+        http_version="HTTP/1.1",
+        headers=[("upgrade", "websocket"), ("connection", "Upgrade")],
+        body=b"",
+    )
+    calls = {"count": 0}
+
+    async def fake_read_request(reader, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return request
+        return None
+
+    called: list[str] = []
+
+    async def fake_handle_websocket(*args, **kwargs):
+        called.append("ws")
+
+    monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
+    monkeypatch.setattr(server_module, "is_websocket_upgrade", lambda req: True)
+    monkeypatch.setattr(server_module, "handle_websocket", fake_handle_websocket)
+
+    asyncio.run(server._handle_connection(object(), writer))
+
+    payload = b"".join(writer.writes)
+    assert b"400 Bad Request" in payload
+    assert called == []
     assert writer.closed is True
 
 

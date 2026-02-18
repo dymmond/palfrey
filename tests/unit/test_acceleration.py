@@ -26,3 +26,23 @@ def test_parse_request_head_python_fallback(monkeypatch: pytest.MonkeyPatch) -> 
     assert target == "/health"
     assert version == "HTTP/1.1"
     assert headers == [("host", "example.com"), ("x-test", "yes")]
+
+
+def test_unmask_websocket_payload_python_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(acceleration, "HAS_RUST_EXTENSION", False)
+    payload = bytes([0x10, 0x20, 0x30, 0x40, 0x50])
+    mask = bytes([0x01, 0x02, 0x03, 0x04])
+    assert acceleration.unmask_websocket_payload(payload, mask) == bytes(
+        [
+            0x11,
+            0x22,
+            0x33,
+            0x44,
+            0x51,
+        ]
+    )
+
+
+def test_unmask_websocket_payload_rejects_invalid_mask_length() -> None:
+    with pytest.raises(ValueError, match="masking key must be exactly 4 bytes"):
+        acceleration.unmask_websocket_payload(b"abc", b"\x01\x02\x03")

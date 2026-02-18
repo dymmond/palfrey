@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 
 from palfrey.middleware.message_logger import MessageLoggerMiddleware
 from palfrey.types import Message
@@ -26,10 +25,12 @@ def test_message_logger_masks_binary_and_body_payloads(caplog) -> None:
     async def send(_message: Message) -> None:
         return None
 
-    with caplog.at_level(logging.DEBUG, logger="tests.asgi"):
+    with caplog.at_level(5, logger="tests.asgi"):
         asyncio.run(middleware({"type": "http"}, receive, send))
 
     assert received
     logs = "\n".join(record.getMessage() for record in caplog.records)
     assert "<5 bytes>" in logs
-    assert "ASGI send" in logs
+    assert "ASGI [1] Send" in logs
+    assert "ASGI [1] Started" in logs
+    assert "ASGI [1] Completed" in logs

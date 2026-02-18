@@ -11,7 +11,11 @@ from palfrey.runtime import _configure_loop, _run_config
 
 def test_configure_loop_invokes_registered_setup(monkeypatch: pytest.MonkeyPatch) -> None:
     called: list[str] = []
-    monkeypatch.setitem(runtime_module.LOOP_SETUPS, "custom", lambda: called.append("custom"))
+    monkeypatch.setattr(
+        runtime_module,
+        "resolve_loop_setup",
+        lambda _: lambda: called.append("custom"),
+    )
     _configure_loop("custom")
     assert called == ["custom"]
 
@@ -42,9 +46,7 @@ def test_run_config_reload_non_string_app_is_rejected() -> None:
         return None
 
     config = PalfreyConfig(app=app, reload=True)
-    with pytest.raises(
-        RuntimeError, match="Reload mode requires the application to be an import string"
-    ):
+    with pytest.raises(RuntimeError, match="enable 'reload' or 'workers'"):
         _run_config(config)
 
 
@@ -53,9 +55,7 @@ def test_run_config_workers_non_string_app_is_rejected() -> None:
         return None
 
     config = PalfreyConfig(app=app, workers=2)
-    with pytest.raises(
-        RuntimeError, match="Worker mode requires the application to be an import string"
-    ):
+    with pytest.raises(RuntimeError, match="enable 'reload' or 'workers'"):
         _run_config(config)
 
 
@@ -101,3 +101,26 @@ def test_run_config_uses_worker_supervisor_for_multi_worker(
     config = PalfreyConfig(app="tests.fixtures.apps:http_app", workers=2)
     _run_config(config)
     assert called == ["init", "run"]
+
+
+def test_run_config_removes_uds_socket_on_exit(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    socket_path = tmp_path / "palfrey.sock"
+    removed: list[str] = []
+
+    class FakeServer:
+        def __init__(self, config: PalfreyConfig) -> None:
+            self.config = config
+
+        def run(self) -> None:
+            return None
+
+    monkeypatch.setattr(runtime_module, "PalfreyServer", FakeServer)
+    monkeypatch.setattr(runtime_module, "load_env_file", lambda _: None)
+    monkeypatch.setattr(runtime_module, "_configure_loop", lambda _: None)
+    monkeypatch.setattr(runtime_module.os.path, "exists", lambda path: path == str(socket_path))
+    monkeypatch.setattr(runtime_module.os, "remove", lambda path: removed.append(path))
+
+    config = PalfreyConfig(app="tests.fixtures.apps:http_app", uds=str(socket_path))
+    _run_config(config)
+
+    assert removed == [str(socket_path)]

@@ -15,6 +15,7 @@ from importlib.util import find_spec
 from typing import Any, cast
 from urllib.parse import unquote
 
+from palfrey.acceleration import unmask_websocket_payload
 from palfrey.config import PalfreyConfig
 from palfrey.types import ASGIApplication, ClientAddress, Message, Scope, ServerAddress
 
@@ -163,19 +164,30 @@ def _validate_handshake(headers: list[tuple[str, str]]) -> None:
 
 def _encode_frame(opcode: int, payload: bytes = b"") -> bytes:
     length = len(payload)
-    header = bytearray()
-    header.append(0x80 | opcode)
-
     if length <= 125:
-        header.append(length)
-    elif length <= 65_535:
-        header.append(126)
-        header.extend(struct.pack("!H", length))
-    else:
-        header.append(127)
-        header.extend(struct.pack("!Q", length))
+        return bytes((0x80 | opcode, length)) + payload
+    if length <= 65_535:
+        return bytes((0x80 | opcode, 126)) + struct.pack("!H", length) + payload
+    return bytes((0x80 | opcode, 127)) + struct.pack("!Q", length) + payload
 
-    return bytes(header) + payload
+
+def _write_frame(writer: asyncio.StreamWriter, opcode: int, payload: bytes = b"") -> None:
+    """Write one server frame to stream writer with minimal copying."""
+
+    length = len(payload)
+    if length <= 125:
+        header = bytes((0x80 | opcode, length))
+    elif length <= 65_535:
+        header = bytes((0x80 | opcode, 126)) + struct.pack("!H", length)
+    else:
+        header = bytes((0x80 | opcode, 127)) + struct.pack("!Q", length)
+
+    writelines = getattr(writer, "writelines", None)
+    if payload and callable(writelines):
+        writelines((header, payload))
+        return
+
+    writer.write(header + payload)
 
 
 async def _read_frame(reader: asyncio.StreamReader, max_size: int) -> WebSocketFrame:
@@ -198,11 +210,58 @@ async def _read_frame(reader: asyncio.StreamReader, max_size: int) -> WebSocketF
     if not masked:
         raise ValueError("Client websocket frames must be masked")
 
-    masking_key = await reader.readexactly(4)
-    payload = await reader.readexactly(length)
-    payload = bytes(byte ^ masking_key[index % 4] for index, byte in enumerate(payload))
+    masked_payload = await reader.readexactly(4 + length)
+    masking_key = masked_payload[:4]
+    payload = unmask_websocket_payload(masked_payload[4:], masking_key)
 
     return WebSocketFrame(fin=fin, opcode=opcode, payload=payload)
+
+
+def _try_parse_frame_from_buffer(
+    buffer: bytearray,
+    *,
+    max_size: int,
+) -> tuple[WebSocketFrame, int] | None:
+    """Parse one websocket frame from a mutable buffer if enough bytes exist."""
+
+    if len(buffer) < 2:
+        return None
+
+    first = buffer[0]
+    second = buffer[1]
+    fin = (first & 0x80) != 0
+    opcode = first & 0x0F
+
+    masked = (second & 0x80) != 0
+    payload_length = second & 0x7F
+    offset = 2
+
+    if payload_length == 126:
+        if len(buffer) < offset + 2:
+            return None
+        payload_length = struct.unpack("!H", bytes(buffer[offset : offset + 2]))[0]
+        offset += 2
+    elif payload_length == 127:
+        if len(buffer) < offset + 8:
+            return None
+        payload_length = struct.unpack("!Q", bytes(buffer[offset : offset + 8]))[0]
+        offset += 8
+
+    if payload_length > max_size:
+        raise ValueError("WebSocket frame exceeds ws_max_size")
+
+    if not masked:
+        raise ValueError("Client websocket frames must be masked")
+
+    total_size = offset + 4 + payload_length
+    if len(buffer) < total_size:
+        return None
+
+    masking_key = bytes(buffer[offset : offset + 4])
+    masked_payload = bytes(buffer[offset + 4 : total_size])
+    payload = unmask_websocket_payload(masked_payload, masking_key)
+    frame = WebSocketFrame(fin=fin, opcode=opcode, payload=payload)
+    return frame, total_size
 
 
 def _bad_websocket_request_payload() -> bytes:
@@ -279,73 +338,95 @@ async def _handle_websocket_core(
     http_response_status = 500
     http_response_headers: list[tuple[bytes, bytes]] = []
     http_response_body_chunks: list[bytes] = []
-    receive_lock = asyncio.Lock()
     fragmented_opcode: int | None = None
     fragmented_chunks: list[bytes] = []
+    read_buffer = bytearray()
+    transport = getattr(writer, "transport", None) or getattr(writer, "_transport", None)
+    high_watermark_bytes = 262_144
+
+    async def _flush_if_needed(*, force: bool = False) -> None:
+        if force:
+            await writer.drain()
+            return
+        if transport is None:
+            return
+        get_size = getattr(transport, "get_write_buffer_size", None)
+        if callable(get_size) and int(get_size()) >= high_watermark_bytes:
+            await writer.drain()
 
     async def receive() -> Message:
         nonlocal closed, close_disconnect_code, fragmented_opcode
 
-        async with receive_lock:
+        while True:
+            if closed:
+                return {"type": "websocket.disconnect", "code": close_disconnect_code}
+
             while True:
-                if closed:
-                    return {"type": "websocket.disconnect", "code": close_disconnect_code}
+                parsed = _try_parse_frame_from_buffer(read_buffer, max_size=config.ws_max_size)
+                if parsed is not None:
+                    frame, consumed = parsed
+                    del read_buffer[:consumed]
+                    break
 
-                frame = await _read_frame(reader, config.ws_max_size)
-
-                if frame.opcode == 0x8:
+                chunk = await reader.read(65_536)
+                if not chunk:
                     closed = True
-                    code = 1000
-                    if len(frame.payload) >= 2:
-                        code = struct.unpack("!H", frame.payload[:2])[0]
-                    return {"type": "websocket.disconnect", "code": code}
+                    return {"type": "websocket.disconnect", "code": 1005 if accepted else 1006}
+                read_buffer.extend(chunk)
 
-                if frame.opcode == 0x9:
-                    writer.write(_encode_frame(0xA, frame.payload))
-                    await writer.drain()
-                    continue
+            if frame.opcode == 0x8:
+                closed = True
+                code = 1000
+                if len(frame.payload) >= 2:
+                    code = struct.unpack("!H", frame.payload[:2])[0]
+                return {"type": "websocket.disconnect", "code": code}
 
-                if frame.opcode == 0xA:
-                    continue
+            if frame.opcode == 0x9:
+                _write_frame(writer, 0xA, frame.payload)
+                await _flush_if_needed()
+                continue
 
-                if frame.opcode == 0x0:
-                    if fragmented_opcode is None:
-                        return {"type": "websocket.disconnect", "code": 1002}
-                    fragmented_chunks.append(frame.payload)
-                    if not frame.fin:
-                        continue
-                    payload = b"".join(fragmented_chunks)
-                    opcode = fragmented_opcode
-                    fragmented_opcode = None
-                    fragmented_chunks.clear()
-                    if opcode == 0x1:
-                        try:
-                            return {"type": "websocket.receive", "text": payload.decode("utf-8")}
-                        except UnicodeDecodeError:
-                            return {"type": "websocket.disconnect", "code": 1007}
-                    return {"type": "websocket.receive", "bytes": payload}
+            if frame.opcode == 0xA:
+                continue
 
-                if (frame.opcode & 0x08) == 0 and frame.opcode not in {0x1, 0x2}:
+            if frame.opcode == 0x0:
+                if fragmented_opcode is None:
                     return {"type": "websocket.disconnect", "code": 1002}
-
-                if frame.opcode == 0x1:
-                    if not frame.fin:
-                        fragmented_opcode = 0x1
-                        fragmented_chunks.append(frame.payload)
-                        continue
+                fragmented_chunks.append(frame.payload)
+                if not frame.fin:
+                    continue
+                payload = b"".join(fragmented_chunks)
+                opcode = fragmented_opcode
+                fragmented_opcode = None
+                fragmented_chunks.clear()
+                if opcode == 0x1:
                     try:
-                        return {"type": "websocket.receive", "text": frame.payload.decode("utf-8")}
+                        return {"type": "websocket.receive", "text": payload.decode("utf-8")}
                     except UnicodeDecodeError:
                         return {"type": "websocket.disconnect", "code": 1007}
+                return {"type": "websocket.receive", "bytes": payload}
 
-                if frame.opcode == 0x2:
-                    if not frame.fin:
-                        fragmented_opcode = 0x2
-                        fragmented_chunks.append(frame.payload)
-                        continue
-                    return {"type": "websocket.receive", "bytes": frame.payload}
-
+            if (frame.opcode & 0x08) == 0 and frame.opcode not in {0x1, 0x2}:
                 return {"type": "websocket.disconnect", "code": 1002}
+
+            if frame.opcode == 0x1:
+                if not frame.fin:
+                    fragmented_opcode = 0x1
+                    fragmented_chunks.append(frame.payload)
+                    continue
+                try:
+                    return {"type": "websocket.receive", "text": frame.payload.decode("utf-8")}
+                except UnicodeDecodeError:
+                    return {"type": "websocket.disconnect", "code": 1007}
+
+            if frame.opcode == 0x2:
+                if not frame.fin:
+                    fragmented_opcode = 0x2
+                    fragmented_chunks.append(frame.payload)
+                    continue
+                return {"type": "websocket.receive", "bytes": frame.payload}
+
+            return {"type": "websocket.disconnect", "code": 1002}
 
     async def send(message: Message) -> None:
         nonlocal accepted, closed, close_disconnect_code, accept_subprotocol
@@ -365,7 +446,7 @@ async def _handle_websocket_core(
                 extra_headers=_merge_websocket_accept_headers(config, message.get("headers")),
             )
             writer.write(response)
-            await writer.drain()
+            await _flush_if_needed(force=True)
             accepted = True
             return
 
@@ -412,7 +493,7 @@ async def _handle_websocket_core(
                 header_lines.append(b"connection: close")
 
             writer.write(b"\r\n".join(header_lines) + b"\r\n\r\n" + payload)
-            await writer.drain()
+            await _flush_if_needed(force=True)
             closed = True
             close_disconnect_code = 1006
             return
@@ -422,10 +503,10 @@ async def _handle_websocket_core(
                 raise RuntimeError("WebSocket send before accept")
 
             if "text" in message:
-                writer.write(_encode_frame(0x1, message["text"].encode("utf-8")))
+                _write_frame(writer, 0x1, message["text"].encode("utf-8"))
             else:
-                writer.write(_encode_frame(0x2, message.get("bytes", b"")))
-            await writer.drain()
+                _write_frame(writer, 0x2, message.get("bytes", b""))
+            await _flush_if_needed()
             return
 
         if message_type == "websocket.close":
@@ -433,7 +514,7 @@ async def _handle_websocket_core(
                 writer.write(
                     b"HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
                 )
-                await writer.drain()
+                await _flush_if_needed(force=True)
                 closed = True
                 close_disconnect_code = 1006
                 return
@@ -441,8 +522,8 @@ async def _handle_websocket_core(
             code = int(message.get("code", 1000))
             reason = message.get("reason", "").encode("utf-8")
             payload = struct.pack("!H", code) + reason
-            writer.write(_encode_frame(0x8, payload))
-            await writer.drain()
+            _write_frame(writer, 0x8, payload)
+            await _flush_if_needed(force=True)
             closed = True
             close_disconnect_code = code
             return
@@ -452,8 +533,8 @@ async def _handle_websocket_core(
     await app(scope, receive, send)
 
     if accepted and not closed:
-        writer.write(_encode_frame(0x8, struct.pack("!H", 1000)))
-        await writer.drain()
+        _write_frame(writer, 0x8, struct.pack("!H", 1000))
+        await _flush_if_needed(force=True)
 
 
 async def _handle_websocket_websockets_backend(
@@ -1480,6 +1561,20 @@ async def handle_websocket(
         return
 
     if selected_ws == "none":
+        await _handle_websocket_core(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=headers,
+            target=target,
+            client=client,
+            server=server,
+            is_tls=is_tls,
+        )
+        return
+
+    if selected_ws == "websockets" and config.ws == "auto":
         await _handle_websocket_core(
             app,
             config,

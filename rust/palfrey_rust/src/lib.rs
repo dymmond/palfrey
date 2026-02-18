@@ -77,10 +77,26 @@ fn parse_request_head(data: &[u8]) -> PyResult<(String, String, String, Vec<(Str
     Ok((method, target, version, headers))
 }
 
+#[pyfunction]
+fn unmask_websocket_payload(payload: &[u8], masking_key: &[u8]) -> PyResult<Vec<u8>> {
+    if masking_key.len() != 4 {
+        return Err(PyValueError::new_err(
+            "WebSocket masking key must be exactly 4 bytes",
+        ));
+    }
+
+    let mut output = Vec::with_capacity(payload.len());
+    for (index, byte) in payload.iter().enumerate() {
+        output.push(byte ^ masking_key[index & 0b11]);
+    }
+    Ok(output)
+}
+
 #[pymodule]
 fn palfrey_rust(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(parse_header_items, module)?)?;
     module.add_function(wrap_pyfunction!(split_csv_values, module)?)?;
     module.add_function(wrap_pyfunction!(parse_request_head, module)?)?;
+    module.add_function(wrap_pyfunction!(unmask_websocket_payload, module)?)?;
     Ok(())
 }

@@ -85,6 +85,26 @@ def test_read_http_request_httptools_parser_mode() -> None:
     assert request.http_version == "HTTP/1.1"
 
 
+@pytest.mark.skipif(find_spec("httptools") is None, reason="httptools is not installed")
+def test_read_http_request_httptools_parser_mode_supports_upgrade_requests() -> None:
+    payload = (
+        b"GET / HTTP/1.1\r\n"
+        b"Host: test\r\n"
+        b"Upgrade: websocket\r\n"
+        b"Connection: Upgrade\r\n"
+        b"Sec-WebSocket-Key: abcdefghijklmnop==\r\n"
+        b"Sec-WebSocket-Version: 13\r\n\r\n"
+    )
+    request = asyncio.run(_read(payload, parser_mode="httptools"))
+    assert request is not None
+    assert request.method == "GET"
+    assert request.target == "/"
+    assert request.http_version == "HTTP/1.1"
+    headers = {(name.lower(), value.lower()) for name, value in request.headers}
+    assert ("upgrade", "websocket") in headers
+    assert ("connection", "upgrade") in headers
+
+
 def test_requires_100_continue_detects_expect_header() -> None:
     request = HTTPRequest(
         method="POST",

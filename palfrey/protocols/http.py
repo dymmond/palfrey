@@ -245,10 +245,15 @@ def _parse_request_head_httptools(
 
     protocol = ParserProtocol()
     parser = httptools.HttpRequestParser(protocol)
+    upgrade_exc = getattr(getattr(httptools, "parser", None), "errors", None)
+    upgrade_exc_type = getattr(upgrade_exc, "HttpParserUpgrade", None)
     try:
         parser.feed_data(head)
     except Exception as exc:  # noqa: BLE001
-        raise ValueError("Invalid HTTP request line") from exc
+        # httptools raises HttpParserUpgrade when a valid Upgrade request head
+        # is parsed; treat this as success and continue with parsed fields.
+        if not (isinstance(upgrade_exc_type, type) and isinstance(exc, upgrade_exc_type)):
+            raise ValueError("Invalid HTTP request line") from exc
 
     if not protocol.method:
         raise ValueError("Invalid HTTP request line")

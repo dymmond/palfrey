@@ -525,6 +525,10 @@ async def _handle_websocket_websockets_backend(
         def is_serving(self) -> bool:
             return True
 
+        def start_connection_handler(self, _connection: Any) -> None:
+            # websockets >=16 calls this hook from connection_made().
+            return None
+
     protocol_kwargs: dict[str, Any] = {
         "max_size": config.ws_max_size,
     }
@@ -750,7 +754,7 @@ async def _handle_websocket_websockets_backend(
     for task in pending:
         task.cancel()
     for task in pending:
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(asyncio.CancelledError, Exception):
             await task
 
 
@@ -1120,7 +1124,7 @@ async def _handle_websocket_websockets_sansio_backend(
     for task in pending:
         task.cancel()
     for task in pending:
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(asyncio.CancelledError, Exception):
             await task
 
 

@@ -173,6 +173,8 @@ def _install_fake_wsproto(
                 return FakeBytesMessage(bytes(spec[1]), bool(spec[2]))
             if kind == "close":
                 return FakeCloseConnection(int(spec[1]), str(spec[2]))
+            if kind == "other":
+                return object()
             raise AssertionError(f"Unsupported event spec: {spec!r}")
 
         def events(self):
@@ -862,6 +864,98 @@ def test_wsproto_backend_reassembles_fragmented_binary_payload(
     async def app(scope, receive, send):
         await send({"type": "websocket.accept"})
         assert await receive() == {"type": "websocket.receive", "bytes": b"ab"}
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"x")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1),
+            server=("127.0.0.1", 2),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+
+
+def test_wsproto_backend_invalid_handshake_writes_bad_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(websocket_module, "find_spec", lambda name: object())
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="wsproto")
+    writer = CaptureWriter()
+
+    async def app(scope, receive, send):
+        raise AssertionError("ASGI app must not run on invalid websocket handshake")
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=[("upgrade", "websocket"), ("sec-websocket-version", "13")],
+            target="/",
+            client=("127.0.0.1", 1),
+            server=("127.0.0.1", 2),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+    assert b"400 Bad Request" in b"".join(writer.writes)
+
+
+def test_wsproto_backend_ignores_unknown_events_then_disconnects_on_eof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_wsproto(
+        monkeypatch,
+        initial_events=[("request",)],
+        events_by_receive_call={2: [("other",)]},
+    )
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="wsproto")
+    writer = CaptureWriter()
+
+    async def app(scope, receive, send):
+        await send({"type": "websocket.accept"})
+        assert await receive() == {"type": "websocket.disconnect", "code": 1005}
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"x")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1),
+            server=("127.0.0.1", 2),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+
+
+def test_wsproto_backend_close_event_without_reason_omits_reason_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_wsproto(
+        monkeypatch,
+        initial_events=[("request",)],
+        events_by_receive_call={2: [("close", 1000, "")]},
+    )
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="wsproto")
+    writer = CaptureWriter()
+
+    async def app(scope, receive, send):
+        await send({"type": "websocket.accept"})
+        assert await receive() == {"type": "websocket.disconnect", "code": 1000}
 
     async def scenario() -> None:
         reader = await make_stream_reader(b"x")

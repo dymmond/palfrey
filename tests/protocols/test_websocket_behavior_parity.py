@@ -461,3 +461,132 @@ def test_core_backend_rejects_unknown_asgi_message_type() -> None:
 
     with pytest.raises(RuntimeError, match="Unsupported websocket ASGI message type"):
         asyncio.run(scenario())
+
+
+def test_core_backend_close_frame_without_code_defaults_to_1000() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="none")
+    writer = CaptureWriter()
+    incoming = _masked_frame(0x8, b"")
+
+    async def app(scope, receive, send):
+        await send({"type": "websocket.accept"})
+        assert await receive() == {"type": "websocket.disconnect", "code": 1000}
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(incoming)
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1234),
+            server=("127.0.0.1", 8000),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+
+
+def test_core_backend_ignores_pong_then_reads_next_frame() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="none")
+    writer = CaptureWriter()
+    incoming = _masked_frame(0xA, b"pong") + _masked_frame(0x1, b"ok")
+
+    async def app(scope, receive, send):
+        await send({"type": "websocket.accept"})
+        assert await receive() == {"type": "websocket.receive", "text": "ok"}
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(incoming)
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1234),
+            server=("127.0.0.1", 8000),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+
+
+def test_core_backend_disconnects_on_unknown_control_opcode() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="none")
+    writer = CaptureWriter()
+    incoming = _masked_frame(0xB, b"x")
+
+    async def app(scope, receive, send):
+        await send({"type": "websocket.accept"})
+        assert await receive() == {"type": "websocket.disconnect", "code": 1002}
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(incoming)
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1234),
+            server=("127.0.0.1", 8000),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+
+
+def test_core_backend_rejects_http_response_body_after_accept() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="none")
+    writer = CaptureWriter()
+
+    async def app(scope, receive, send):
+        await send({"type": "websocket.accept"})
+        await send({"type": "websocket.http.response.body", "body": b"x"})
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1234),
+            server=("127.0.0.1", 8000),
+            is_tls=False,
+        )
+
+    with pytest.raises(RuntimeError, match="after accept"):
+        asyncio.run(scenario())
+
+
+def test_core_backend_rejects_http_response_body_before_start() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="none")
+    writer = CaptureWriter()
+
+    async def app(scope, receive, send):
+        await send({"type": "websocket.http.response.body", "body": b"x"})
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1234),
+            server=("127.0.0.1", 8000),
+            is_tls=False,
+        )
+
+    with pytest.raises(RuntimeError, match="before websocket.http.response.start"):
+        asyncio.run(scenario())

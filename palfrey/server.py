@@ -196,7 +196,16 @@ class PalfreyServer:
                 if request is None:
                     break
 
-                if self.config.effective_ws != "none" and is_websocket_upgrade(request):
+                if is_websocket_upgrade(request):
+                    if self.config.effective_ws == "none":
+                        error_response = HTTPResponse(
+                            status=400,
+                            headers=[(b"content-type", b"text/plain")],
+                            body_chunks=[b"Bad Request"],
+                        )
+                        await self._write_response(writer, error_response, keep_alive=False)
+                        break
+
                     await handle_websocket(
                         self._resolved_app.app,
                         self.config,

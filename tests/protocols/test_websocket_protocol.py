@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import os
+import socket
 import struct
 import types
+from importlib.util import find_spec
 from typing import cast
 
 import pytest
@@ -1002,6 +1005,13 @@ def _install_fake_websockets_sansio(
     parser_exc_on_receive_call: int | None = None,
     parser_close_code: int = 1002,
     parser_close_reason: str = "",
+    close_rcvd_code: int = 1001,
+    close_rcvd_reason: str = "bye",
+    permessage_import_error: bool = False,
+    permessage_typeerror_on_kwargs: bool = False,
+    parser_exception_types_enabled: bool = True,
+    invalid_state_exception_enabled: bool = True,
+    invalid_state_on_send: str | None = None,
 ) -> dict[str, object]:
     state: dict[str, object] = {"instances": [], "responses": []}
 
@@ -1040,6 +1050,8 @@ def _install_fake_websockets_sansio(
 
     class FakePerMessageDeflateFactory:
         def __init__(self, *args, **kwargs) -> None:
+            if permessage_typeerror_on_kwargs and kwargs:
+                raise TypeError("unsupported kwargs")
             self.args = args
             self.kwargs = kwargs
 
@@ -1060,10 +1072,14 @@ def _install_fake_websockets_sansio(
                 events.append(Frame(Opcode.CONT, bytes(spec[1]), fin))
             elif kind == "ping":
                 events.append(Frame(Opcode.PING, bytes(spec[1]), True))
+            elif kind == "pong":
+                events.append(Frame(Opcode.PONG, bytes(spec[1]), True))
             elif kind == "close":
                 events.append(Frame(Opcode.CLOSE, b"", True))
             elif kind == "invalid":
                 events.append(Frame(0x3, bytes(spec[1]), True))
+            elif kind == "other":
+                events.append(object())
         return events
 
     class FakeServerProtocol:
@@ -1096,7 +1112,10 @@ def _install_fake_websockets_sansio(
                 events = self._events.pop(0)
                 for event in events:
                     if isinstance(event, Frame) and event.opcode == Opcode.CLOSE:
-                        self.close_rcvd = types.SimpleNamespace(code=1001, reason="bye")
+                        self.close_rcvd = types.SimpleNamespace(
+                            code=close_rcvd_code,
+                            reason=close_rcvd_reason,
+                        )
                 return events
             return []
 
@@ -1120,21 +1139,42 @@ def _install_fake_websockets_sansio(
 
         def send_close(self, code: int, reason: str) -> None:
             self.close_sent = types.SimpleNamespace(code=code, reason=reason)
+            if invalid_state_on_send == "close":
+                raise FakeInvalidStateError("close failed")
             self._out.append(f"CLOSE:{code}:{reason}".encode())
 
         def send_text(self, data: bytes) -> None:
+            if invalid_state_on_send == "text":
+                raise FakeInvalidStateError("text failed")
             self._out.append(b"TEXT:" + data)
 
         def send_binary(self, data: bytes) -> None:
+            if invalid_state_on_send == "binary":
+                raise FakeInvalidStateError("binary failed")
             self._out.append(b"BINARY:" + data)
+
+    invalid_state_value: object
+    if invalid_state_exception_enabled:
+        invalid_state_value = FakeInvalidStateError
+    else:
+        invalid_state_value = object()
+
+    protocol_error_value: object
+    payload_too_big_value: object
+    if parser_exception_types_enabled:
+        protocol_error_value = FakeProtocolError
+        payload_too_big_value = FakePayloadTooBigError
+    else:
+        protocol_error_value = None
+        payload_too_big_value = None
 
     modules = {
         "websockets.server": types.SimpleNamespace(ServerProtocol=FakeServerProtocol),
         "websockets.frames": types.SimpleNamespace(Frame=Frame, Opcode=Opcode),
         "websockets.exceptions": types.SimpleNamespace(
-            InvalidState=FakeInvalidStateError,
-            ProtocolError=FakeProtocolError,
-            PayloadTooBig=FakePayloadTooBigError,
+            InvalidState=invalid_state_value,
+            ProtocolError=protocol_error_value,
+            PayloadTooBig=payload_too_big_value,
         ),
         "websockets.extensions.permessage_deflate": types.SimpleNamespace(
             ServerPerMessageDeflateFactory=FakePerMessageDeflateFactory
@@ -1142,7 +1182,13 @@ def _install_fake_websockets_sansio(
     }
 
     monkeypatch.setattr(websocket_module, "find_spec", lambda name: object())
-    monkeypatch.setattr(websocket_module.importlib, "import_module", lambda name: modules[name])
+
+    def _import_module(name: str):
+        if name == "websockets.extensions.permessage_deflate" and permessage_import_error:
+            raise ImportError("no permessage module")
+        return modules[name]
+
+    monkeypatch.setattr(websocket_module.importlib, "import_module", _import_module)
     return state
 
 
@@ -1704,6 +1750,94 @@ def test_websockets_backend_rejects_messages_after_close(monkeypatch: pytest.Mon
     asyncio.run(scenario())
 
 
+@pytest.mark.skipif(find_spec("websockets") is None, reason="websockets is not installed")
+def test_websockets_backend_real_socketpair_roundtrip() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="websockets")
+
+    async def app(scope, receive, send):
+        assert await receive() == {"type": "websocket.connect"}
+        await send({"type": "websocket.accept"})
+        assert await receive() == {"type": "websocket.receive", "text": "hello"}
+        await send({"type": "websocket.send", "text": "hello"})
+        await send({"type": "websocket.close", "code": 1000})
+
+    def _parse_frames(payload: bytes) -> list[tuple[int, bytes]]:
+        frames: list[tuple[int, bytes]] = []
+        index = 0
+        while index + 2 <= len(payload):
+            first = payload[index]
+            second = payload[index + 1]
+            opcode = first & 0x0F
+            length = second & 0x7F
+            header_size = 2
+            if length == 126:
+                if index + 4 > len(payload):
+                    break
+                length = struct.unpack("!H", payload[index + 2 : index + 4])[0]
+                header_size = 4
+            elif length == 127:
+                if index + 10 > len(payload):
+                    break
+                length = struct.unpack("!Q", payload[index + 2 : index + 10])[0]
+                header_size = 10
+            start = index + header_size
+            end = start + length
+            if end > len(payload):
+                break
+            frames.append((opcode, payload[start:end]))
+            index = end
+        return frames
+
+    async def scenario() -> None:
+        server_socket, client_socket = socket.socketpair()
+        server_socket.setblocking(False)
+        client_socket.setblocking(False)
+        reader, writer = await asyncio.open_connection(sock=server_socket)
+        task = asyncio.create_task(
+            handle_websocket(
+                app,
+                config,
+                reader=reader,
+                writer=writer,
+                headers=_handshake_headers(),
+                target="/",
+                client=("127.0.0.1", 1),
+                server=("127.0.0.1", 2),
+                is_tls=False,
+            )
+        )
+        try:
+            loop = asyncio.get_running_loop()
+            handshake = await asyncio.wait_for(loop.sock_recv(client_socket, 4096), timeout=2)
+            assert b"101 Switching Protocols" in handshake
+
+            await loop.sock_sendall(client_socket, _masked_frame(0x1, b"hello"))
+            frame_payload = await asyncio.wait_for(loop.sock_recv(client_socket, 4096), timeout=2)
+
+            if b"\x88" not in frame_payload:
+                frame_payload += await asyncio.wait_for(
+                    loop.sock_recv(client_socket, 4096), timeout=2
+                )
+
+            frames = _parse_frames(frame_payload)
+            assert (0x1, b"hello") in frames
+            assert any(
+                opcode == 0x8 and body[:2] == struct.pack("!H", 1000) for opcode, body in frames
+            )
+
+            # Acknowledge server close so websockets backend close() can return.
+            await loop.sock_sendall(client_socket, _masked_frame(0x8, struct.pack("!H", 1000)))
+            client_socket.close()
+            await asyncio.wait_for(task, timeout=2)
+        finally:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+            client_socket.close()
+
+    asyncio.run(scenario())
+
+
 def test_websockets_sansio_backend_rejects_non_101_accept_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1794,6 +1928,649 @@ def test_websockets_sansio_backend_parser_exception_includes_disconnect_reason(
 
     async def scenario() -> None:
         reader = await make_stream_reader(b"x")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1),
+            server=("127.0.0.1", 2),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+
+
+def test_websockets_sansio_backend_handles_permessage_import_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="websockets-sansio")
+    writer = CaptureWriter()
+    state = _install_fake_websockets_sansio(
+        monkeypatch,
+        event_batches=[[("request", "/")]],
+        permessage_import_error=True,
+    )
+
+    async def app(scope, receive, send):
+        assert await receive() == {"type": "websocket.connect"}
+        await send({"type": "websocket.accept"})
+        assert await receive() == {"type": "websocket.disconnect", "code": 1005}
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1),
+            server=("127.0.0.1", 2),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+    instance = cast("list[object]", state["instances"])[0]
+    assert "extensions" not in instance.kwargs
+
+
+def test_websockets_sansio_backend_permessage_factory_typeerror_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="websockets-sansio")
+    writer = CaptureWriter()
+    state = _install_fake_websockets_sansio(
+        monkeypatch,
+        event_batches=[[("request", "/")]],
+        permessage_typeerror_on_kwargs=True,
+    )
+
+    async def app(scope, receive, send):
+        assert await receive() == {"type": "websocket.connect"}
+        await send({"type": "websocket.accept"})
+        assert await receive() == {"type": "websocket.disconnect", "code": 1005}
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1),
+            server=("127.0.0.1", 2),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+    instance = cast("list[object]", state["instances"])[0]
+    extension = instance.kwargs["extensions"][0]
+    assert extension.kwargs == {}
+
+
+def test_websockets_sansio_backend_bad_initial_receive_returns_400(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="websockets-sansio")
+    writer = CaptureWriter()
+    _install_fake_websockets_sansio(
+        monkeypatch,
+        event_batches=[[("request", "/")]],
+        raise_on_receive_call={1},
+    )
+
+    async def app(scope, receive, send):
+        raise AssertionError("ASGI app must not run when initial parser step fails")
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1),
+            server=("127.0.0.1", 2),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+    assert b"400 Bad Request" in b"".join(writer.writes)
+
+
+def test_websockets_sansio_backend_handles_pong_and_close_without_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="websockets-sansio")
+    writer = CaptureWriter()
+    _install_fake_websockets_sansio(
+        monkeypatch,
+        event_batches=[[("request", "/")], [("pong", b"p"), ("close", b"")]],
+        close_rcvd_code=1000,
+        close_rcvd_reason="",
+    )
+
+    async def app(scope, receive, send):
+        assert await receive() == {"type": "websocket.connect"}
+        await send({"type": "websocket.accept"})
+        assert await receive() == {"type": "websocket.disconnect", "code": 1000}
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"x")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1),
+            server=("127.0.0.1", 2),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+
+
+def test_websockets_sansio_backend_fragmented_text_handles_continue_and_bad_utf8(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="websockets-sansio")
+    writer = CaptureWriter()
+    _install_fake_websockets_sansio(
+        monkeypatch,
+        event_batches=[
+            [("request", "/")],
+            [("text", b"\xff", False), ("cont", b"", False), ("cont", b"", True)],
+        ],
+    )
+
+    async def app(scope, receive, send):
+        assert await receive() == {"type": "websocket.connect"}
+        await send({"type": "websocket.accept"})
+        assert await receive() == {"type": "websocket.disconnect", "code": 1007}
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"x")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1),
+            server=("127.0.0.1", 2),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+    assert b"CLOSE:1007:invalid UTF-8 payload" in b"".join(writer.writes)
+
+
+def test_websockets_sansio_backend_binary_fragment_and_invalid_opcode_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="websockets-sansio")
+    writer = CaptureWriter()
+    _install_fake_websockets_sansio(
+        monkeypatch,
+        event_batches=[
+            [("request", "/")],
+            [("binary", b"a", False), ("cont", b"b", True)],
+            [("invalid", b"oops")],
+        ],
+    )
+
+    async def app(scope, receive, send):
+        assert await receive() == {"type": "websocket.connect"}
+        await send({"type": "websocket.accept"})
+        assert await receive() == {"type": "websocket.receive", "bytes": b"ab"}
+        assert await receive() == {"type": "websocket.disconnect", "code": 1002}
+
+    async def scenario() -> None:
+        class ChunkedReader:
+            def __init__(self, chunks: list[bytes]) -> None:
+                self._chunks = chunks
+                self._index = 0
+
+            async def read(self, _size: int) -> bytes:
+                if self._index >= len(self._chunks):
+                    return b""
+                chunk = self._chunks[self._index]
+                self._index += 1
+                return chunk
+
+        reader = ChunkedReader([b"x", b"x", b"x"])
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1),
+            server=("127.0.0.1", 2),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+    assert b"CLOSE:1002:unsupported frame opcode" in b"".join(writer.writes)
+
+
+def test_websockets_sansio_backend_parser_exception_without_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="websockets-sansio")
+    writer = CaptureWriter()
+    _install_fake_websockets_sansio(
+        monkeypatch,
+        event_batches=[[("request", "/")]],
+        parser_exc_on_receive_call=2,
+        parser_close_code=1002,
+        parser_close_reason="",
+    )
+
+    async def app(scope, receive, send):
+        assert await receive() == {"type": "websocket.connect"}
+        await send({"type": "websocket.accept"})
+        assert await receive() == {"type": "websocket.disconnect", "code": 1002}
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"x")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1),
+            server=("127.0.0.1", 2),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+
+
+def test_websockets_sansio_backend_parser_tuple_empty_still_processes_packets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="websockets-sansio")
+    writer = CaptureWriter()
+    _install_fake_websockets_sansio(
+        monkeypatch,
+        event_batches=[[("request", "/")], [("other",)]],
+        parser_exception_types_enabled=False,
+        invalid_state_exception_enabled=False,
+    )
+
+    async def app(scope, receive, send):
+        assert await receive() == {"type": "websocket.connect"}
+        await send({"type": "websocket.accept"})
+        assert await receive() == {"type": "websocket.disconnect", "code": 1005}
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"x")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1),
+            server=("127.0.0.1", 2),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+
+
+def test_websockets_sansio_backend_binary_final_frame_is_forwarded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="websockets-sansio")
+    writer = CaptureWriter()
+    _install_fake_websockets_sansio(
+        monkeypatch,
+        event_batches=[
+            [("request", "/")],
+            [("binary", b"raw", True)],
+        ],
+    )
+
+    async def app(scope, receive, send):
+        assert await receive() == {"type": "websocket.connect"}
+        await send({"type": "websocket.accept"})
+        assert await receive() == {"type": "websocket.receive", "bytes": b"raw"}
+        await send({"type": "websocket.close"})
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"x")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1),
+            server=("127.0.0.1", 2),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+
+
+def test_websockets_sansio_backend_handles_invalid_message_after_accept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="websockets-sansio")
+    writer = CaptureWriter()
+    _install_fake_websockets_sansio(monkeypatch, event_batches=[[("request", "/")]])
+
+    async def app(scope, receive, send):
+        assert await receive() == {"type": "websocket.connect"}
+        await send({"type": "websocket.accept"})
+        await send({"type": "websocket.http.response.start", "status": 204, "headers": []})
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1),
+            server=("127.0.0.1", 2),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+    assert b"".join(writer.writes) == b"RESP:101CLOSE:1000:"
+
+
+def test_websockets_sansio_backend_works_with_permessage_deflate_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = PalfreyConfig(
+        app="tests.fixtures.apps:websocket_app",
+        ws="websockets-sansio",
+        ws_per_message_deflate=False,
+    )
+    writer = CaptureWriter()
+    _install_fake_websockets_sansio(
+        monkeypatch, event_batches=[[("request", "/")], [("close", b"")]]
+    )
+
+    async def app(scope, receive, send):
+        assert await receive() == {"type": "websocket.connect"}
+        await send({"type": "websocket.accept"})
+        assert await receive() == {"type": "websocket.disconnect", "code": 1001, "reason": "bye"}
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"x")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1),
+            server=("127.0.0.1", 2),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+
+
+def test_websockets_sansio_backend_close_before_accept_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="websockets-sansio")
+    writer = CaptureWriter()
+    _install_fake_websockets_sansio(monkeypatch, event_batches=[[("request", "/")]])
+
+    async def app(scope, receive, send):
+        assert await receive() == {"type": "websocket.connect"}
+        await send({"type": "websocket.close"})
+        assert await receive() == {"type": "websocket.disconnect", "code": 1006}
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1),
+            server=("127.0.0.1", 2),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+    assert b"RESP:403" in b"".join(writer.writes)
+
+
+def test_websockets_sansio_backend_rejects_invalid_initial_asgi_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="websockets-sansio")
+    writer = CaptureWriter()
+    _install_fake_websockets_sansio(monkeypatch, event_batches=[[("request", "/")]])
+
+    async def app(scope, receive, send):
+        assert await receive() == {"type": "websocket.connect"}
+        await send({"type": "websocket.send", "text": "bad"})
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1),
+            server=("127.0.0.1", 2),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+    assert b"RESP:500:Internal Server Error" in b"".join(writer.writes)
+
+
+def test_websockets_sansio_backend_binary_send_close_and_invalid_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="websockets-sansio")
+    writer = CaptureWriter()
+    _install_fake_websockets_sansio(monkeypatch, event_batches=[[("request", "/")]])
+
+    async def app(scope, receive, send):
+        assert await receive() == {"type": "websocket.connect"}
+        await send({"type": "websocket.accept"})
+        await send({"type": "websocket.send", "bytes": b"bin"})
+        await send({"type": "websocket.close", "code": 1001, "reason": "bye"})
+        assert await receive() == {"type": "websocket.disconnect", "code": 1001, "reason": "bye"}
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1),
+            server=("127.0.0.1", 2),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+    payload = b"".join(writer.writes)
+    assert b"BINARY:bin" in payload
+    assert b"CLOSE:1001:bye" in payload
+
+    writer = CaptureWriter()
+    _install_fake_websockets_sansio(
+        monkeypatch,
+        event_batches=[[("request", "/")]],
+        invalid_state_on_send="text",
+    )
+
+    async def invalid_state_app(scope, receive, send):
+        assert await receive() == {"type": "websocket.connect"}
+        await send({"type": "websocket.accept"})
+        await send({"type": "websocket.send", "text": "x"})
+        assert await receive() == {"type": "websocket.disconnect", "code": 1006}
+
+    async def invalid_state_scenario() -> None:
+        reader = await make_stream_reader(b"")
+        await handle_websocket(
+            invalid_state_app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1),
+            server=("127.0.0.1", 2),
+            is_tls=False,
+        )
+
+    asyncio.run(invalid_state_scenario())
+
+
+def test_websockets_sansio_backend_initial_response_message_flow_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="websockets-sansio")
+    writer = CaptureWriter()
+    state = _install_fake_websockets_sansio(monkeypatch, event_batches=[[("request", "/")]])
+
+    async def app(scope, receive, send):
+        assert await receive() == {"type": "websocket.connect"}
+        await send(
+            {"type": "websocket.http.response.start", "status": 404, "headers": [(b"x", b"1")]}
+        )
+        await send(
+            {"type": "websocket.http.response.body", "body": bytearray(b"a"), "more_body": True}
+        )
+        await send({"type": "websocket.http.response.body", "body": b"b"})
+        assert await receive() == {"type": "websocket.disconnect", "code": 1006}
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1),
+            server=("127.0.0.1", 2),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+    responses = cast("list[object]", state["responses"])
+    assert responses
+    assert responses[-1].headers.get("x") == "1"
+
+    writer = CaptureWriter()
+    _install_fake_websockets_sansio(monkeypatch, event_batches=[[("request", "/")]])
+
+    async def bad_message_app(scope, receive, send):
+        assert await receive() == {"type": "websocket.connect"}
+        await send({"type": "websocket.http.response.start", "status": 404, "headers": []})
+        await send({"type": "websocket.close"})
+
+    async def bad_message_scenario() -> None:
+        reader = await make_stream_reader(b"")
+        await handle_websocket(
+            bad_message_app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1),
+            server=("127.0.0.1", 2),
+            is_tls=False,
+        )
+
+    asyncio.run(bad_message_scenario())
+    assert writer.writes == []
+
+
+def test_websockets_sansio_backend_rejects_unexpected_message_after_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="websockets-sansio")
+    writer = CaptureWriter()
+    _install_fake_websockets_sansio(monkeypatch, event_batches=[[("request", "/")]])
+
+    async def app(scope, receive, send):
+        assert await receive() == {"type": "websocket.connect"}
+        await send({"type": "websocket.accept"})
+        await send({"type": "websocket.close"})
+        await send({"type": "websocket.send", "text": "late"})
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1),
+            server=("127.0.0.1", 2),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+    assert b"".join(writer.writes) == b"RESP:101CLOSE:1000:"
+
+
+def test_websockets_sansio_backend_app_return_value_and_pending_task_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="websockets-sansio")
+    writer = CaptureWriter()
+    _install_fake_websockets_sansio(monkeypatch, event_batches=[[("request", "/")]])
+
+    class BlockingReader:
+        async def read(self, _size: int) -> bytes:
+            await asyncio.sleep(3600)
+            return b""
+
+    async def app(scope, receive, send):
+        assert await receive() == {"type": "websocket.connect"}
+        await send({"type": "websocket.accept"})
+        return 1
+
+    async def scenario() -> None:
+        reader = BlockingReader()
         await handle_websocket(
             app,
             config,

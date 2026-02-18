@@ -11,16 +11,19 @@ from collections.abc import Callable, Sequence
 ParseHeaderItemsFn = Callable[[list[str]], list[tuple[str, str]]]
 ParseRequestHeadFn = Callable[[bytes], tuple[str, str, str, list[tuple[str, str]]]]
 SplitCSVValuesFn = Callable[[str], list[str]]
+UnmaskWebSocketPayloadFn = Callable[[bytes, bytes], bytes]
 
 _parse_header_items: ParseHeaderItemsFn | None = None
 _parse_request_head: ParseRequestHeadFn | None = None
 _split_csv_values: SplitCSVValuesFn | None = None
+_unmask_websocket_payload: UnmaskWebSocketPayloadFn | None = None
 
 try:
     from palfrey_rust import (
         parse_header_items as _parse_header_items,
         parse_request_head as _parse_request_head,
         split_csv_values as _split_csv_values,
+        unmask_websocket_payload as _unmask_websocket_payload,
     )
 
     HAS_RUST_EXTENSION = True
@@ -94,10 +97,7 @@ def parse_request_head(data: bytes) -> tuple[str, str, str, list[tuple[str, str]
     if HAS_RUST_EXTENSION and _parse_request_head is not None:
         return _parse_request_head(data)
 
-    try:
-        decoded = data.decode("latin-1")
-    except UnicodeDecodeError as exc:
-        raise ValueError("Request head is not valid latin-1 data") from exc
+    decoded = data.decode("latin-1")
 
     lines = decoded.split("\r\n")
     if not lines or not lines[0]:
@@ -118,3 +118,26 @@ def parse_request_head(data: bytes) -> tuple[str, str, str, list[tuple[str, str]
         headers.append((name.strip(), value.lstrip()))
 
     return method, target, version, headers
+
+
+def unmask_websocket_payload(payload: bytes, masking_key: bytes) -> bytes:
+    """Apply WebSocket masking key to payload bytes.
+
+    Args:
+        payload: Masked payload bytes from client frames.
+        masking_key: 4-byte WebSocket masking key.
+
+    Returns:
+        Unmasked payload bytes.
+
+    Raises:
+        ValueError: If masking key length is not exactly 4 bytes.
+    """
+
+    if len(masking_key) != 4:
+        raise ValueError("WebSocket masking key must be exactly 4 bytes")
+
+    if HAS_RUST_EXTENSION and _unmask_websocket_payload is not None:
+        return _unmask_websocket_payload(payload, masking_key)
+
+    return bytes(byte ^ masking_key[index % 4] for index, byte in enumerate(payload))

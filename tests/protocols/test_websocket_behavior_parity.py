@@ -238,3 +238,355 @@ def test_handle_websocket_sends_close_if_app_returns_after_accept() -> None:
 
     close_opcode, _ = _decode_frame_header(writer.writes[-1])
     assert close_opcode == 0x8
+
+
+def test_core_backend_close_before_accept_reports_disconnect_1006() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="none")
+    writer = CaptureWriter()
+
+    async def app(scope, receive, send):
+        await send({"type": "websocket.close", "code": 1001, "reason": "bye"})
+        message = await receive()
+        assert message == {"type": "websocket.disconnect", "code": 1006}
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1234),
+            server=("127.0.0.1", 8000),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+    assert b"403 Forbidden" in writer.writes[0]
+
+
+def test_core_backend_rejects_multiple_http_response_start_events() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="none")
+    writer = CaptureWriter()
+
+    async def app(scope, receive, send):
+        await send({"type": "websocket.http.response.start", "status": 404, "headers": []})
+        await send({"type": "websocket.http.response.start", "status": 404, "headers": []})
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1234),
+            server=("127.0.0.1", 8000),
+            is_tls=False,
+        )
+
+    with pytest.raises(RuntimeError, match="Expected ASGI message 'websocket.http.response.body'"):
+        asyncio.run(scenario())
+
+
+def test_core_backend_fragmented_text_invalid_utf8_disconnects_1007() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="none")
+    writer = CaptureWriter()
+    incoming = _masked_frame(0x1, b"\xff", fin=False) + _masked_frame(0x0, b"", fin=True)
+
+    async def app(scope, receive, send):
+        await send({"type": "websocket.accept"})
+        assert await receive() == {"type": "websocket.disconnect", "code": 1007}
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(incoming)
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1234),
+            server=("127.0.0.1", 8000),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+
+
+def test_core_backend_http_response_body_cast_and_header_passthrough() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="none")
+    writer = CaptureWriter()
+
+    async def app(scope, receive, send):
+        await send(
+            {
+                "type": "websocket.http.response.start",
+                "status": 400,
+                "headers": [(b"content-length", b"3"), (b"connection", b"close")],
+            }
+        )
+        await send({"type": "websocket.http.response.body", "body": b"a", "more_body": True})
+        await send({"type": "websocket.http.response.body", "body": bytearray(b"bc")})
+        assert await receive() == {"type": "websocket.disconnect", "code": 1006}
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1234),
+            server=("127.0.0.1", 8000),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+    payload = b"".join(writer.writes).lower()
+    assert payload.count(b"content-length:") == 1
+    assert payload.count(b"connection: close") == 1
+    assert payload.endswith(b"abc")
+
+
+def test_core_backend_fragmented_binary_roundtrip() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="none")
+    writer = CaptureWriter()
+    incoming = (
+        _masked_frame(0x2, b"\x00", fin=False)
+        + _masked_frame(0x0, b"\x01", fin=False)
+        + _masked_frame(0x0, b"\x02", fin=True)
+    )
+
+    async def app(scope, receive, send):
+        await send({"type": "websocket.accept"})
+        assert await receive() == {"type": "websocket.receive", "bytes": b"\x00\x01\x02"}
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(incoming)
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1234),
+            server=("127.0.0.1", 8000),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+
+
+def test_core_backend_duplicate_accept_is_ignored() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="none")
+    writer = CaptureWriter()
+
+    async def app(scope, receive, send):
+        await send({"type": "websocket.accept"})
+        await send({"type": "websocket.accept"})
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1234),
+            server=("127.0.0.1", 8000),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+    assert b"101 Switching Protocols" in writer.writes[0]
+
+
+def test_core_backend_rejects_http_response_events_after_accept() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="none")
+    writer = CaptureWriter()
+
+    async def app(scope, receive, send):
+        await send({"type": "websocket.accept"})
+        await send({"type": "websocket.http.response.start", "status": 401})
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1234),
+            server=("127.0.0.1", 8000),
+            is_tls=False,
+        )
+
+    with pytest.raises(RuntimeError, match="after accept"):
+        asyncio.run(scenario())
+
+
+def test_core_backend_rejects_unknown_asgi_message_type() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="none")
+    writer = CaptureWriter()
+
+    async def app(scope, receive, send):
+        await send({"type": "websocket.unknown"})
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1234),
+            server=("127.0.0.1", 8000),
+            is_tls=False,
+        )
+
+    with pytest.raises(RuntimeError, match="Unsupported websocket ASGI message type"):
+        asyncio.run(scenario())
+
+
+def test_core_backend_close_frame_without_code_defaults_to_1000() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="none")
+    writer = CaptureWriter()
+    incoming = _masked_frame(0x8, b"")
+
+    async def app(scope, receive, send):
+        await send({"type": "websocket.accept"})
+        assert await receive() == {"type": "websocket.disconnect", "code": 1000}
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(incoming)
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1234),
+            server=("127.0.0.1", 8000),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+
+
+def test_core_backend_ignores_pong_then_reads_next_frame() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="none")
+    writer = CaptureWriter()
+    incoming = _masked_frame(0xA, b"pong") + _masked_frame(0x1, b"ok")
+
+    async def app(scope, receive, send):
+        await send({"type": "websocket.accept"})
+        assert await receive() == {"type": "websocket.receive", "text": "ok"}
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(incoming)
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1234),
+            server=("127.0.0.1", 8000),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+
+
+def test_core_backend_disconnects_on_unknown_control_opcode() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="none")
+    writer = CaptureWriter()
+    incoming = _masked_frame(0xB, b"x")
+
+    async def app(scope, receive, send):
+        await send({"type": "websocket.accept"})
+        assert await receive() == {"type": "websocket.disconnect", "code": 1002}
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(incoming)
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1234),
+            server=("127.0.0.1", 8000),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+
+
+def test_core_backend_rejects_http_response_body_after_accept() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="none")
+    writer = CaptureWriter()
+
+    async def app(scope, receive, send):
+        await send({"type": "websocket.accept"})
+        await send({"type": "websocket.http.response.body", "body": b"x"})
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1234),
+            server=("127.0.0.1", 8000),
+            is_tls=False,
+        )
+
+    with pytest.raises(RuntimeError, match="after accept"):
+        asyncio.run(scenario())
+
+
+def test_core_backend_rejects_http_response_body_before_start() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="none")
+    writer = CaptureWriter()
+
+    async def app(scope, receive, send):
+        await send({"type": "websocket.http.response.body", "body": b"x"})
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1234),
+            server=("127.0.0.1", 8000),
+            is_tls=False,
+        )
+
+    with pytest.raises(RuntimeError, match="before websocket.http.response.start"):
+        asyncio.run(scenario())

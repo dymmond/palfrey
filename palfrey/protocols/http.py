@@ -267,6 +267,10 @@ def build_http_scope(
 
     path, _, query = request.target.partition("?")
     decoded_path = unquote(path)
+    raw_path = path.encode("latin-1")
+    root_path_bytes = root_path.encode("latin-1")
+    full_path = root_path + decoded_path
+    full_raw_path = root_path_bytes + raw_path
 
     return {
         "type": "http",
@@ -274,8 +278,8 @@ def build_http_scope(
         "http_version": request.http_version.removeprefix("HTTP/"),
         "method": request.method,
         "scheme": "https" if is_tls else "http",
-        "path": decoded_path,
-        "raw_path": path.encode("latin-1"),
+        "path": full_path,
+        "raw_path": full_raw_path,
         "query_string": query.encode("latin-1"),
         "root_path": root_path,
         "headers": [

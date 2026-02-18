@@ -127,7 +127,7 @@ def test_validate_protocol_backends_rejects_missing_httptools(monkeypatch) -> No
         server._validate_protocol_backends()
 
 
-def test_validate_protocol_backends_allows_missing_wsproto(monkeypatch) -> None:
+def test_validate_protocol_backends_rejects_missing_wsproto(monkeypatch) -> None:
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", ws="wsproto"))
 
     def fake_find_spec(name: str):
@@ -136,6 +136,26 @@ def test_validate_protocol_backends_allows_missing_wsproto(monkeypatch) -> None:
         return object()
 
     monkeypatch.setattr(server_module, "find_spec", fake_find_spec)
+    with pytest.raises(RuntimeError, match="wsproto"):
+        server._validate_protocol_backends()
+
+
+def test_validate_protocol_backends_rejects_missing_websockets(monkeypatch) -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", ws="websockets"))
+
+    def fake_find_spec(name: str):
+        if name == "websockets":
+            return None
+        return object()
+
+    monkeypatch.setattr(server_module, "find_spec", fake_find_spec)
+    with pytest.raises(RuntimeError, match="websockets"):
+        server._validate_protocol_backends()
+
+
+def test_validate_protocol_backends_allows_auto_when_no_ws_backends(monkeypatch) -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", ws="auto"))
+    monkeypatch.setattr(server_module, "find_spec", lambda name: None)
     server._validate_protocol_backends()
 
 

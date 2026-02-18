@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import logging.config
+from configparser import RawConfigParser
 from pathlib import Path
-from typing import Any
+from typing import IO, Any, cast
 
 from palfrey.config import PalfreyConfig
 
@@ -14,11 +15,14 @@ TRACE_LEVEL = 5
 logging.addLevelName(TRACE_LEVEL, "TRACE")
 
 
-def _to_logging_level(level: str | None) -> int:
+def _to_logging_level(level: str | int | None) -> int:
     """Map configured log level names to Python logging level integers."""
 
     if level is None:
         return logging.INFO
+
+    if isinstance(level, int):
+        return level
 
     if level == "trace":
         return TRACE_LEVEL
@@ -40,8 +44,19 @@ def configure_logging(config: PalfreyConfig) -> None:
         config: Runtime configuration.
     """
 
-    if config.log_config:
-        path = Path(config.log_config)
+    log_config = config.log_config
+    if log_config:
+        if isinstance(log_config, dict):
+            logging.config.dictConfig(cast(dict[str, Any], log_config))
+            return
+        if isinstance(log_config, RawConfigParser):
+            logging.config.fileConfig(log_config, disable_existing_loggers=False)
+            return
+        if hasattr(log_config, "read"):
+            logging.config.fileConfig(cast(IO[str], log_config), disable_existing_loggers=False)
+            return
+
+        path = Path(log_config)
         if path.suffix.lower() == ".json":
             with path.open("r", encoding="utf-8") as file:
                 payload: dict[str, Any] = json.load(file)

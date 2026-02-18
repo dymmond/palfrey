@@ -94,10 +94,7 @@ def parse_request_head(data: bytes) -> tuple[str, str, str, list[tuple[str, str]
     if HAS_RUST_EXTENSION and _parse_request_head is not None:
         return _parse_request_head(data)
 
-    try:
-        decoded = data.decode("latin-1")
-    except UnicodeDecodeError as exc:
-        raise ValueError("Request head is not valid latin-1 data") from exc
+    decoded = data.decode("latin-1")
 
     lines = decoded.split("\r\n")
     if not lines or not lines[0]:

@@ -71,12 +71,36 @@ def test_effective_http_resolves_auto_to_h11_when_httptools_missing(
     assert config.effective_http == "h11"
 
 
-def test_effective_ws_resolves_auto_to_builtin_websockets_when_no_backends(
+def test_effective_ws_resolves_auto_to_websockets_when_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        config_module,
+        "find_spec",
+        lambda name: ModuleSpec(name, loader=None) if name == "websockets" else None,
+    )
+    config = PalfreyConfig(app="tests.fixtures.apps:http_app", ws="auto")
+    assert config.effective_ws == "websockets"
+
+
+def test_effective_ws_resolves_auto_to_wsproto_when_websockets_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        config_module,
+        "find_spec",
+        lambda name: ModuleSpec(name, loader=None) if name == "wsproto" else None,
+    )
+    config = PalfreyConfig(app="tests.fixtures.apps:http_app", ws="auto")
+    assert config.effective_ws == "wsproto"
+
+
+def test_effective_ws_resolves_auto_to_none_when_no_backends(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(config_module, "find_spec", lambda name: None)
     config = PalfreyConfig(app="tests.fixtures.apps:http_app", ws="auto")
-    assert config.effective_ws == "websockets"
+    assert config.effective_ws == "none"
 
 
 def test_effective_ws_forces_none_for_wsgi_interface() -> None:

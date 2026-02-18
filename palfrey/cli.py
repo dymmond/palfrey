@@ -34,7 +34,7 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
 
 
 @click.command(context_settings={"auto_envvar_prefix": "PALFREY"})
-@click.argument("app", required=True, envvar="PALFREY_APP")
+@click.argument("app", required=True, envvar=["PALFREY_APP", "UVICORN_APP"])
 @click.option("--host", default="127.0.0.1", show_default=True, type=str)
 @click.option("--port", default=8000, show_default=True, type=int)
 @click.option("--uds", default=None, type=click.Path(path_type=str))
@@ -80,13 +80,18 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
     type=str,
 )
 @click.option("--reload", is_flag=True, default=False, show_default=True)
-@click.option("--reload-dir", "reload_dirs", multiple=True, type=click.Path(path_type=str))
+@click.option(
+    "--reload-dir",
+    "reload_dirs",
+    multiple=True,
+    type=click.Path(path_type=str, exists=True),
+)
 @click.option("--reload-include", "reload_includes", multiple=True, type=str)
 @click.option("--reload-exclude", "reload_excludes", multiple=True, type=str)
 @click.option("--reload-delay", default=0.25, show_default=True, type=float)
 @click.option("--workers", default=None, type=int)
-@click.option("--env-file", default=None, type=click.Path(path_type=str))
-@click.option("--log-config", default=None, type=click.Path(path_type=str))
+@click.option("--env-file", default=None, type=click.Path(path_type=str, exists=True))
+@click.option("--log-config", default=None, type=click.Path(path_type=str, exists=True))
 @click.option(
     "--log-level",
     default=None,
@@ -114,7 +119,7 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
 @click.option("--ssl-ca-certs", default=None, type=click.Path(path_type=str))
 @click.option("--ssl-ciphers", default="TLSv1", show_default=True, type=str)
 @click.option("--header", "headers", multiple=True, type=str)
-@click.option("--app-dir", default="", type=click.Path(path_type=str))
+@click.option("--app-dir", default="", show_default=True, type=click.Path(path_type=str))
 @click.option("--factory", is_flag=True, default=False)
 @click.option("--h11-max-incomplete-event-size", default=None, type=int)
 @click.option(

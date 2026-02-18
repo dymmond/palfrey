@@ -5,11 +5,13 @@ from __future__ import annotations
 import logging
 import os
 import ssl
+from collections.abc import Awaitable, Callable
+from configparser import RawConfigParser
 from contextlib import suppress
 from dataclasses import dataclass, field
 from importlib.util import find_spec
 from pathlib import Path
-from typing import Any, Literal
+from typing import IO, Any, Literal
 
 from palfrey.acceleration import parse_header_items
 from palfrey.types import AppType
@@ -150,22 +152,24 @@ class PalfreyConfig:
     reload_excludes: list[str] = field(default_factory=list)
     reload_delay: float = 0.25
     workers: int | None = None
-    env_file: str | None = None
-    log_config: str | None = None
-    log_level: LogLevel | str | None = None
+    env_file: str | os.PathLike[str] | None = None
+    log_config: dict[str, Any] | str | RawConfigParser | IO[Any] | None = None
+    log_level: LogLevel | int | str | None = None
     access_log: bool = True
     proxy_headers: bool = True
     server_header: bool = True
     date_header: bool = True
-    forwarded_allow_ips: str | None = None
+    forwarded_allow_ips: list[str] | str | None = None
     root_path: str = ""
     limit_concurrency: int | None = None
     backlog: int = 2048
     limit_max_requests: int | None = None
     limit_max_requests_jitter: int = 0
     timeout_keep_alive: int = 5
+    timeout_notify: int = 30
     timeout_graceful_shutdown: int | None = None
     timeout_worker_healthcheck: int = 5
+    callback_notify: Callable[..., Awaitable[None]] | None = None
     ssl_keyfile: str | None = None
     ssl_certfile: str | None = None
     ssl_keyfile_password: str | None = None
@@ -173,7 +177,7 @@ class PalfreyConfig:
     ssl_cert_reqs: int = int(ssl.CERT_NONE)
     ssl_ca_certs: str | None = None
     ssl_ciphers: str = "TLSv1"
-    headers: list[tuple[str, str]] | list[str] = field(default_factory=list)
+    headers: list[tuple[str, str]] | list[str] | None = field(default_factory=list)
     use_colors: bool | None = None
     app_dir: str | None = ""
     factory: bool = False
@@ -260,9 +264,9 @@ class PalfreyConfig:
             self.reload_dirs = sorted(str(path) for path in resolved_reload_dirs)
             logger.info("Will watch for changes in these directories: %s", self.reload_dirs)
         else:
-            self.reload_dirs = list(self.reload_dirs)
-            self.reload_includes = list(self.reload_includes)
-            self.reload_excludes = list(self.reload_excludes)
+            self.reload_dirs = _normalize_dirs(self.reload_dirs)
+            self.reload_includes = _normalize_dirs(self.reload_includes)
+            self.reload_excludes = _normalize_dirs(self.reload_excludes)
 
         if self.app_dir is not None:
             self.app_dir = str(Path(self.app_dir).resolve())
@@ -301,7 +305,11 @@ class PalfreyConfig:
         if self.interface == "wsgi":
             return "none"
         if self.ws == "auto":
-            return "websockets"
+            if _module_available("websockets"):
+                return "websockets"
+            if _module_available("wsproto"):
+                return "wsproto"
+            return "none"
         return self.ws  # type: ignore[return-value]
 
     @property
@@ -364,3 +372,6 @@ class PalfreyConfig:
         }
         options.update(kwargs)
         return cls(**options)
+
+
+Config = PalfreyConfig

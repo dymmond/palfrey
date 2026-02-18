@@ -28,6 +28,13 @@ def test_cli_reads_app_from_environment(monkeypatch) -> None:
     assert captured[0].app == "tests.fixtures.apps:http_app"
 
 
+def test_cli_reads_app_from_uvicorn_environment(monkeypatch) -> None:
+    captured, runner = _capture_config(monkeypatch)
+    result = runner.invoke(main, env={"UVICORN_APP": "tests.fixtures.apps:http_app"})
+    assert result.exit_code == 0
+    assert captured[0].app == "tests.fixtures.apps:http_app"
+
+
 def test_cli_argument_overrides_environment_app(monkeypatch) -> None:
     captured, runner = _capture_config(monkeypatch)
     result = runner.invoke(
@@ -73,7 +80,7 @@ def test_cli_forwards_reload_include_patterns(monkeypatch) -> None:
         ],
     )
     assert result.exit_code == 0
-    assert captured[0].reload_includes == ["*.py", "*.yaml"]
+    assert sorted(captured[0].reload_includes) == ["*.py", "*.yaml"]
 
 
 def test_cli_forwards_reload_exclude_patterns(monkeypatch) -> None:
@@ -89,7 +96,7 @@ def test_cli_forwards_reload_exclude_patterns(monkeypatch) -> None:
         ],
     )
     assert result.exit_code == 0
-    assert captured[0].reload_excludes == [".venv/*", "*.pyc"]
+    assert sorted(captured[0].reload_excludes) == ["*.pyc", ".venv/*"]
 
 
 def test_cli_uses_uvicorn_compatible_ssl_defaults(monkeypatch) -> None:

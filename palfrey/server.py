@@ -390,3 +390,12 @@ class PalfreyServer:
         selected_ws = self.config.effective_ws
         if selected_ws == "none":
             return
+
+        if selected_ws in {"websockets", "websockets-sansio"} and find_spec("websockets") is None:
+            raise RuntimeError(f"WebSocket mode '{selected_ws}' requires the 'websockets' package.")
+
+        if selected_ws == "wsproto" and find_spec("wsproto") is None:
+            raise RuntimeError("WebSocket mode 'wsproto' requires the 'wsproto' package.")
+
+
+Server = PalfreyServer

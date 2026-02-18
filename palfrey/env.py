@@ -7,7 +7,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 
-def load_env_file(path: str | None) -> None:
+def load_env_file(path: str | os.PathLike[str] | None) -> None:
     """Load `KEY=VALUE` pairs from an env file.
 
     Args:

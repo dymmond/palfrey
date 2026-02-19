@@ -1,5 +1,20 @@
 # Release Notes
 
+## 0.1.1
+
+This is the first patch release for Palfrey.
+
+### Fixed
+
+- Reload child process spawning now uses a canonical Palfrey command path when the parent process was started by a non-Palfrey wrapper CLI.
+- `--fd` handling during reload restarts is now deduplicated and reapplied safely, avoiding repeated invalid option propagation.
+- Runtime reload supervisor invocation now passes full config context when building child argv, improving reliability across launch environments.
+
+### Operational impact
+
+- Reload mode is now stable in embedded/wrapper launch flows where process argv does not directly represent a native Palfrey invocation.
+- No change to default protocol modes or runtime defaults.
+
 ## 0.1.0
 
 This is the first public release of Palfrey.

@@ -1,5 +1,3 @@
-"""Expanded CLI parity tests modeled after Uvicorn's Click surface."""
-
 from __future__ import annotations
 
 import ssl

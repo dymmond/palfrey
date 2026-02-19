@@ -1,5 +1,3 @@
-"""Extended adapter behavior tests inspired by Uvicorn adapter expectations."""
-
 from __future__ import annotations
 
 import asyncio

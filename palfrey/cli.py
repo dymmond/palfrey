@@ -9,13 +9,30 @@ from __future__ import annotations
 import os
 import platform
 import ssl
+from typing import Any, get_args
 
 import click
 
 from palfrey import __version__
-from palfrey.config import PalfreyConfig
+from palfrey.config import (
+    KNOWN_LOG_LEVELS,
+    KnownHTTPType,
+    KnownInterfaceType,
+    KnownLifespanMode,
+    KnownLoopType,
+    KnownWSType,
+    PalfreyConfig,
+)
 from palfrey.importer import AppImportError
 from palfrey.runtime import run
+
+LEVEL_CHOICES = click.Choice(sorted(KNOWN_LOG_LEVELS))
+LIFESPAN_CHOICES = click.Choice(list(get_args(KnownLifespanMode)))
+INTERFACE_CHOICES = click.Choice(list(get_args(KnownInterfaceType)))
+
+
+def _metavar_from_type(_type: Any) -> str:
+    return f"[{'|'.join(key for key in get_args(_type) if key != 'none')}]"
 
 
 def _mirror_uvicorn_envvars() -> list[str]:
@@ -80,18 +97,21 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
     default="auto",
     show_default=True,
     type=str,
+    metavar=_metavar_from_type(KnownLoopType),
 )
 @click.option(
     "--http",
     default="auto",
     show_default=True,
     type=str,
+    metavar=_metavar_from_type(KnownHTTPType),
 )
 @click.option(
     "--ws",
     default="auto",
     show_default=True,
     type=str,
+    metavar=_metavar_from_type(KnownWSType),
 )
 @click.option("--ws-max-size", default=16_777_216, show_default=True, type=int)
 @click.option("--ws-max-queue", default=32, show_default=True, type=int)
@@ -107,13 +127,13 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
     "--lifespan",
     default="auto",
     show_default=True,
-    type=str,
+    type=LIFESPAN_CHOICES,
 )
 @click.option(
     "--interface",
     default="auto",
     show_default=True,
-    type=str,
+    type=INTERFACE_CHOICES,
 )
 @click.option("--reload", is_flag=True, default=False, show_default=True)
 @click.option(
@@ -131,7 +151,7 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
 @click.option(
     "--log-level",
     default=None,
-    type=str,
+    type=LEVEL_CHOICES,
 )
 @click.option("--access-log/--no-access-log", default=True, show_default=True)
 @click.option("--use-colors/--no-use-colors", default=None)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import socket
 import ssl
 from collections.abc import Awaitable, Callable
 from configparser import RawConfigParser
@@ -351,6 +352,43 @@ class PalfreyConfig:
             "wsgi": "3.0",
         }
         return mapping[self.interface]
+
+    def bind_socket(self) -> socket.socket:
+        """Bind and return a listening socket for subprocess supervision modes."""
+
+        if self.uds:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                sock.bind(self.uds)
+                os.chmod(self.uds, 0o666)
+            except OSError as exc:
+                logger.error("%s", exc)
+                raise SystemExit(1) from exc
+
+            logger.info("Palfrey running on unix socket %s (Press CTRL+C to quit)", self.uds)
+        elif self.fd is not None:
+            sock = socket.fromfd(self.fd, socket.AF_UNIX, socket.SOCK_STREAM)
+            logger.info("Palfrey running on socket %s (Press CTRL+C to quit)", sock.getsockname())
+        else:
+            family = socket.AF_INET6 if self.host and ":" in self.host else socket.AF_INET
+            sock = socket.socket(family=family)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind((self.host, self.port))
+            except OSError as exc:
+                logger.error("%s", exc)
+                raise SystemExit(1) from exc
+
+            protocol_name = "https" if self.is_ssl else "http"
+            bound_port = int(sock.getsockname()[1])
+            if family == socket.AF_INET6:
+                address = f"{protocol_name}://[{self.host}]:{bound_port}"
+            else:
+                address = f"{protocol_name}://{self.host}:{bound_port}"
+            logger.info("Palfrey running on %s (Press CTRL+C to quit)", address)
+
+        sock.set_inheritable(True)
+        return sock
 
     @classmethod
     def from_import_string(

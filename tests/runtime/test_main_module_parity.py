@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import importlib
 
+import pytest
+
 from palfrey.config import PalfreyConfig
 from palfrey.server import PalfreyServer, ServerState
 
 
 def test_main_module_exposes_server_state_attr() -> None:
     module = importlib.import_module("palfrey.main")
-    assert module.ServerState is ServerState
+    with pytest.warns(DeprecationWarning, match="palfrey.main.ServerState is deprecated"):
+        assert module.ServerState is ServerState
 
 
 def test_main_module_exposes_config_and_server_aliases() -> None:

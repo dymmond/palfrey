@@ -20,7 +20,7 @@ from typing import Any, cast
 
 from palfrey.config import PalfreyConfig
 from palfrey.importer import ResolvedApp, resolve_application
-from palfrey.lifespan import LifespanManager, LifespanStartupFailedError, LifespanUnsupportedError
+from palfrey.lifespan import LifespanManager
 from palfrey.logging_config import configure_logging, get_logger
 from palfrey.protocols.http import (
     HTTPRequest,
@@ -40,6 +40,7 @@ from palfrey.types import ClientAddress, ServerAddress
 
 logger = get_logger("palfrey.server")
 access_logger = get_logger("palfrey.access")
+PIPELINE_QUEUE_LIMIT = 16
 
 
 HANDLED_SIGNALS = (
@@ -73,6 +74,14 @@ class _TrackedConnection:
 
 
 @dataclass(slots=True)
+class _QueuedRequest:
+    """Represents one parsed request or a terminal read outcome."""
+
+    request: HTTPRequest | None = None
+    error: Exception | None = None
+
+
+@dataclass(slots=True)
 class ServerState:
     """Shared server state container, compatible with Uvicorn concepts."""
 
@@ -91,7 +100,9 @@ class PalfreyServer:
     _resolved_app: ResolvedApp | None = None
     _shutdown_event: asyncio.Event = field(default_factory=asyncio.Event)
     _active_requests: int = 0
-    _server: asyncio.AbstractServer | None = None
+    _server: asyncio.Server | None = None
+    _servers: list[asyncio.Server] = field(default_factory=list)
+    _external_sockets: list[socket.socket] = field(default_factory=list)
     _lifespan: LifespanManager | None = None
     _request_counter_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _max_requests_before_exit: int | None = None
@@ -107,13 +118,13 @@ class PalfreyServer:
 
         return self._started or self._server is not None
 
-    async def serve(self) -> None:
+    async def serve(self, sockets: list[socket.socket] | None = None) -> None:
         """Start server, run until shutdown, and gracefully clean up resources."""
 
         with self.capture_signals():
-            await self._serve()
+            await self._serve(sockets=sockets)
 
-    async def _serve(self) -> None:
+    async def _serve(self, sockets: list[socket.socket] | None = None) -> None:
         """Start server, run until shutdown, and gracefully clean up resources."""
 
         configure_logging(self.config)
@@ -123,21 +134,16 @@ class PalfreyServer:
         self._base_default_headers = self._build_static_default_headers()
 
         if self.config.lifespan != "off":
-            self._lifespan = LifespanManager(self._resolved_app.app)
+            self._lifespan = LifespanManager(
+                self._resolved_app.app,
+                lifespan_mode=self.config.lifespan,
+            )
             try:
                 await self._lifespan.startup()
-            except LifespanUnsupportedError as exc:
-                if self.config.lifespan == "auto":
-                    logger.info("%s", exc)
-                    self._lifespan = None
-                else:
-                    logger.error("Application startup failed: %s", exc)
-                    return
-            except LifespanStartupFailedError as exc:
-                logger.error("Application startup failed: %s", exc)
-                return
             except RuntimeError as exc:
                 logger.error("Application startup failed: %s", exc)
+                return
+            if self._lifespan.should_exit:
                 return
 
         loop = asyncio.get_running_loop()
@@ -146,10 +152,22 @@ class PalfreyServer:
                 loop.add_signal_handler(sig, lambda _sig=sig: self._handle_exit_signal(_sig))
 
         ssl_context = self._build_ssl_context()
+        self._external_sockets = list(sockets) if sockets is not None else []
 
         try:
-            if self.config.fd is not None:
-                server_socket = socket.fromfd(self.config.fd, socket.AF_INET, socket.SOCK_STREAM)
+            if sockets is not None:
+                self._servers = []
+                for sock in sockets:
+                    server = await asyncio.start_server(
+                        self._handle_connection,
+                        sock=sock,
+                        ssl=ssl_context,
+                        backlog=self.config.backlog,
+                    )
+                    self._servers.append(server)
+                self._server = self._servers[0] if self._servers else None
+            elif self.config.fd is not None:
+                server_socket = socket.fromfd(self.config.fd, socket.AF_UNIX, socket.SOCK_STREAM)
                 server_socket.setblocking(False)
                 self._server = await asyncio.start_server(
                     self._handle_connection,
@@ -184,17 +202,26 @@ class PalfreyServer:
                 await self._lifespan.shutdown()
             return
 
-        sockets = self._server.sockets or []
-        for sock in sockets:
+        if not self._servers:
+            self._servers = [self._server] if self._server is not None else []
+
+        listening_sockets: list[socket.socket] = []
+        if sockets is None:
+            for server in self._servers:
+                bound_sockets = cast(list[socket.socket] | None, getattr(server, "sockets", None))
+                if bound_sockets:
+                    listening_sockets.extend(bound_sockets)
+
+        for sock in listening_sockets:
             logger.info("Listening on %s", sock.getsockname())
         self._started = True
 
         await self._main_loop()
         await self._shutdown()
 
-    def run(self) -> None:
+    def run(self, sockets: list[socket.socket] | None = None) -> None:
         """Run server inside a fresh asyncio event loop."""
-        asyncio.run(self.serve())
+        asyncio.run(self.serve(sockets=sockets))
 
     def request_shutdown(self) -> None:
         """Trigger server shutdown from external coordinator code."""
@@ -287,9 +314,21 @@ class PalfreyServer:
 
         logger.info("Shutting down")
 
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
+        servers = list(self._servers)
+        if not servers and self._server is not None:
+            servers = [self._server]
+
+        for server in servers:
+            server.close()
+        for server in servers:
+            await server.wait_closed()
+        self._servers.clear()
+        self._server = None
+
+        for sock in self._external_sockets:
+            with contextlib.suppress(OSError):
+                sock.close()
+        self._external_sockets.clear()
 
         for connection in list(self.server_state.connections):
             connection.shutdown()
@@ -355,32 +394,35 @@ class PalfreyServer:
             self.server_state.tasks.add(current_task)
 
         keep_processing = True
-        first_request = True
         keep_alive_timeout = self.config.timeout_keep_alive
+        request_queue: asyncio.Queue[_QueuedRequest] = asyncio.Queue(maxsize=PIPELINE_QUEUE_LIMIT)
+        request_reader_task = asyncio.create_task(
+            self._queue_connection_requests(
+                reader=reader,
+                queue=request_queue,
+                keep_alive_timeout=keep_alive_timeout,
+            )
+        )
+
+        async def stop_request_reader() -> None:
+            if request_reader_task.done():
+                return
+            request_reader_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await request_reader_task
 
         try:
             while keep_processing:
-                request_coro = read_http_request(
-                    reader,
-                    max_head_size=self.config.h11_max_incomplete_event_size or 1_048_576,
-                    parser_mode=self.config.http,
-                )
-                try:
-                    if first_request and keep_alive_timeout > 0:
-                        request = await request_coro
-                    else:
-                        request = await asyncio.wait_for(
-                            request_coro,
-                            timeout=keep_alive_timeout,
-                        )
-                except asyncio.TimeoutError:
-                    break
+                queued_request = await request_queue.get()
+                if queued_request.error is not None:
+                    raise queued_request.error
 
-                first_request = False
+                request = queued_request.request
                 if request is None:
                     break
 
                 if is_websocket_upgrade(request):
+                    await stop_request_reader()
                     if self.config.effective_ws == "none":
                         error_response = HTTPResponse(
                             status=400,
@@ -404,6 +446,7 @@ class PalfreyServer:
                     break
 
                 if requires_100_continue(request):
+
                     async def send_continue() -> None:
                         writer.write(b"HTTP/1.1 100 Continue\r\n\r\n")
                         await writer.drain()
@@ -456,12 +499,90 @@ class PalfreyServer:
             error_response.body_chunks = [b"Internal Server Error"]
             await self._write_response(writer, error_response, keep_alive=False)
         finally:
+            await stop_request_reader()
             self.server_state.connections.discard(tracked_connection)
             if current_task is not None:
                 self.server_state.tasks.discard(current_task)
             writer.close()
             with contextlib.suppress(Exception):
                 await writer.wait_closed()
+
+    async def _queue_connection_requests(
+        self,
+        *,
+        reader: asyncio.StreamReader,
+        queue: asyncio.Queue[_QueuedRequest],
+        keep_alive_timeout: float,
+    ) -> None:
+        """Read requests continuously and enqueue them for pipelined processing."""
+
+        first_request = True
+        try:
+            while True:
+                request_coro = read_http_request(
+                    reader,
+                    max_head_size=self.config.h11_max_incomplete_event_size or 1_048_576,
+                    parser_mode=self.config.http,
+                )
+                try:
+                    if first_request and keep_alive_timeout > 0:
+                        request = await request_coro
+                    else:
+                        request = await asyncio.wait_for(
+                            request_coro,
+                            timeout=keep_alive_timeout,
+                        )
+                except asyncio.TimeoutError:
+                    await self._queue_with_backpressure(reader, queue, _QueuedRequest(request=None))
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    await self._queue_with_backpressure(reader, queue, _QueuedRequest(error=exc))
+                    return
+
+                first_request = False
+                await self._queue_with_backpressure(reader, queue, _QueuedRequest(request=request))
+                if request is None:
+                    return
+        except asyncio.CancelledError:
+            return
+
+    async def _queue_with_backpressure(
+        self,
+        reader: asyncio.StreamReader,
+        queue: asyncio.Queue[_QueuedRequest],
+        item: _QueuedRequest,
+    ) -> None:
+        """Queue an item while pausing reads when request pipeline is saturated."""
+
+        paused = False
+        if queue.full():
+            self._pause_stream_reader(reader)
+            paused = True
+        try:
+            await queue.put(item)
+        finally:
+            if paused:
+                self._resume_stream_reader(reader)
+
+    @staticmethod
+    def _pause_stream_reader(reader: asyncio.StreamReader) -> None:
+        """Pause socket reads for a stream reader transport when available."""
+
+        transport = getattr(reader, "_transport", None)
+        if transport is None:
+            return
+        with contextlib.suppress(Exception):
+            transport.pause_reading()
+
+    @staticmethod
+    def _resume_stream_reader(reader: asyncio.StreamReader) -> None:
+        """Resume socket reads for a stream reader transport when available."""
+
+        transport = getattr(reader, "_transport", None)
+        if transport is None:
+            return
+        with contextlib.suppress(Exception):
+            transport.resume_reading()
 
     async def _handle_http_request(
         self,
@@ -479,7 +600,9 @@ class PalfreyServer:
             is_tls=context.is_tls,
         )
 
-        body_input: bytes | list[bytes] = request.body_chunks if request.body_chunks else request.body
+        body_input: bytes | list[bytes] = (
+            request.body_chunks if request.body_chunks else request.body
+        )
         response = await run_http_asgi(
             self._resolved_app.app,
             scope,

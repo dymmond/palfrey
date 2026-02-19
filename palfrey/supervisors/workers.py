@@ -6,6 +6,7 @@ import contextlib
 import multiprocessing as mp
 import os
 import signal
+import socket
 import threading
 import time
 from collections.abc import Callable
@@ -25,9 +26,9 @@ SIGNALS = {
 }
 
 
-def _worker_entry(config: PalfreyConfig) -> None:
+def _worker_entry(config: PalfreyConfig, sockets: list[socket.socket] | None = None) -> None:
     server = PalfreyServer(config)
-    server.run()
+    server.run(sockets=sockets)
 
 
 class WorkerProcess:
@@ -36,15 +37,22 @@ class WorkerProcess:
     def __init__(
         self,
         config: PalfreyConfig,
-        target: Callable[[PalfreyConfig], None],
+        target: Callable[[PalfreyConfig, list[socket.socket] | None], None],
+        *,
+        sockets: list[socket.socket] | None = None,
     ) -> None:
         self._target = target
+        self._sockets = sockets
         self._parent_conn, self._child_conn = mp.Pipe()
-        self._process = mp.Process(target=self._run, args=(config,), daemon=False)
+        self._process = mp.Process(target=self._run, args=(config, sockets), daemon=False)
 
-    def _run(self, config: PalfreyConfig) -> Any:  # pragma: no cover - executed in child process.
+    def _run(  # pragma: no cover - executed in child process.
+        self,
+        config: PalfreyConfig,
+        sockets: list[socket.socket] | None,
+    ) -> Any:
         threading.Thread(target=self._always_pong, daemon=True).start()
-        return self._target(config)
+        return self._target(config, sockets)
 
     def ping(self, timeout: float = 5) -> bool:
         """Send ping to child worker and wait for pong."""
@@ -124,11 +132,12 @@ class WorkerSupervisor:
     """Run and monitor multiple worker processes."""
 
     config: PalfreyConfig
+    sockets: list[socket.socket] | None = None
     _workers: list[WorkerProcess] = field(default_factory=list)
     _stopping: bool = False
     _signal_queue: list[int] = field(default_factory=list)
     _workers_num: int = 0
-    _worker_target: Callable[[PalfreyConfig], None] = _worker_entry
+    _worker_target: Callable[[PalfreyConfig, list[socket.socket] | None], None] = _worker_entry
 
     def __post_init__(self) -> None:
         self._workers_num = self.config.workers_count
@@ -203,7 +212,7 @@ class WorkerSupervisor:
             self._spawn_worker()
 
     def _spawn_worker(self) -> None:
-        process = WorkerProcess(self.config, target=self._worker_target)
+        process = WorkerProcess(self.config, target=self._worker_target, sockets=self.sockets)
         process.start()
         self._workers.append(process)
         logger.info("Started worker pid=%s", process.pid)
@@ -239,7 +248,9 @@ class WorkerSupervisor:
         for index, process in enumerate(list(self._workers)):
             self._terminate_process(process)
             process.join(timeout=1.0)
-            replacement = WorkerProcess(self.config, target=self._worker_target)
+            replacement = WorkerProcess(
+                self.config, target=self._worker_target, sockets=self.sockets
+            )
             replacement.start()
             self._workers[index] = replacement
 

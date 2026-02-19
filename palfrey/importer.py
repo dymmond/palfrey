@@ -23,6 +23,10 @@ class AppImportError(RuntimeError):
     """Raised when an ASGI/WSGI application cannot be imported."""
 
 
+class ImportFromStringError(AppImportError):
+    """Raised when a ``module:attribute`` target cannot be resolved."""
+
+
 @dataclass(slots=True)
 class ResolvedApp:
     """Container holding a resolved ASGI callable and its inferred interface."""
@@ -36,21 +40,25 @@ def _import_from_string(target: str) -> object:
 
     module_name, separator, attrs = target.partition(":")
     if not separator or not module_name or not attrs:
-        raise AppImportError(f'Import string "{target}" must be in format "<module>:<attribute>".')
+        raise ImportFromStringError(
+            f'Import string "{target}" must be in format "<module>:<attribute>".'
+        )
 
     try:
         module = importlib.import_module(module_name)
     except ModuleNotFoundError as exc:
         if exc.name != module_name:
             raise
-        raise AppImportError(f'Could not import module "{module_name}".') from exc
+        raise ImportFromStringError(f'Could not import module "{module_name}".') from exc
 
     instance: object = module
     try:
         for attr in attrs.split("."):
             instance = getattr(instance, attr)
     except AttributeError as exc:
-        raise AppImportError(f'Attribute "{attrs}" not found in module "{module_name}".') from exc
+        raise ImportFromStringError(
+            f'Attribute "{attrs}" not found in module "{module_name}".'
+        ) from exc
 
     return instance
 

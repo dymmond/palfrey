@@ -15,12 +15,16 @@ class FakeSocket:
     def __init__(self, name: tuple[str, int]) -> None:
         self._name = name
         self.blocking: bool | None = None
+        self.closed = False
 
     def getsockname(self) -> tuple[str, int]:
         return self._name
 
     def setblocking(self, value: bool) -> None:
         self.blocking = value
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class FakeAsyncServer:
@@ -43,12 +47,17 @@ class FakeLoop:
     def add_signal_handler(self, sig: int, _callback) -> None:
         self.signals.append(sig)
 
+    async def create_server(self, *_args, **_kwargs):
+        raise NotImplementedError
+
 
 class FakeLifespanManager:
-    def __init__(self, app) -> None:
+    def __init__(self, app, lifespan_mode: str = "auto") -> None:
         self.app = app
+        self.lifespan_mode = lifespan_mode
         self.started = False
         self.stopped = False
+        self.should_exit = False
 
     async def startup(self) -> None:
         self.started = True
@@ -89,6 +98,27 @@ def test_serve_uses_host_port_start_server(monkeypatch) -> None:
     assert calls["reuse_port"] is False
     assert fake_server.closed is True
     assert fake_server.wait_closed_called is True
+
+
+def test_serve_uses_prebound_sockets_when_provided(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+    prebound = [FakeSocket(("127.0.0.1", 9000)), FakeSocket(("127.0.0.1", 9001))]
+
+    async def fake_start_server(handler, **kwargs):
+        calls.append(kwargs)
+        return FakeAsyncServer([kwargs["sock"]])
+
+    monkeypatch.setattr(server_module, "configure_logging", lambda config: None)
+    monkeypatch.setattr(server_module, "resolve_application", lambda config: _resolved())
+    monkeypatch.setattr(server_module.asyncio, "start_server", fake_start_server)
+    monkeypatch.setattr(server_module.asyncio, "get_running_loop", lambda: FakeLoop())
+
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", lifespan="off"))
+    server._shutdown_event.set()
+    asyncio.run(server.serve(sockets=prebound))
+
+    assert [call["sock"] for call in calls] == prebound
+    assert all(sock.closed for sock in prebound)
 
 
 def test_serve_sets_reuse_port_true_with_multiple_workers(monkeypatch) -> None:
@@ -143,6 +173,8 @@ def test_serve_reapplies_existing_uds_permissions(monkeypatch, tmp_path) -> None
 
     class FakeStat:
         st_mode = 0o640
+        st_size = 0
+        st_mtime = 0.0
 
     chmod_calls: list[tuple[str, int]] = []
 
@@ -151,7 +183,7 @@ def test_serve_reapplies_existing_uds_permissions(monkeypatch, tmp_path) -> None
     monkeypatch.setattr(server_module.asyncio, "start_unix_server", fake_start_unix_server)
     monkeypatch.setattr(server_module.asyncio, "get_running_loop", lambda: FakeLoop())
     monkeypatch.setattr(server_module.os.path, "exists", lambda path: True)
-    monkeypatch.setattr(server_module.os, "stat", lambda path: FakeStat())
+    monkeypatch.setattr(server_module.os, "stat", lambda *_args, **_kwargs: FakeStat())
     monkeypatch.setattr(
         server_module.os, "chmod", lambda path, mode: chmod_calls.append((path, mode))
     )
@@ -193,6 +225,7 @@ def test_serve_sets_default_uds_permissions_when_socket_missing(monkeypatch, tmp
 
 def test_serve_uses_socket_from_fd_when_configured(monkeypatch) -> None:
     calls: dict[str, object] = {}
+    fromfd_calls: list[tuple[int, int, int]] = []
     fake_socket = FakeSocket(("127.0.0.1", 8888))
 
     async def fake_start_server(handler, **kwargs):
@@ -201,7 +234,11 @@ def test_serve_uses_socket_from_fd_when_configured(monkeypatch) -> None:
 
     monkeypatch.setattr(server_module, "configure_logging", lambda config: None)
     monkeypatch.setattr(server_module, "resolve_application", lambda config: _resolved())
-    monkeypatch.setattr(server_module.socket, "fromfd", lambda fd, fam, typ: fake_socket)
+    monkeypatch.setattr(
+        server_module.socket,
+        "fromfd",
+        lambda fd, fam, typ: fromfd_calls.append((fd, fam, typ)) or fake_socket,
+    )
     monkeypatch.setattr(server_module.asyncio, "start_server", fake_start_server)
     monkeypatch.setattr(server_module.asyncio, "get_running_loop", lambda: FakeLoop())
 
@@ -211,13 +248,14 @@ def test_serve_uses_socket_from_fd_when_configured(monkeypatch) -> None:
 
     assert calls["sock"] is fake_socket
     assert fake_socket.blocking is False
+    assert fromfd_calls == [(3, server_module.socket.AF_UNIX, server_module.socket.SOCK_STREAM)]
 
 
 def test_serve_initializes_and_shutdowns_lifespan_when_enabled(monkeypatch) -> None:
     holder: dict[str, FakeLifespanManager] = {}
 
-    def build_manager(app):
-        manager = FakeLifespanManager(app)
+    def build_manager(app, lifespan_mode: str = "auto"):
+        manager = FakeLifespanManager(app, lifespan_mode=lifespan_mode)
         holder["manager"] = manager
         return manager
 
@@ -244,7 +282,7 @@ def test_serve_auto_mode_continues_when_lifespan_is_unsupported(monkeypatch) -> 
 
     class UnsupportedManager(FakeLifespanManager):
         async def startup(self) -> None:
-            raise server_module.LifespanUnsupportedError("ASGI lifespan protocol appears unsupported.")
+            self.should_exit = self.lifespan_mode == "on"
 
     async def fake_start_server(handler, **kwargs):
         calls["start_server"] += 1
@@ -269,7 +307,7 @@ def test_serve_on_mode_stops_when_lifespan_is_unsupported(monkeypatch) -> None:
 
     class UnsupportedManager(FakeLifespanManager):
         async def startup(self) -> None:
-            raise server_module.LifespanUnsupportedError("ASGI lifespan protocol appears unsupported.")
+            self.should_exit = self.lifespan_mode == "on"
 
     async def fake_start_server(handler, **kwargs):
         calls["start_server"] += 1

@@ -1,5 +1,3 @@
-"""Extra config parity coverage modeled after Uvicorn config tests."""
-
 from __future__ import annotations
 
 from pathlib import Path

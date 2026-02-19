@@ -329,6 +329,7 @@ def test_handle_connection_sends_100_continue_and_respects_max_requests(monkeypa
         timeout_keep_alive=1,
     )
     server = PalfreyServer(config)
+
     async def app(scope, receive, send):
         message = await receive()
         assert message == {"type": "http.request", "body": b"hello", "more_body": False}

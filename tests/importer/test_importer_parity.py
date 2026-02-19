@@ -1,5 +1,3 @@
-"""Importer parity tests adapted from Uvicorn importer behavior."""
-
 from __future__ import annotations
 
 import tempfile
@@ -7,11 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from palfrey.importer import AppImportError, _import_from_string
+from palfrey.importer import AppImportError, ImportFromStringError, _import_from_string
 
 
 def test_import_from_string_invalid_format() -> None:
-    with pytest.raises(AppImportError) as exc_info:
+    with pytest.raises(ImportFromStringError) as exc_info:
         _import_from_string("example:")
     assert 'Import string "example:" must be in format "<module>:<attribute>".' in str(
         exc_info.value
@@ -19,15 +17,19 @@ def test_import_from_string_invalid_format() -> None:
 
 
 def test_import_from_string_invalid_module() -> None:
-    with pytest.raises(AppImportError) as exc_info:
+    with pytest.raises(ImportFromStringError) as exc_info:
         _import_from_string("module_does_not_exist:myattr")
     assert 'Could not import module "module_does_not_exist".' in str(exc_info.value)
 
 
 def test_import_from_string_invalid_attr() -> None:
-    with pytest.raises(AppImportError) as exc_info:
+    with pytest.raises(ImportFromStringError) as exc_info:
         _import_from_string("tempfile:attr_does_not_exist")
     assert 'Attribute "attr_does_not_exist" not found in module "tempfile".' in str(exc_info.value)
+
+
+def test_import_from_string_error_is_backward_compatible_subclass() -> None:
+    assert issubclass(ImportFromStringError, AppImportError)
 
 
 def test_import_from_string_internal_import_error() -> None:

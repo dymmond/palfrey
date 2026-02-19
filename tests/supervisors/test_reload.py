@@ -22,6 +22,12 @@ def test_build_reload_argv_uses_current_process_arguments(monkeypatch: pytest.Mo
     assert argv[1:] == ["-m", "palfrey", "tests.fixtures.apps:http_app"]
 
 
+def test_build_reload_argv_appends_fd_when_provided(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["-m", "palfrey", "tests.fixtures.apps:http_app"])
+    argv = build_reload_argv(fd=99)
+    assert argv[-2:] == ["--fd", "99"]
+
+
 def test_reload_supervisor_default_include_patterns() -> None:
     config = PalfreyConfig(app="tests.fixtures.apps:http_app", reload=True)
     supervisor = ReloadSupervisor(config=config, argv=["python", "-m", "palfrey"])
@@ -117,9 +123,10 @@ def test_spawn_sets_reload_child_environment(monkeypatch: pytest.MonkeyPatch) ->
         def poll(self) -> int | None:
             return None
 
-    def fake_popen(argv: list[str], env: dict[str, str]):
+    def fake_popen(argv: list[str], env: dict[str, str], **kwargs: object):
         captured["argv"] = argv
         captured["env"] = env
+        captured["kwargs"] = kwargs
         return FakeProcess()
 
     monkeypatch.setattr(reload_module.subprocess, "Popen", fake_popen)
@@ -129,7 +136,34 @@ def test_spawn_sets_reload_child_environment(monkeypatch: pytest.MonkeyPatch) ->
     env = captured["env"]
     assert isinstance(env, dict)
     assert env["PALFREY_RELOAD_CHILD"] == "1"
+    assert captured["kwargs"] == {}
     assert supervisor._process is not None
+
+
+def test_spawn_passes_configured_fds_on_posix(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:http_app", reload=True)
+    supervisor = ReloadSupervisor(
+        config=config,
+        argv=["python", "-m", "palfrey"],
+        pass_fds=(11, 12),
+    )
+    captured: dict[str, object] = {}
+
+    class FakeProcess:
+        def poll(self) -> int | None:
+            return None
+
+    def fake_popen(argv: list[str], env: dict[str, str], **kwargs: object):
+        captured["argv"] = argv
+        captured["env"] = env
+        captured["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr(reload_module.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(reload_module.os, "name", "posix")
+
+    supervisor._spawn()
+    assert captured["kwargs"] == {"pass_fds": (11, 12)}
 
 
 def test_terminate_kills_process_after_timeout(monkeypatch: pytest.MonkeyPatch) -> None:

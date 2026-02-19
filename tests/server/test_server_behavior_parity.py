@@ -1,5 +1,3 @@
-"""Additional server behavior tests aligned with Uvicorn server expectations."""
-
 from __future__ import annotations
 
 import asyncio
@@ -88,7 +86,9 @@ def _resolved_http_app() -> ResolvedApp:
     return ResolvedApp(app=app, interface="asgi3")
 
 
-def test_compute_max_requests_before_exit_without_jitter(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_compute_max_requests_before_exit_without_jitter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = PalfreyConfig(
         app="tests.fixtures.apps:http_app",
         limit_max_requests=10,
@@ -99,7 +99,9 @@ def test_compute_max_requests_before_exit_without_jitter(monkeypatch: pytest.Mon
     assert server._compute_max_requests_before_exit() == 10
 
 
-def test_compute_max_requests_before_exit_with_max_jitter(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_compute_max_requests_before_exit_with_max_jitter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = PalfreyConfig(
         app="tests.fixtures.apps:http_app",
         limit_max_requests=10,
@@ -110,7 +112,9 @@ def test_compute_max_requests_before_exit_with_max_jitter(monkeypatch: pytest.Mo
     assert server._compute_max_requests_before_exit() == 15
 
 
-def test_on_tick_populates_cached_default_headers(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_on_tick_populates_cached_default_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     server = PalfreyServer(
         PalfreyConfig(app="tests.fixtures.apps:http_app", headers=["x-extra: one"])
     )
@@ -131,7 +135,9 @@ def test_on_tick_populates_cached_default_headers(monkeypatch: pytest.MonkeyPatc
     ]
 
 
-def test_on_tick_triggers_callback_notify_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_on_tick_triggers_callback_notify_on_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     notifications: list[str] = []
 
     async def callback_notify() -> None:
@@ -186,7 +192,9 @@ def test_on_tick_returns_true_when_max_requests_exceeded(
     assert "Maximum request limit of 2 exceeded" in caplog.text
 
 
-def test_main_loop_runs_until_tick_requests_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_loop_runs_until_tick_requests_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
     counters: list[int] = []
 
@@ -230,7 +238,9 @@ def test_shutdown_closes_server_and_runs_lifespan_shutdown(
     assert fake_lifespan.shutdown_calls == 1
 
 
-def test_shutdown_requests_shutdown_on_all_connections(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_shutdown_requests_shutdown_on_all_connections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
     server._server = FakeAsyncServer()  # type: ignore[assignment]
     connection_one = FakeConnection()
@@ -336,7 +346,9 @@ def test_capture_signals_restores_handlers_and_replays_in_lifo_order(
         return previous
 
     monkeypatch.setattr(server_module.signal, "signal", fake_signal)
-    monkeypatch.setattr(server_module.signal, "raise_signal", lambda sig: raised_signals.append(sig))
+    monkeypatch.setattr(
+        server_module.signal, "raise_signal", lambda sig: raised_signals.append(sig)
+    )
 
     with server.capture_signals():
         server.handle_exit(int(signal.SIGTERM), None)
@@ -492,7 +504,9 @@ def test_handle_connection_respects_keep_alive_for_multiple_requests(
     monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
     monkeypatch.setattr(PalfreyServer, "_handle_http_request", fake_handle_request)
     monkeypatch.setattr(
-        server_module, "should_keep_alive", lambda request, response: next(keep_alive_plan)
+        server_module,
+        "should_keep_alive",
+        lambda request, response: next(keep_alive_plan),
     )
 
     asyncio.run(server._handle_connection(object(), writer))
@@ -501,7 +515,9 @@ def test_handle_connection_respects_keep_alive_for_multiple_requests(
     assert payload.count(b"HTTP/1.1 200 OK") == 2
 
 
-def test_handle_connection_closes_on_keep_alive_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_handle_connection_closes_on_keep_alive_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", timeout_keep_alive=0))
     server._resolved_app = _resolved_http_app()
     writer = DummyWriter()

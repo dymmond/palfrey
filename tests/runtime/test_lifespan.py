@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
-from palfrey.lifespan import LifespanManager, LifespanUnsupportedError
+from palfrey.lifespan import LifespanManager
 
 
 def test_lifespan_startup_and_shutdown_success() -> None:
@@ -45,18 +43,31 @@ def test_lifespan_startup_failure_raises() -> None:
     async def scenario() -> None:
         await manager.startup()
 
-    with pytest.raises(RuntimeError, match="boom"):
-        asyncio.run(scenario())
+    asyncio.run(scenario())
+    assert manager.should_exit is True
 
 
-def test_lifespan_startup_raises_unsupported_when_app_does_not_emit_messages() -> None:
+def test_lifespan_auto_mode_does_not_exit_when_lifespan_unsupported() -> None:
     async def app(scope, receive, send):
         raise RuntimeError("unsupported")
 
-    manager = LifespanManager(app)
+    manager = LifespanManager(app, lifespan_mode="auto")
 
     async def scenario() -> None:
         await manager.startup()
 
-    with pytest.raises(LifespanUnsupportedError, match="unsupported"):
-        asyncio.run(scenario())
+    asyncio.run(scenario())
+    assert manager.should_exit is False
+
+
+def test_lifespan_on_mode_exits_when_lifespan_unsupported() -> None:
+    async def app(scope, receive, send):
+        raise RuntimeError("unsupported")
+
+    manager = LifespanManager(app, lifespan_mode="on")
+
+    async def scenario() -> None:
+        await manager.startup()
+
+    asyncio.run(scenario())
+    assert manager.should_exit is True

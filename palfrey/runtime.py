@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
+import socket
 import sys
 from typing import Any, overload
 
@@ -46,19 +48,31 @@ def _run_config(config: PalfreyConfig) -> PalfreyServer | None:
             "You must pass the application as an import string to enable 'reload' or 'workers'."
         )
 
+    bound_sockets: list[socket.socket] = []
     try:
         if config.should_reload and os.environ.get("PALFREY_RELOAD_CHILD") != "1":
-            supervisor = ReloadSupervisor(config=config, argv=build_reload_argv())
+            parent_socket = config.bind_socket()
+            bound_sockets = [parent_socket]
+            supervisor = ReloadSupervisor(
+                config=config,
+                argv=build_reload_argv(fd=parent_socket.fileno()),
+                pass_fds=(parent_socket.fileno(),),
+            )
             supervisor.run()
             return None
         if config.workers_count > 1:
-            WorkerSupervisor(config=config).run()
+            parent_socket = config.bind_socket()
+            bound_sockets = [parent_socket]
+            WorkerSupervisor(config=config, sockets=bound_sockets).run()
             return None
 
         server = PalfreyServer(config)
         server.run()
         return server
     finally:
+        for bound_socket in bound_sockets:
+            with contextlib.suppress(OSError):
+                bound_socket.close()
         if config.uds and os.path.exists(config.uds):
             os.remove(config.uds)
 

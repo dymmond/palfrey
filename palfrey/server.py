@@ -9,15 +9,18 @@ import random
 import signal
 import socket
 import ssl
+import threading
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from email.utils import formatdate
 from importlib.util import find_spec
+from types import FrameType
 from typing import Any, cast
 
 from palfrey.config import PalfreyConfig
 from palfrey.importer import ResolvedApp, resolve_application
-from palfrey.lifespan import LifespanManager
+from palfrey.lifespan import LifespanManager, LifespanStartupFailedError, LifespanUnsupportedError
 from palfrey.logging_config import configure_logging, get_logger
 from palfrey.protocols.http import (
     HTTPRequest,
@@ -39,6 +42,14 @@ logger = get_logger("palfrey.server")
 access_logger = get_logger("palfrey.access")
 
 
+HANDLED_SIGNALS = (
+    signal.SIGINT,
+    signal.SIGTERM,
+)
+if os.name == "nt":  # pragma: py-not-win32
+    HANDLED_SIGNALS += (signal.SIGBREAK,)
+
+
 @dataclass(slots=True)
 class ConnectionContext:
     """Connection metadata used while processing one TCP stream."""
@@ -46,6 +57,7 @@ class ConnectionContext:
     client: ClientAddress
     server: ServerAddress
     is_tls: bool
+    on_100_continue: Callable[[], Awaitable[None]] | None = None
 
 
 @dataclass(slots=True, eq=False)
@@ -87,6 +99,7 @@ class PalfreyServer:
     _last_notified: float = 0.0
     _force_exit: bool = False
     _started: bool = False
+    _captured_signals: list[int] = field(default_factory=list)
 
     @property
     def started(self) -> bool:
@@ -95,6 +108,12 @@ class PalfreyServer:
         return self._started or self._server is not None
 
     async def serve(self) -> None:
+        """Start server, run until shutdown, and gracefully clean up resources."""
+
+        with self.capture_signals():
+            await self._serve()
+
+    async def _serve(self) -> None:
         """Start server, run until shutdown, and gracefully clean up resources."""
 
         configure_logging(self.config)
@@ -107,6 +126,16 @@ class PalfreyServer:
             self._lifespan = LifespanManager(self._resolved_app.app)
             try:
                 await self._lifespan.startup()
+            except LifespanUnsupportedError as exc:
+                if self.config.lifespan == "auto":
+                    logger.info("%s", exc)
+                    self._lifespan = None
+                else:
+                    logger.error("Application startup failed: %s", exc)
+                    return
+            except LifespanStartupFailedError as exc:
+                logger.error("Application startup failed: %s", exc)
+                return
             except RuntimeError as exc:
                 logger.error("Application startup failed: %s", exc)
                 return
@@ -179,6 +208,30 @@ class PalfreyServer:
             self._force_exit = True
             return
         self.request_shutdown()
+
+    @contextlib.contextmanager
+    def capture_signals(self):
+        """Capture and restore process signal handlers around server runtime."""
+
+        if threading.current_thread() is not threading.main_thread():
+            yield
+            return
+
+        original_handlers = {sig: signal.signal(sig, self.handle_exit) for sig in HANDLED_SIGNALS}
+        try:
+            yield
+        finally:
+            for sig, handler in original_handlers.items():
+                signal.signal(sig, handler)
+
+        for captured_signal in reversed(self._captured_signals):
+            signal.raise_signal(captured_signal)
+
+    def handle_exit(self, sig: int, _frame: FrameType | None) -> None:
+        """Signal handler compatible with ``signal.signal`` callback shape."""
+
+        self._captured_signals.append(sig)
+        self._handle_exit_signal(signal.Signals(sig))
 
     async def _main_loop(self) -> None:
         """Run periodic server maintenance ticks until shutdown criteria are met."""
@@ -351,8 +404,13 @@ class PalfreyServer:
                     break
 
                 if requires_100_continue(request):
-                    writer.write(b"HTTP/1.1 100 Continue\r\n\r\n")
-                    await writer.drain()
+                    async def send_continue() -> None:
+                        writer.write(b"HTTP/1.1 100 Continue\r\n\r\n")
+                        await writer.drain()
+
+                    context.on_100_continue = send_continue
+                else:
+                    context.on_100_continue = None
 
                 if self._is_concurrency_limit_exceeded():
                     await self._write_response(
@@ -421,7 +479,14 @@ class PalfreyServer:
             is_tls=context.is_tls,
         )
 
-        response = await run_http_asgi(self._resolved_app.app, scope, request.body)
+        body_input: bytes | list[bytes] = request.body_chunks if request.body_chunks else request.body
+        response = await run_http_asgi(
+            self._resolved_app.app,
+            scope,
+            body_input,
+            expect_100_continue=requires_100_continue(request),
+            on_100_continue=context.on_100_continue,
+        )
         default_headers = self.server_state.default_headers or None
         append_default_response_headers(
             response,

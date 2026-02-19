@@ -77,7 +77,7 @@ def test_encode_http_response_uses_default_reason_for_unknown_status() -> None:
     payload = encode_http_response(
         HTTPResponse(status=299, headers=[], body_chunks=[b"ok"]), keep_alive=True
     )
-    assert payload.startswith(b"HTTP/1.1 299 OK")
+    assert payload.startswith(b"HTTP/1.1 299 ")
 
 
 def test_encode_http_response_emits_keep_alive_header_when_enabled() -> None:

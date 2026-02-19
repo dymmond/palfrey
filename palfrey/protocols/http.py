@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import http
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
@@ -23,6 +25,15 @@ class HTTPRequest:
     http_version: str
     headers: list[tuple[str, str]]
     body: bytes
+    body_chunks: list[bytes] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        """Normalize body and body chunk fields for ASGI receive streaming."""
+
+        if self.body_chunks:
+            self.body = b"".join(self.body_chunks)
+            return
+        self.body_chunks = [self.body] if self.body else [b""]
 
 
 @dataclass(slots=True)
@@ -32,6 +43,8 @@ class HTTPResponse:
     status: int = 500
     headers: Headers = field(default_factory=list)
     body_chunks: list[bytes] = field(default_factory=list)
+    chunked_encoding: bool = False
+    suppress_body: bool = False
 
 
 class _HTTPToolsParserProtocol:
@@ -134,7 +147,10 @@ def _header_lookup(headers: list[tuple[str, str]], key: str) -> str | None:
     return None
 
 
-async def _read_chunked_body(reader: asyncio.StreamReader, body_limit: int) -> bytes:
+async def _read_chunked_body_chunks(
+    reader: asyncio.StreamReader,
+    body_limit: int,
+) -> list[bytes]:
     body_chunks: list[bytes] = []
     total = 0
 
@@ -163,7 +179,29 @@ async def _read_chunked_body(reader: asyncio.StreamReader, body_limit: int) -> b
         if line_end != b"\r\n":
             raise ValueError("Malformed chunk delimiter")
 
-    return b"".join(body_chunks)
+    return body_chunks
+
+
+async def _read_content_length_body_chunks(
+    reader: asyncio.StreamReader,
+    content_length: int,
+    body_limit: int,
+) -> list[bytes]:
+    """Read a fixed-size body into ASGI-style chunks."""
+
+    if content_length > body_limit:
+        raise ValueError("HTTP body exceeds configured limit")
+    if content_length <= 0:
+        return [b""]
+
+    remaining = content_length
+    chunks: list[bytes] = []
+    read_size = 65_536
+    while remaining > 0:
+        chunk = await reader.readexactly(min(read_size, remaining))
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return chunks
 
 
 async def read_http_request(
@@ -209,14 +247,12 @@ async def read_http_request(
         except ValueError as exc:
             raise ValueError("Invalid Content-Length header") from exc
 
-    if content_length > body_limit:
-        raise ValueError("HTTP body exceeds configured limit")
-
-    body = b""
+    body_chunks: list[bytes] = [b""]
     if "chunked" in transfer_encoding:
-        body = await _read_chunked_body(reader, body_limit)
-    elif content_length > 0:
-        body = await reader.readexactly(content_length)
+        body_chunks = await _read_chunked_body_chunks(reader, body_limit)
+    else:
+        body_chunks = await _read_content_length_body_chunks(reader, content_length, body_limit)
+    body = b"".join(body_chunks)
 
     return HTTPRequest(
         method=method,
@@ -224,6 +260,7 @@ async def read_http_request(
         http_version=version,
         headers=headers,
         body=body,
+        body_chunks=body_chunks,
     )
 
 
@@ -345,47 +382,165 @@ def build_http_scope(
 async def run_http_asgi(
     app: ASGIApplication,
     scope: Scope,
-    request_body: bytes,
+    request_body: bytes | list[bytes],
+    *,
+    expect_100_continue: bool = False,
+    on_100_continue: Callable[[], Awaitable[None]] | None = None,
 ) -> HTTPResponse:
-    """Execute an ASGI app for HTTP scope and capture its response."""
+    """Execute one ASGI HTTP request/response cycle with Uvicorn-style semantics."""
 
     response = HTTPResponse()
-    request_sent = False
-    body_complete = False
-    request_message: Message = {"type": "http.request", "body": request_body, "more_body": False}
-    disconnect_message: Message = {"type": "http.disconnect"}
+    body_chunks = request_body if isinstance(request_body, list) else [request_body]
+    if not body_chunks:
+        body_chunks = [b""]
+
+    response_started = False
+    response_complete = False
+    waiting_for_100_continue = expect_100_continue
+    body_index = 0
+    message_complete = asyncio.Event()
+    chunked_encoding: bool | None = None
+    expected_content_length = 0
+
+    async def _send_internal_server_error() -> None:
+        nonlocal response_started, response_complete, chunked_encoding, expected_content_length
+        response_started = True
+        response_complete = True
+        chunked_encoding = False
+        expected_content_length = 0
+        response.status = 500
+        response.headers = [
+            (b"content-type", b"text/plain; charset=utf-8"),
+            (b"content-length", b"21"),
+            (b"connection", b"close"),
+        ]
+        response.body_chunks = [] if scope.get("method") == "HEAD" else [b"Internal Server Error"]
+        response.chunked_encoding = False
+        response.suppress_body = scope.get("method") == "HEAD"
+        message_complete.set()
 
     async def receive() -> Message:
-        nonlocal request_sent
+        nonlocal waiting_for_100_continue, body_index
 
-        if not request_sent:
-            request_sent = True
-            return request_message
-        return disconnect_message
+        if waiting_for_100_continue:
+            waiting_for_100_continue = False
+            if on_100_continue is not None:
+                await on_100_continue()
+
+        if body_index < len(body_chunks):
+            body = body_chunks[body_index]
+            body_index += 1
+            return {
+                "type": "http.request",
+                "body": body,
+                "more_body": body_index < len(body_chunks),
+            }
+
+        await message_complete.wait()
+        return {"type": "http.disconnect"}
 
     async def send(message: Message) -> None:
-        nonlocal body_complete
+        nonlocal response_started, response_complete, waiting_for_100_continue
+        nonlocal chunked_encoding, expected_content_length
 
         message_type = message["type"]
-        if message_type == "http.response.start":
+        if not response_started:
+            if message_type != "http.response.start":
+                msg = "Expected ASGI message 'http.response.start', but got '%s'."
+                raise RuntimeError(msg % message_type)
+
+            response_started = True
+            waiting_for_100_continue = False
+
             response.status = int(message.get("status", 200))
-            response.headers = list(message.get("headers", []))
+            response.headers = [
+                (_coerce_header_bytes(name), _coerce_header_bytes(value))
+                for name, value in list(message.get("headers", []))
+            ]
+            response.suppress_body = scope.get("method") == "HEAD"
+
+            for name, value in response.headers:
+                lowered_name = name.lower()
+                lowered_value = value.lower()
+                if lowered_name == b"content-length" and chunked_encoding is None:
+                    try:
+                        expected_content_length = int(value.decode("latin-1"))
+                    except ValueError as exc:
+                        raise RuntimeError("Invalid Content-Length header.") from exc
+                    chunked_encoding = False
+                elif lowered_name == b"transfer-encoding" and lowered_value == b"chunked":
+                    chunked_encoding = True
+                    expected_content_length = 0
+
+            if (
+                chunked_encoding is None
+                and scope.get("method") != "HEAD"
+                and response.status not in {204, 304}
+            ):
+                chunked_encoding = True
+                response.headers.append((b"transfer-encoding", b"chunked"))
+
+            response.chunked_encoding = bool(chunked_encoding)
             return
 
-        if message_type == "http.response.body":
-            if body_complete:
-                return
-            body = message.get("body", b"")
-            if not isinstance(body, bytes):
-                body = bytes(body)
+        if response_complete:
+            msg = "Unexpected ASGI message '%s' sent, after response already completed."
+            raise RuntimeError(msg % message_type)
+
+        if message_type != "http.response.body":
+            msg = "Expected ASGI message 'http.response.body', but got '%s'."
+            raise RuntimeError(msg % message_type)
+
+        body = message.get("body", b"")
+        if not isinstance(body, bytes):
+            body = bytes(body)
+        more_body = bool(message.get("more_body", False))
+
+        if response.suppress_body:
+            body = b""
+            expected_content_length = 0
+        elif chunked_encoding:
             response.body_chunks.append(body)
-            body_complete = not message.get("more_body", False)
-            return
+        else:
+            body_size = len(body)
+            if body_size > expected_content_length:
+                raise RuntimeError("Response content longer than Content-Length")
+            expected_content_length -= body_size
+            response.body_chunks.append(body)
 
-        raise RuntimeError(f"Unsupported HTTP ASGI message type: {message_type}")
+        if not more_body:
+            if not chunked_encoding and expected_content_length != 0:
+                raise RuntimeError("Response content shorter than Content-Length")
+            response_complete = True
+            message_complete.set()
 
-    await app(scope, receive, send)
+    try:
+        result = await app(scope, receive, send)
+    except BaseException as exc:  # noqa: BLE001
+        if not response_started:
+            await _send_internal_server_error()
+        elif isinstance(exc, RuntimeError):
+            raise
+        else:
+            raise RuntimeError("Exception in ASGI application") from exc
+    else:
+        if result is not None:
+            raise RuntimeError(f"ASGI callable should return None, but returned '{result}'.")
+        if not response_started:
+            await _send_internal_server_error()
+        elif not response_complete:
+            raise RuntimeError("ASGI callable returned without completing response.")
     return response
+
+
+def _coerce_header_bytes(value: object) -> bytes:
+    """Normalize header names/values to bytes."""
+
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, bytearray):
+        return bytes(value)
+    return str(value).encode("latin-1")
 
 
 def append_default_response_headers(
@@ -431,28 +586,45 @@ def append_default_response_headers(
 def encode_http_response(response: HTTPResponse, keep_alive: bool) -> bytes:
     """Serialize a captured HTTP response to wire bytes."""
 
-    reason = {
-        200: b"OK",
-        101: b"Switching Protocols",
-        400: b"Bad Request",
-        404: b"Not Found",
-        500: b"Internal Server Error",
-        503: b"Service Unavailable",
-    }.get(response.status, b"OK")
+    try:
+        reason = http.HTTPStatus(response.status).phrase.encode("ascii")
+    except ValueError:
+        reason = b""
 
-    payload = b"".join(response.body_chunks)
     header_lines: list[bytes] = [f"HTTP/1.1 {response.status}".encode("ascii") + b" " + reason]
 
     has_content_length = False
+    has_transfer_encoding = False
+    has_connection = False
     for name, value in response.headers:
-        if name.lower() == b"content-length":
+        lowered_name = name.lower()
+        if lowered_name == b"content-length":
             has_content_length = True
+        elif lowered_name == b"transfer-encoding" and value.lower() == b"chunked":
+            has_transfer_encoding = True
+        elif lowered_name == b"connection":
+            has_connection = True
         header_lines.append(name + b": " + value)
 
-    if not has_content_length:
+    payload_chunks = [] if response.suppress_body else response.body_chunks
+    payload = b"".join(payload_chunks)
+
+    if not has_content_length and not has_transfer_encoding:
         header_lines.append(b"content-length: " + str(len(payload)).encode("ascii"))
 
-    header_lines.append(b"connection: keep-alive" if keep_alive else b"connection: close")
+    if not has_connection:
+        header_lines.append(b"connection: keep-alive" if keep_alive else b"connection: close")
+
+    if has_transfer_encoding:
+        chunked_chunks: list[bytes] = []
+        for chunk in payload_chunks:
+            if not chunk:
+                continue
+            chunked_chunks.append(f"{len(chunk):x}\r\n".encode("ascii"))
+            chunked_chunks.append(chunk)
+            chunked_chunks.append(b"\r\n")
+        chunked_chunks.append(b"0\r\n\r\n")
+        payload = b"".join(chunked_chunks)
 
     return b"\r\n".join(header_lines) + b"\r\n\r\n" + payload
 

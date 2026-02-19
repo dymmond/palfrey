@@ -11,7 +11,7 @@ import palfrey.config as config_module
 import palfrey.server as server_module
 from palfrey.config import PalfreyConfig
 from palfrey.importer import ResolvedApp
-from palfrey.protocols.http import HTTPRequest, HTTPResponse
+from palfrey.protocols.http import HTTPRequest
 from palfrey.server import PalfreyServer
 
 
@@ -329,7 +329,13 @@ def test_handle_connection_sends_100_continue_and_respects_max_requests(monkeypa
         timeout_keep_alive=1,
     )
     server = PalfreyServer(config)
-    server._resolved_app = _resolved_app()
+    async def app(scope, receive, send):
+        message = await receive()
+        assert message == {"type": "http.request", "body": b"hello", "more_body": False}
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+
+    server._resolved_app = ResolvedApp(app=app, interface="asgi3")
     writer = DummyWriter()
     request = HTTPRequest(
         method="POST",
@@ -346,15 +352,7 @@ def test_handle_connection_sends_100_continue_and_respects_max_requests(monkeypa
             return request
         return None
 
-    async def fake_handle_http_request(
-        self: PalfreyServer, request: HTTPRequest, context
-    ) -> HTTPResponse:
-        return HTTPResponse(
-            status=200, headers=[(b"content-type", b"text/plain")], body_chunks=[b"ok"]
-        )
-
     monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
-    monkeypatch.setattr(PalfreyServer, "_handle_http_request", fake_handle_http_request)
     monkeypatch.setattr(server_module, "should_keep_alive", lambda request, response: False)
 
     asyncio.run(server._handle_connection(object(), writer))

@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from dataclasses import dataclass, field
 
 from palfrey.logging_config import get_logger
 from palfrey.types import ASGIApplication, Message, Scope
 
 logger = get_logger("palfrey.lifespan")
+
+
+class LifespanUnsupportedError(RuntimeError):
+    """Raised when an app does not implement ASGI lifespan messaging."""
+
+
+class LifespanStartupFailedError(RuntimeError):
+    """Raised when an app explicitly reports ``lifespan.startup.failed``."""
 
 
 @dataclass(slots=True)
@@ -38,6 +47,33 @@ class LifespanManager:
         }
         await self.app(scope, self._receive, self._send)
 
+    async def _next_lifespan_message(self) -> Message:
+        """Wait for a lifespan response or an early task failure."""
+
+        if self._task is None:
+            raise RuntimeError("Lifespan task is not running.")
+
+        message_task = asyncio.create_task(self._send_queue.get())
+        done, pending = await asyncio.wait(
+            {message_task, self._task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for pending_task in pending:
+            if pending_task is self._task:
+                continue
+            pending_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await pending_task
+
+        if message_task in done:
+            return message_task.result()
+
+        assert self._task in done
+        exception = self._task.exception()
+        if exception is None:
+            raise LifespanUnsupportedError("ASGI lifespan protocol appears unsupported.")
+        raise LifespanUnsupportedError("ASGI lifespan protocol appears unsupported.") from exception
+
     async def startup(self) -> None:
         """Trigger and await application startup completion.
 
@@ -50,7 +86,7 @@ class LifespanManager:
 
         await self._receive_queue.put({"type": "lifespan.startup"})
 
-        message = await self._send_queue.get()
+        message = await self._next_lifespan_message()
         message_type = message["type"]
 
         if message_type == "lifespan.startup.complete":
@@ -58,7 +94,7 @@ class LifespanManager:
             return
 
         if message_type == "lifespan.startup.failed":
-            raise RuntimeError(message.get("message", "Lifespan startup failed"))
+            raise LifespanStartupFailedError(message.get("message", "Lifespan startup failed"))
 
         raise RuntimeError(f"Unexpected lifespan startup message: {message_type}")
 
@@ -69,7 +105,7 @@ class LifespanManager:
             return
 
         await self._receive_queue.put({"type": "lifespan.shutdown"})
-        message = await self._send_queue.get()
+        message = await self._next_lifespan_message()
 
         message_type = message["type"]
         if message_type not in {"lifespan.shutdown.complete", "lifespan.shutdown.failed"}:

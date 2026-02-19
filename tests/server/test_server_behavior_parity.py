@@ -320,6 +320,35 @@ def test_handle_exit_signal_sets_force_exit_on_second_sigint() -> None:
     assert server._force_exit is True
 
 
+def test_capture_signals_restores_handlers_and_replays_in_lifo_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
+    current_handlers: dict[int, object] = {}
+    original_handlers: dict[int, object] = {}
+    raised_signals: list[int] = []
+
+    def fake_signal(sig: int, handler: object) -> object:
+        previous = current_handlers.get(sig, f"orig-{sig}")
+        if sig not in original_handlers:
+            original_handlers[sig] = previous
+        current_handlers[sig] = handler
+        return previous
+
+    monkeypatch.setattr(server_module.signal, "signal", fake_signal)
+    monkeypatch.setattr(server_module.signal, "raise_signal", lambda sig: raised_signals.append(sig))
+
+    with server.capture_signals():
+        server.handle_exit(int(signal.SIGTERM), None)
+        server.handle_exit(int(signal.SIGINT), None)
+
+    assert raised_signals == [int(signal.SIGINT), int(signal.SIGTERM)]
+    for sig, original_handler in original_handlers.items():
+        assert current_handlers[sig] == original_handler
+    assert server._shutdown_event.is_set() is True
+    assert server._force_exit is True
+
+
 def test_normalize_address_invalid_port_uses_default() -> None:
     host, port = PalfreyServer._normalize_address(
         ("127.0.0.1", "not-a-port"),
@@ -344,7 +373,7 @@ def test_handle_http_request_access_log_includes_query_string(
         body=b"",
     )
 
-    async def fake_run_http_asgi(app, scope, body):
+    async def fake_run_http_asgi(app, scope, body, **kwargs):
         return HTTPResponse(status=204, headers=[], body_chunks=[])
 
     monkeypatch.setattr(server_module, "run_http_asgi", fake_run_http_asgi)
@@ -379,7 +408,7 @@ def test_handle_http_request_skips_access_log_when_disabled(
         body=b"",
     )
 
-    async def fake_run_http_asgi(app, scope, body):
+    async def fake_run_http_asgi(app, scope, body, **kwargs):
         return HTTPResponse(status=200, headers=[], body_chunks=[b"ok"])
 
     monkeypatch.setattr(server_module, "run_http_asgi", fake_run_http_asgi)
@@ -416,7 +445,7 @@ def test_handle_http_request_uses_cached_default_headers(
         body=b"",
     )
 
-    async def fake_run_http_asgi(app, scope, body):
+    async def fake_run_http_asgi(app, scope, body, **kwargs):
         return HTTPResponse(status=200, headers=[], body_chunks=[b"ok"])
 
     monkeypatch.setattr(server_module, "run_http_asgi", fake_run_http_asgi)

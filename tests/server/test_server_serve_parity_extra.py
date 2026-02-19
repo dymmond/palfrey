@@ -239,6 +239,55 @@ def test_serve_initializes_and_shutdowns_lifespan_when_enabled(monkeypatch) -> N
     assert manager.stopped is True
 
 
+def test_serve_auto_mode_continues_when_lifespan_is_unsupported(monkeypatch) -> None:
+    calls = {"start_server": 0}
+
+    class UnsupportedManager(FakeLifespanManager):
+        async def startup(self) -> None:
+            raise server_module.LifespanUnsupportedError("ASGI lifespan protocol appears unsupported.")
+
+    async def fake_start_server(handler, **kwargs):
+        calls["start_server"] += 1
+        return FakeAsyncServer()
+
+    monkeypatch.setattr(server_module, "configure_logging", lambda config: None)
+    monkeypatch.setattr(server_module, "resolve_application", lambda config: _resolved())
+    monkeypatch.setattr(server_module, "LifespanManager", UnsupportedManager)
+    monkeypatch.setattr(server_module.asyncio, "start_server", fake_start_server)
+    monkeypatch.setattr(server_module.asyncio, "get_running_loop", lambda: FakeLoop())
+
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", lifespan="auto"))
+    server._shutdown_event.set()
+    asyncio.run(server.serve())
+
+    assert calls["start_server"] == 1
+    assert server.started is True
+
+
+def test_serve_on_mode_stops_when_lifespan_is_unsupported(monkeypatch) -> None:
+    calls = {"start_server": 0}
+
+    class UnsupportedManager(FakeLifespanManager):
+        async def startup(self) -> None:
+            raise server_module.LifespanUnsupportedError("ASGI lifespan protocol appears unsupported.")
+
+    async def fake_start_server(handler, **kwargs):
+        calls["start_server"] += 1
+        return FakeAsyncServer()
+
+    monkeypatch.setattr(server_module, "configure_logging", lambda config: None)
+    monkeypatch.setattr(server_module, "resolve_application", lambda config: _resolved())
+    monkeypatch.setattr(server_module, "LifespanManager", UnsupportedManager)
+    monkeypatch.setattr(server_module.asyncio, "start_server", fake_start_server)
+    monkeypatch.setattr(server_module.asyncio, "get_running_loop", lambda: FakeLoop())
+
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", lifespan="on"))
+    asyncio.run(server.serve())
+
+    assert calls["start_server"] == 0
+    assert server.started is False
+
+
 def test_serve_registers_sigint_and_sigterm_handlers(monkeypatch) -> None:
     loop = FakeLoop()
 

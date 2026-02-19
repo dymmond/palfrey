@@ -1,5 +1,3 @@
-"""App importer and interface adapter tests."""
-
 from __future__ import annotations
 
 from palfrey.config import PalfreyConfig

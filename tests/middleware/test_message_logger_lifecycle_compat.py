@@ -1,5 +1,3 @@
-"""Lifecycle logging parity tests for message logger middleware."""
-
 from __future__ import annotations
 
 import asyncio

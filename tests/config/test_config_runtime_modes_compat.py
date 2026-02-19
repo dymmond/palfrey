@@ -1,5 +1,3 @@
-"""Config validation parity tests for runtime mode options."""
-
 from __future__ import annotations
 
 from importlib.machinery import ModuleSpec

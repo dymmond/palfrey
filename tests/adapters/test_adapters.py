@@ -1,5 +1,3 @@
-"""Tests for ASGI2 and WSGI adapter behavior."""
-
 from __future__ import annotations
 
 import asyncio
@@ -154,7 +152,9 @@ def test_wsgi_adapter_raises_exc_info_after_response() -> None:
             raise RuntimeError("wsgi-failure")
         except RuntimeError:
             start_response(
-                "500 Internal Server Error", [("content-type", "text/plain")], sys.exc_info()
+                "500 Internal Server Error",
+                [("content-type", "text/plain")],
+                sys.exc_info(),
             )
             return [b"error"]
 

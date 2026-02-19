@@ -1,5 +1,3 @@
-"""Runtime run(...) API parity tests."""
-
 from __future__ import annotations
 
 import asyncio
@@ -127,7 +125,9 @@ def test_run_forwards_uvicorn_style_kwargs_into_config(
     assert config.h11_max_incomplete_event_size == 8192
 
 
-def test_run_normalizes_string_reload_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_normalizes_string_reload_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     captured: list[PalfreyConfig] = []
     monkeypatch.setattr(
         runtime_module,
@@ -148,7 +148,9 @@ def test_run_normalizes_string_reload_arguments(monkeypatch: pytest.MonkeyPatch)
     assert config.reload_excludes == ["*.tmp"]
 
 
-def test_run_default_ssl_values_match_uvicorn_baseline(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_default_ssl_values_match_uvicorn_baseline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     captured: list[PalfreyConfig] = []
     monkeypatch.setattr(
         runtime_module,
@@ -162,7 +164,9 @@ def test_run_default_ssl_values_match_uvicorn_baseline(monkeypatch: pytest.Monke
     assert config.ssl_cert_reqs == int(ssl.CERT_NONE)
 
 
-def test_run_converts_pathlike_ssl_inputs_to_string(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_converts_pathlike_ssl_inputs_to_string(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     captured: list[PalfreyConfig] = []
     monkeypatch.setattr(
         runtime_module,

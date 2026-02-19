@@ -1,5 +1,3 @@
-"""Gunicorn worker parity tests for ``palfrey.workers``."""
-
 from __future__ import annotations
 
 import asyncio
@@ -92,7 +90,9 @@ def _load_workers_module(monkeypatch: pytest.MonkeyPatch, *, with_gunicorn: bool
     return importlib.import_module("palfrey.workers")
 
 
-def test_workers_module_requires_gunicorn_dependency(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_workers_module_requires_gunicorn_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     workers_module = _load_workers_module(monkeypatch, with_gunicorn=False)
     with pytest.raises(RuntimeError, match="requires the 'gunicorn' package"):
         workers_module.PalfreyWorker()
@@ -117,7 +117,9 @@ def test_palfrey_worker_builds_config_from_gunicorn_settings(
     assert h11_worker.config.http == "h11"
 
 
-def test_palfrey_worker_init_signals_resets_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_palfrey_worker_init_signals_resets_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     workers_module = _load_workers_module(monkeypatch, with_gunicorn=True)
     worker = workers_module.PalfreyWorker()
     signal_calls: list[tuple[int, object]] = []

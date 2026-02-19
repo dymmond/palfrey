@@ -1,5 +1,3 @@
-"""Internal server behavior tests."""
-
 from __future__ import annotations
 
 import asyncio
@@ -164,7 +162,9 @@ def test_validate_protocol_backends_rejects_missing_websockets(monkeypatch) -> N
         server._validate_protocol_backends()
 
 
-def test_validate_protocol_backends_allows_auto_when_no_ws_backends(monkeypatch) -> None:
+def test_validate_protocol_backends_allows_auto_when_no_ws_backends(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(config_module, "_module_available", lambda name: False)
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", ws="auto"))
     monkeypatch.setattr(server_module, "find_spec", lambda name: None)
@@ -331,7 +331,9 @@ def test_handle_connection_uses_custom_ws_protocol_class(monkeypatch) -> None:
     assert writer.closed is True
 
 
-def test_handle_connection_returns_400_for_upgrade_when_ws_backend_disabled(monkeypatch) -> None:
+def test_handle_connection_returns_400_for_upgrade_when_ws_backend_disabled(
+    monkeypatch,
+) -> None:
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", ws="none"))
     server._resolved_app = _resolved_app()
     writer = DummyWriter()
@@ -367,7 +369,9 @@ def test_handle_connection_returns_400_for_upgrade_when_ws_backend_disabled(monk
     assert writer.closed is True
 
 
-def test_handle_connection_sends_100_continue_and_respects_max_requests(monkeypatch) -> None:
+def test_handle_connection_sends_100_continue_and_respects_max_requests(
+    monkeypatch,
+) -> None:
     config = PalfreyConfig(
         app="tests.fixtures.apps:http_app",
         limit_max_requests=1,
@@ -409,7 +413,9 @@ def test_handle_connection_sends_100_continue_and_respects_max_requests(monkeypa
     assert server._shutdown_event.is_set() is True
 
 
-def test_handle_connection_returns_503_when_concurrency_limit_reached(monkeypatch) -> None:
+def test_handle_connection_returns_503_when_concurrency_limit_reached(
+    monkeypatch,
+) -> None:
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", limit_concurrency=0))
     server._resolved_app = _resolved_app()
     writer = DummyWriter()
@@ -493,7 +499,9 @@ def test_run_custom_ws_protocol_forwards_handshake_and_stream_bytes() -> None:
     assert events[3] == ("lost", None)
 
 
-def test_handle_connection_returns_503_when_connection_count_reaches_limit(monkeypatch) -> None:
+def test_handle_connection_returns_503_when_connection_count_reaches_limit(
+    monkeypatch,
+) -> None:
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", limit_concurrency=1))
     server._resolved_app = _resolved_app()
     writer = DummyWriter()

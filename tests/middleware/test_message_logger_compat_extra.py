@@ -1,12 +1,13 @@
-"""Additional message logger middleware tests."""
-
 from __future__ import annotations
 
 import asyncio
 
 import pytest
 
-from palfrey.middleware.message_logger import MessageLoggerMiddleware, message_with_placeholders
+from palfrey.middleware.message_logger import (
+    MessageLoggerMiddleware,
+    message_with_placeholders,
+)
 from palfrey.types import Message
 
 

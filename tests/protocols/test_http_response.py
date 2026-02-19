@@ -1,5 +1,3 @@
-"""HTTP response and keep-alive behavior tests."""
-
 from __future__ import annotations
 
 from palfrey.config import PalfreyConfig

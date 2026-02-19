@@ -1,5 +1,3 @@
-"""Config.load parity tests aligned to Uvicorn config behavior."""
-
 from __future__ import annotations
 
 import pytest
@@ -33,7 +31,12 @@ def test_config_load_sets_loaded_state_and_encoded_headers() -> None:
     assert config.encoded_headers[0] == (b"server", b"palfrey")
     assert (b"x-test", b"1") in config.encoded_headers
     assert config.http_protocol_class in {"h11", "httptools"}
-    assert config.ws_protocol_class in {"none", "websockets", "websockets-sansio", "wsproto"}
+    assert config.ws_protocol_class in {
+        "none",
+        "websockets",
+        "websockets-sansio",
+        "wsproto",
+    }
     assert config.lifespan_class is LifespanManager
 
 

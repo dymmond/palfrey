@@ -38,6 +38,8 @@ Palfrey is a clean-room ASGI server focused on three things:
 - deployment controls you can operate safely
 - performance you can reproduce and verify
 
+Protocol runtime modes include HTTP/1.1 backends plus opt-in HTTP/2 (`--http h2`) and HTTP/3 (`--http h3`) paths.
+
 This documentation is written for both technical and non-technical readers.
 
 - Engineers can use the protocol details, option tables, and runbooks.

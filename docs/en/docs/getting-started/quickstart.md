@@ -113,6 +113,20 @@ Example Gunicorn config file:
 {!> ../../../docs_src/operations/gunicorn_conf.py !}
 ```
 
+## Stage 10: HTTP/2 and HTTP/3 modes (Advanced)
+
+HTTP/2 mode:
+
+```bash
+palfrey main:app --http h2 --host 127.0.0.1 --port 8000
+```
+
+HTTP/3 mode (TLS required):
+
+```bash
+palfrey main:app --http h3 --ws none --host 127.0.0.1 --port 8443 --ssl-certfile cert.pem --ssl-keyfile key.pem
+```
+
 ## Non-Technical Summary
 
 You just learned three maturity levels:

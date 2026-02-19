@@ -66,6 +66,20 @@ Config-driven startup:
 gunicorn main:app -c docs_src/operations/gunicorn_conf.py
 ```
 
+## Model 6: HTTP/3 edge service (QUIC)
+
+Use this when you need HTTP/3 transport explicitly.
+
+```bash
+palfrey main:app --http h3 --ws none --host 0.0.0.0 --port 8443 --ssl-certfile cert.pem --ssl-keyfile key.pem
+```
+
+Operational notes:
+
+- traffic is UDP-based at the edge
+- ensure security groups / firewall rules allow UDP on the selected port
+- `--uds` and `--fd` startup modes are not used in HTTP/3 mode
+
 ## Production checklist
 
 - startup command is explicit and versioned

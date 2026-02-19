@@ -12,6 +12,8 @@ Optional but common:
 
 - `uvloop` for high-performance loop mode on supported platforms
 - `httptools` for HTTP parser backend
+- `h2` for HTTP/2 backend
+- `aioquic` for HTTP/3 backend
 - `websockets` for websocket backend options
 - `watchfiles` for reload mode
 
@@ -50,6 +52,22 @@ pip install "palfrey[standard]"
 ```
 
 Use this when you want common performance and feature extras.
+
+## HTTP/2 backend extra
+
+```bash
+pip install "palfrey[http2]"
+```
+
+Use this when running with `--http h2`.
+
+## HTTP/3 backend extra
+
+```bash
+pip install "palfrey[http3]"
+```
+
+Use this when running with `--http h3`.
 
 ## Contributor/developer setup
 
@@ -101,7 +119,7 @@ curl http://127.0.0.1:8000
 
 ## Optional backend package not installed
 
-If you select an explicit backend (`--http httptools`, `--ws websockets`, etc.), ensure the package is installed.
+If you select an explicit backend (`--http httptools`, `--http h2`, `--http h3`, `--ws websockets`, etc.), ensure the package is installed.
 
 ## YAML log config fails to load
 

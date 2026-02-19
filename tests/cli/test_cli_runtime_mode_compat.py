@@ -56,3 +56,29 @@ def test_cli_rejects_invalid_loop_mode_with_clear_error() -> None:
     )
     assert result.exit_code == 1
     assert "Unsupported loop mode" in result.output
+
+
+def test_cli_accepts_http2_and_http3_modes(monkeypatch) -> None:
+    captured, runner = _capture_config(monkeypatch)
+
+    result_h2 = runner.invoke(
+        main,
+        [
+            "tests.fixtures.apps:http_app",
+            "--http",
+            "h2",
+        ],
+    )
+    assert result_h2.exit_code == 0
+    assert captured[-1].http == "h2"
+
+    result_h3 = runner.invoke(
+        main,
+        [
+            "tests.fixtures.apps:http_app",
+            "--http",
+            "h3",
+        ],
+    )
+    assert result_h3.exit_code == 0
+    assert captured[-1].http == "h3"

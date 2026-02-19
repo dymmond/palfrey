@@ -160,50 +160,90 @@ class PalfreyServer:
                 loop.add_signal_handler(sig, lambda _sig=sig: self._handle_exit_signal(_sig))
 
         ssl_context = self._build_ssl_context()
+        use_protocol_factory = self._use_protocol_factory_mode()
+        protocol_factory = self._build_protocol_factory(loop) if use_protocol_factory else None
         self._external_sockets = list(sockets) if sockets is not None else []
 
         try:
             if sockets is not None:
                 self._servers = []
                 for sock in sockets:
-                    server = await asyncio.start_server(
-                        self._handle_connection,
-                        sock=sock,
-                        ssl=ssl_context,
-                        backlog=self.config.backlog,
-                    )
+                    if use_protocol_factory:
+                        assert protocol_factory is not None
+                        server = await loop.create_server(
+                            protocol_factory,
+                            sock=sock,
+                            ssl=ssl_context,
+                            backlog=self.config.backlog,
+                        )
+                    else:
+                        server = await asyncio.start_server(
+                            self._handle_connection,
+                            sock=sock,
+                            ssl=ssl_context,
+                            backlog=self.config.backlog,
+                        )
                     self._servers.append(server)
                 self._server = self._servers[0] if self._servers else None
             elif self.config.fd is not None:
                 server_socket = socket.fromfd(self.config.fd, socket.AF_UNIX, socket.SOCK_STREAM)
                 server_socket.setblocking(False)
-                self._server = await asyncio.start_server(
-                    self._handle_connection,
-                    sock=server_socket,
-                    ssl=ssl_context,
-                    backlog=self.config.backlog,
-                )
+                if use_protocol_factory:
+                    assert protocol_factory is not None
+                    self._server = await loop.create_server(
+                        protocol_factory,
+                        sock=server_socket,
+                        ssl=ssl_context,
+                        backlog=self.config.backlog,
+                    )
+                else:
+                    self._server = await asyncio.start_server(
+                        self._handle_connection,
+                        sock=server_socket,
+                        ssl=ssl_context,
+                        backlog=self.config.backlog,
+                    )
             elif self.config.uds:
                 uds_perms = 0o666
                 if os.path.exists(self.config.uds):
                     uds_perms = os.stat(self.config.uds).st_mode
-                self._server = await asyncio.start_unix_server(
-                    self._handle_connection,
-                    path=self.config.uds,
-                    backlog=self.config.backlog,
-                    ssl=ssl_context,
-                )
+                if use_protocol_factory:
+                    assert protocol_factory is not None
+                    self._server = await loop.create_unix_server(
+                        protocol_factory,
+                        path=self.config.uds,
+                        backlog=self.config.backlog,
+                        ssl=ssl_context,
+                    )
+                else:
+                    self._server = await asyncio.start_unix_server(
+                        self._handle_connection,
+                        path=self.config.uds,
+                        backlog=self.config.backlog,
+                        ssl=ssl_context,
+                    )
                 with contextlib.suppress(OSError):
                     os.chmod(self.config.uds, uds_perms)
             else:
-                self._server = await asyncio.start_server(
-                    self._handle_connection,
-                    host=self.config.host,
-                    port=self.config.port,
-                    backlog=self.config.backlog,
-                    ssl=ssl_context,
-                    reuse_port=self.config.workers_count > 1,
-                )
+                if use_protocol_factory:
+                    assert protocol_factory is not None
+                    self._server = await loop.create_server(
+                        protocol_factory,
+                        host=self.config.host,
+                        port=self.config.port,
+                        backlog=self.config.backlog,
+                        ssl=ssl_context,
+                        reuse_port=self.config.workers_count > 1,
+                    )
+                else:
+                    self._server = await asyncio.start_server(
+                        self._handle_connection,
+                        host=self.config.host,
+                        port=self.config.port,
+                        backlog=self.config.backlog,
+                        ssl=ssl_context,
+                        reuse_port=self.config.workers_count > 1,
+                    )
         except OSError as exc:
             logger.error("%s", exc)
             if self._lifespan is not None:
@@ -735,16 +775,45 @@ class PalfreyServer:
     def _build_static_default_headers(self) -> list[tuple[bytes, bytes]]:
         """Build configured default response headers excluding dynamic date."""
 
+        encoded_headers = list(getattr(self.config, "encoded_headers", []))
+        if encoded_headers:
+            return encoded_headers
+
         configured_headers = [
             (name.lower().encode("latin-1"), value.encode("latin-1"))
             for name, value in self.config.normalized_headers
         ]
         configured_names = {name for name, _ in configured_headers}
-        default_headers: list[tuple[bytes, bytes]] = []
         if self.config.server_header and b"server" not in configured_names:
-            default_headers.append((b"server", b"palfrey"))
-        default_headers.extend(configured_headers)
-        return default_headers
+            return [(b"server", b"palfrey"), *configured_headers]
+        return configured_headers
+
+    def _use_protocol_factory_mode(self) -> bool:
+        """Return whether runtime should delegate I/O to protocol-class factory."""
+
+        protocol_class = self.config.http_protocol_class
+        return isinstance(protocol_class, type) and issubclass(protocol_class, asyncio.Protocol)
+
+    def _build_protocol_factory(
+        self, loop: asyncio.AbstractEventLoop
+    ) -> Callable[[], asyncio.Protocol]:
+        """Build protocol factory callable for custom protocol-class execution."""
+
+        protocol_class = cast(type[asyncio.Protocol], self.config.http_protocol_class)
+        protocol_constructor = cast("Callable[..., asyncio.Protocol]", protocol_class)
+        app_state = getattr(self._lifespan, "state", {}) if self._lifespan is not None else {}
+
+        def create_protocol(
+            _loop: asyncio.AbstractEventLoop | None = None,
+        ) -> asyncio.Protocol:
+            return protocol_constructor(
+                config=self.config,
+                server_state=self.server_state,
+                app_state=app_state,
+                _loop=_loop or loop,
+            )
+
+        return create_protocol
 
     def _validate_protocol_backends(self) -> None:
         """Validate that selected protocol backend dependencies are importable.

@@ -106,6 +106,85 @@ async def websocket_subprotocol_app(scope, receive, send):
         await send({"type": "websocket.close", "code": 1000})
 
 
+async def http_content_length_app(scope, receive, send):
+    """HTTP app that responds with explicit Content-Length framing."""
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    if scope["type"] == "http":
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [
+                    (b"content-type", b"text/plain"),
+                    (b"content-length", b"2"),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": b"ok"})
+
+
+async def http_head_behavior_app(scope, receive, send):
+    """HTTP app used to compare HEAD response behavior to Uvicorn."""
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    if scope["type"] == "http":
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [
+                    (b"content-type", b"text/plain"),
+                    (b"content-length", b"4"),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": b"body"})
+
+
+async def http_multi_set_cookie_app(scope, receive, send):
+    """HTTP app returning repeated Set-Cookie headers for parity checks."""
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    if scope["type"] == "http":
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [
+                    (b"content-type", b"text/plain"),
+                    (b"set-cookie", b"a=1; Path=/"),
+                    (b"set-cookie", b"b=2; Path=/"),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": b"ok"})
+
+
 async def lifespan_fail_app(scope, receive, send):
     """Fail lifespan startup to validate process-exit behavior."""
 

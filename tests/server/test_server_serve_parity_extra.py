@@ -283,6 +283,64 @@ def test_serve_initializes_and_shutdowns_lifespan_when_enabled(monkeypatch) -> N
     assert manager.stopped is True
 
 
+def test_serve_uses_custom_http_protocol_class_factory(monkeypatch) -> None:
+    created: dict[str, object] = {}
+    create_server_calls: list[dict[str, object]] = []
+
+    class RecordingHTTPProtocol(asyncio.Protocol):
+        def __init__(
+            self,
+            *,
+            config,
+            server_state,
+            app_state,
+            _loop=None,
+        ) -> None:
+            created["config"] = config
+            created["server_state"] = server_state
+            created["app_state"] = app_state
+            created["loop"] = _loop
+
+    class LoopWithCreateServer:
+        def __init__(self) -> None:
+            self.signals: list[int] = []
+
+        def add_signal_handler(self, sig: int, _callback) -> None:
+            self.signals.append(sig)
+
+        async def create_server(self, protocol_factory, **kwargs):
+            create_server_calls.append(kwargs)
+            created["protocol"] = protocol_factory(self)
+            return FakeAsyncServer([FakeSocket(("127.0.0.1", 9444))])
+
+    loop = LoopWithCreateServer()
+
+    async def should_not_call_start_server(*_args, **_kwargs):
+        raise AssertionError("asyncio.start_server should not be used for custom protocol mode")
+
+    monkeypatch.setattr(server_module, "configure_logging", lambda config: None)
+    monkeypatch.setattr(server_module.asyncio, "get_running_loop", lambda: loop)
+    monkeypatch.setattr(server_module.asyncio, "start_server", should_not_call_start_server)
+
+    config = PalfreyConfig(
+        app="tests.fixtures.apps:http_app",
+        http=RecordingHTTPProtocol,
+        lifespan="off",
+    )
+    server = PalfreyServer(config)
+    server._shutdown_event.set()
+    asyncio.run(server.serve())
+
+    assert isinstance(created.get("protocol"), RecordingHTTPProtocol)
+    assert created["config"] is config
+    assert created["server_state"] is server.server_state
+    assert created["app_state"] == {}
+    assert created["loop"] is loop
+    assert create_server_calls
+    assert create_server_calls[0]["host"] == "127.0.0.1"
+    assert create_server_calls[0]["port"] == 8000
+
+
 def test_serve_auto_mode_continues_when_lifespan_is_unsupported(monkeypatch) -> None:
     calls = {"start_server": 0}
 

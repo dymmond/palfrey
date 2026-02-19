@@ -123,3 +123,48 @@ def test_bind_socket_raises_system_exit_on_bind_error(
     with pytest.raises(SystemExit) as exc_info:
         config.bind_socket()
     assert exc_info.value.code == 1
+
+
+def test_bind_socket_logs_color_message_extra_for_tcp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeSocket:
+        def __init__(self) -> None:
+            self.inheritable = False
+
+        def setsockopt(self, *_args) -> None:
+            return None
+
+        def bind(self, _addr: tuple[str, int]) -> None:
+            return None
+
+        def getsockname(self) -> tuple[str, int]:
+            return ("127.0.0.1", 8001)
+
+        def set_inheritable(self, value: bool) -> None:
+            self.inheritable = value
+
+    events: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
+
+    class FakeLogger:
+        def info(self, message: str, *args: object, **kwargs: object) -> None:
+            events.append((message, args, dict(kwargs)))
+
+        def error(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+    monkeypatch.setattr(config_module.socket, "socket", lambda family, kind=0: FakeSocket())
+    monkeypatch.setattr(config_module, "logger", FakeLogger())
+
+    config = PalfreyConfig(app="tests.fixtures.apps:http_app", host="127.0.0.1", port=0)
+    config.bind_socket()
+
+    assert events
+    message, args, kwargs = events[0]
+    assert message == "Palfrey running on %s://%s:%d (Press CTRL+C to quit)"
+    assert args == ("http", "127.0.0.1", 8001)
+    assert isinstance(kwargs.get("extra"), dict)
+    extra = kwargs["extra"]
+    assert isinstance(extra, dict)
+    assert "color_message" in extra
+    assert "Palfrey running on" in str(extra["color_message"])

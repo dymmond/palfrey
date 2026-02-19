@@ -102,12 +102,16 @@ def _spawn_server(
         yield process, port
     finally:
         process.terminate()
-        process.wait(timeout=10)
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
 
 
-def _http_exchange(port: int) -> tuple[int, dict[str, str], bytes]:
+def _raw_http_exchange(port: int, *, method: str = "GET") -> bytes:
     with socket.create_connection(("127.0.0.1", port), timeout=5) as conn:
-        request = f"GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+        request = f"{method} / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
         conn.sendall(request.encode("ascii"))
         chunks = []
         while True:
@@ -115,7 +119,11 @@ def _http_exchange(port: int) -> tuple[int, dict[str, str], bytes]:
             if not chunk:
                 break
             chunks.append(chunk)
-    raw = b"".join(chunks)
+    return b"".join(chunks)
+
+
+def _http_exchange(port: int, *, method: str = "GET") -> tuple[int, dict[str, str], bytes]:
+    raw = _raw_http_exchange(port, method=method)
     head, _, body = raw.partition(b"\r\n\r\n")
     lines = head.split(b"\r\n")
     status_line = lines[0].decode("latin-1")
@@ -164,14 +172,44 @@ def _parse_http_response(raw: bytes) -> tuple[int, dict[str, str], bytes]:
     return status, headers, body
 
 
-def _read_all(sock: socket.socket) -> bytes:
-    chunks: list[bytes] = []
-    while True:
+def _read_http_response(sock: socket.socket) -> tuple[int, dict[str, str], bytes]:
+    header_buffer = bytearray()
+    while b"\r\n\r\n" not in header_buffer:
         chunk = sock.recv(4096)
         if not chunk:
+            raise RuntimeError("Unexpected EOF before HTTP headers")
+        header_buffer.extend(chunk)
+
+    header_bytes, _, remainder = bytes(header_buffer).partition(b"\r\n\r\n")
+    status, headers, _ = _parse_http_response(header_bytes + b"\r\n\r\n")
+
+    transfer_encoding = headers.get("transfer-encoding", "").lower()
+    if "chunked" in transfer_encoding:
+        body = bytearray(remainder)
+        while b"0\r\n\r\n" not in body:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            body.extend(chunk)
+        return status, headers, bytes(body)
+
+    content_length_value = headers.get("content-length")
+    if content_length_value is None:
+        return status, headers, remainder
+
+    try:
+        content_length = int(content_length_value)
+    except ValueError:
+        return status, headers, remainder
+
+    body = bytearray(remainder)
+    while len(body) < content_length:
+        chunk = sock.recv(content_length - len(body))
+        if not chunk:
             break
-        chunks.append(chunk)
-    return b"".join(chunks)
+        body.extend(chunk)
+
+    return status, headers, bytes(body[:content_length])
 
 
 def _ws_send_text(sock: socket.socket, text: str) -> None:
@@ -274,8 +312,7 @@ def _ws_handshake_response(
             request_lines.append(f"Sec-WebSocket-Protocol: {subprotocol_header}")
         request = "\r\n".join(request_lines) + "\r\n\r\n"
         conn.sendall(request.encode("ascii"))
-        raw = _read_all(conn)
-    return _parse_http_response(raw)
+        return _read_http_response(conn)
 
 
 def _ws_handshake_and_read_close(port: int) -> tuple[int, int, str]:
@@ -348,6 +385,27 @@ def _run_server_to_exit(
         raise AssertionError("Server did not exit within timeout window.") from exc
 
 
+def _cli_supports_option(
+    module_name: str,
+    option: str,
+    *,
+    pythonpath: str | None = None,
+) -> bool:
+    env = os.environ.copy()
+    if pythonpath:
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = pythonpath if not existing else f"{pythonpath}{os.pathsep}{existing}"
+
+    completed = subprocess.run(
+        [sys.executable, "-m", module_name, "--help"],
+        capture_output=True,
+        env=env,
+        text=True,
+        check=False,
+    )
+    return option in completed.stdout
+
+
 def test_http_response_matches_uvicorn_for_fixture_app() -> None:
     uvicorn_pythonpath = _uvicorn_pythonpath()
     if uvicorn_pythonpath is None and importlib.util.find_spec("uvicorn") is None:
@@ -375,6 +433,89 @@ def test_http_response_matches_uvicorn_for_fixture_app() -> None:
     assert palfrey_headers.get("transfer-encoding") == uvicorn_headers.get("transfer-encoding")
     assert palfrey_headers.get("content-length") == uvicorn_headers.get("content-length")
     assert palfrey_headers.get("content-type") == uvicorn_headers.get("content-type")
+
+
+def test_http_content_length_framing_matches_uvicorn() -> None:
+    uvicorn_pythonpath = _uvicorn_pythonpath()
+    if uvicorn_pythonpath is None and importlib.util.find_spec("uvicorn") is None:
+        pytest.skip("uvicorn is not installed and local uvicorn repo is unavailable")
+
+    with _spawn_server(
+        "uvicorn",
+        "tests.fixtures.apps:http_content_length_app",
+        pythonpath=uvicorn_pythonpath,
+    ) as (_uvicorn_process, uvicorn_port):
+        uvicorn_status, uvicorn_headers, uvicorn_body = _http_exchange(uvicorn_port)
+
+    with _spawn_server(
+        "palfrey",
+        "tests.fixtures.apps:http_content_length_app",
+    ) as (_palfrey_process, palfrey_port):
+        palfrey_status, palfrey_headers, palfrey_body = _http_exchange(palfrey_port)
+
+    assert palfrey_status == uvicorn_status == 200
+    assert (
+        _decode_http_body(palfrey_headers, palfrey_body)
+        == _decode_http_body(uvicorn_headers, uvicorn_body)
+        == b"ok"
+    )
+    assert palfrey_headers.get("content-length") == uvicorn_headers.get("content-length")
+    assert palfrey_headers.get("transfer-encoding") == uvicorn_headers.get("transfer-encoding")
+
+
+def test_http_head_response_matches_uvicorn() -> None:
+    uvicorn_pythonpath = _uvicorn_pythonpath()
+    if uvicorn_pythonpath is None and importlib.util.find_spec("uvicorn") is None:
+        pytest.skip("uvicorn is not installed and local uvicorn repo is unavailable")
+
+    with _spawn_server(
+        "uvicorn",
+        "tests.fixtures.apps:http_head_behavior_app",
+        pythonpath=uvicorn_pythonpath,
+    ) as (_uvicorn_process, uvicorn_port):
+        uvicorn_status, uvicorn_headers, uvicorn_body = _http_exchange(
+            uvicorn_port,
+            method="HEAD",
+        )
+
+    with _spawn_server(
+        "palfrey",
+        "tests.fixtures.apps:http_head_behavior_app",
+    ) as (_palfrey_process, palfrey_port):
+        palfrey_status, palfrey_headers, palfrey_body = _http_exchange(
+            palfrey_port,
+            method="HEAD",
+        )
+
+    assert palfrey_status == uvicorn_status == 200
+    assert palfrey_body == uvicorn_body
+    assert palfrey_headers.get("content-length") == uvicorn_headers.get("content-length")
+    assert palfrey_headers.get("transfer-encoding") == uvicorn_headers.get("transfer-encoding")
+
+
+def test_http_duplicate_set_cookie_headers_match_uvicorn() -> None:
+    uvicorn_pythonpath = _uvicorn_pythonpath()
+    if uvicorn_pythonpath is None and importlib.util.find_spec("uvicorn") is None:
+        pytest.skip("uvicorn is not installed and local uvicorn repo is unavailable")
+
+    with _spawn_server(
+        "uvicorn",
+        "tests.fixtures.apps:http_multi_set_cookie_app",
+        pythonpath=uvicorn_pythonpath,
+    ) as (_uvicorn_process, uvicorn_port):
+        uvicorn_raw = _raw_http_exchange(uvicorn_port)
+
+    with _spawn_server(
+        "palfrey",
+        "tests.fixtures.apps:http_multi_set_cookie_app",
+    ) as (_palfrey_process, palfrey_port):
+        palfrey_raw = _raw_http_exchange(palfrey_port)
+
+    uvicorn_head = uvicorn_raw.partition(b"\r\n\r\n")[0].split(b"\r\n")[1:]
+    palfrey_head = palfrey_raw.partition(b"\r\n\r\n")[0].split(b"\r\n")[1:]
+    uvicorn_set_cookies = [line for line in uvicorn_head if line.lower().startswith(b"set-cookie:")]
+    palfrey_set_cookies = [line for line in palfrey_head if line.lower().startswith(b"set-cookie:")]
+    assert palfrey_set_cookies == uvicorn_set_cookies
 
 
 def test_websocket_echo_matches_uvicorn_for_fixture_app() -> None:
@@ -484,6 +625,68 @@ def test_websocket_subprotocol_accept_header_matches_uvicorn() -> None:
         palfrey_headers.get("sec-websocket-protocol")
         == uvicorn_headers.get("sec-websocket-protocol")
         == "chat"
+    )
+
+
+def test_websocket_per_message_deflate_header_matches_uvicorn() -> None:
+    uvicorn_pythonpath = _uvicorn_pythonpath()
+    if uvicorn_pythonpath is None and importlib.util.find_spec("uvicorn") is None:
+        pytest.skip("uvicorn is not installed and local uvicorn repo is unavailable")
+
+    with _spawn_server(
+        "uvicorn",
+        "tests.fixtures.apps:websocket_subprotocol_app",
+        pythonpath=uvicorn_pythonpath,
+    ) as (_uvicorn_process, uvicorn_port):
+        uvicorn_status, uvicorn_headers, _ = _ws_handshake_response(uvicorn_port)
+
+    with _spawn_server(
+        "palfrey",
+        "tests.fixtures.apps:websocket_subprotocol_app",
+    ) as (_palfrey_process, palfrey_port):
+        palfrey_status, palfrey_headers, _ = _ws_handshake_response(palfrey_port)
+
+    assert palfrey_status == uvicorn_status == 101
+    uvicorn_extensions = uvicorn_headers.get("sec-websocket-extensions")
+    palfrey_extensions = palfrey_headers.get("sec-websocket-extensions")
+    assert bool(palfrey_extensions) == bool(uvicorn_extensions)
+    if uvicorn_extensions:
+        assert "permessage-deflate" in uvicorn_extensions.lower()
+        assert palfrey_extensions is not None
+        assert "permessage-deflate" in palfrey_extensions.lower()
+
+
+def test_websocket_per_message_deflate_disable_matches_uvicorn() -> None:
+    uvicorn_pythonpath = _uvicorn_pythonpath()
+    if uvicorn_pythonpath is None and importlib.util.find_spec("uvicorn") is None:
+        pytest.skip("uvicorn is not installed and local uvicorn repo is unavailable")
+    if not _cli_supports_option(
+        "uvicorn",
+        "--no-ws-per-message-deflate",
+        pythonpath=uvicorn_pythonpath,
+    ):
+        pytest.skip("uvicorn CLI does not support --no-ws-per-message-deflate in this environment")
+    if not _cli_supports_option("palfrey", "--no-ws-per-message-deflate"):
+        pytest.skip("palfrey CLI does not support --no-ws-per-message-deflate in this environment")
+
+    with _spawn_server(
+        "uvicorn",
+        "tests.fixtures.apps:websocket_subprotocol_app",
+        extra_args=["--no-ws-per-message-deflate"],
+        pythonpath=uvicorn_pythonpath,
+    ) as (_uvicorn_process, uvicorn_port):
+        uvicorn_status, uvicorn_headers, _ = _ws_handshake_response(uvicorn_port)
+
+    with _spawn_server(
+        "palfrey",
+        "tests.fixtures.apps:websocket_subprotocol_app",
+        extra_args=["--no-ws-per-message-deflate"],
+    ) as (_palfrey_process, palfrey_port):
+        palfrey_status, palfrey_headers, _ = _ws_handshake_response(palfrey_port)
+
+    assert palfrey_status == uvicorn_status == 101
+    assert palfrey_headers.get("sec-websocket-extensions") == uvicorn_headers.get(
+        "sec-websocket-extensions"
     )
 
 

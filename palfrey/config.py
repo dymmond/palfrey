@@ -17,6 +17,8 @@ from importlib.util import find_spec
 from pathlib import Path
 from typing import IO, Any, Literal, cast
 
+import click
+
 from palfrey.acceleration import parse_header_items
 from palfrey.types import AppType
 
@@ -470,6 +472,7 @@ class PalfreyConfig:
     def bind_socket(self) -> socket.socket:
         """Bind and return a listening socket for subprocess supervision modes."""
 
+        logger_args: list[str | int]
         if self.uds:
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             try:
@@ -479,10 +482,24 @@ class PalfreyConfig:
                 logger.error("%s", exc)
                 raise SystemExit(1) from exc
 
-            logger.info("Palfrey running on unix socket %s (Press CTRL+C to quit)", self.uds)
+            message = "Palfrey running on unix socket %s (Press CTRL+C to quit)"
+            socket_name_format = "%s"
+            color_message = (
+                "Palfrey running on "
+                + click.style(socket_name_format, bold=True)
+                + " (Press CTRL+C to quit)"
+            )
+            logger_args = [self.uds]
         elif self.fd is not None:
             sock = socket.fromfd(self.fd, socket.AF_UNIX, socket.SOCK_STREAM)
-            logger.info("Palfrey running on socket %s (Press CTRL+C to quit)", sock.getsockname())
+            message = "Palfrey running on socket %s (Press CTRL+C to quit)"
+            socket_name_format = "%s"
+            color_message = (
+                "Palfrey running on "
+                + click.style(socket_name_format, bold=True)
+                + " (Press CTRL+C to quit)"
+            )
+            logger_args = [sock.getsockname()]
         else:
             family = socket.AF_INET6 if self.host and ":" in self.host else socket.AF_INET
             sock = socket.socket(family=family)
@@ -496,10 +513,18 @@ class PalfreyConfig:
             protocol_name = "https" if self.is_ssl else "http"
             bound_port = int(sock.getsockname()[1])
             if family == socket.AF_INET6:
-                address = f"{protocol_name}://[{self.host}]:{bound_port}"
+                address_format = "%s://[%s]:%d"
             else:
-                address = f"{protocol_name}://{self.host}:{bound_port}"
-            logger.info("Palfrey running on %s (Press CTRL+C to quit)", address)
+                address_format = "%s://%s:%d"
+            message = f"Palfrey running on {address_format} (Press CTRL+C to quit)"
+            color_message = (
+                "Palfrey running on "
+                + click.style(address_format, bold=True)
+                + " (Press CTRL+C to quit)"
+            )
+            logger_args = [protocol_name, self.host, bound_port]
+
+        logger.info(message, *logger_args, extra={"color_message": color_message})
 
         sock.set_inheritable(True)
         return sock

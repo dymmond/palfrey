@@ -42,6 +42,8 @@ logger = get_logger("palfrey.server")
 access_logger = get_logger("palfrey.access")
 PIPELINE_QUEUE_LIMIT = 16
 SOCKET_AF_UNIX = getattr(socket, "AF_UNIX", socket.AF_INET)
+if not hasattr(socket, "AF_UNIX"):
+    socket.AF_UNIX = SOCKET_AF_UNIX
 
 # Python on Windows doesn't expose asyncio.start_unix_server. Keep a stable
 # attribute so tests and call-sites can uniformly monkeypatch/resolve it.
@@ -50,7 +52,7 @@ if not hasattr(asyncio, "start_unix_server"):
     async def _unsupported_start_unix_server(*_args: Any, **_kwargs: Any) -> asyncio.Server:
         raise NotImplementedError("Unix domain sockets are not supported on this platform.")
 
-    asyncio.start_unix_server = _unsupported_start_unix_server  # type: ignore[attr-defined]
+    asyncio.start_unix_server = _unsupported_start_unix_server
 
 # Compatibility alias retained for tests and monkeypatch-based integrations.
 resolve_application = _resolve_application

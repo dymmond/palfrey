@@ -23,6 +23,8 @@ from palfrey.acceleration import parse_header_items
 from palfrey.types import AppType
 
 SOCKET_AF_UNIX = getattr(socket, "AF_UNIX", socket.AF_INET)
+if not hasattr(socket, "AF_UNIX"):
+    socket.AF_UNIX = SOCKET_AF_UNIX
 
 KnownLoopType = Literal["none", "auto", "asyncio", "uvloop"]
 LoopType = KnownLoopType | str
@@ -187,7 +189,9 @@ def create_ssl_context(
     return context
 
 
-def _asyncio_loop_factory(use_subprocess: bool = False) -> Callable[[], asyncio.AbstractEventLoop]:
+def _asyncio_loop_factory(
+    use_subprocess: bool = False,
+) -> Callable[[], asyncio.AbstractEventLoop]:
     """Return asyncio loop factory, matching Uvicorn platform behavior."""
 
     if sys.platform == "win32" and not use_subprocess:  # pragma: py-not-win32
@@ -195,7 +199,9 @@ def _asyncio_loop_factory(use_subprocess: bool = False) -> Callable[[], asyncio.
     return asyncio.SelectorEventLoop
 
 
-def _uvloop_loop_factory(use_subprocess: bool = False) -> Callable[[], asyncio.AbstractEventLoop]:
+def _uvloop_loop_factory(
+    use_subprocess: bool = False,
+) -> Callable[[], asyncio.AbstractEventLoop]:
     """Return uvloop loop factory when uvloop is installed."""
 
     import uvloop
@@ -203,7 +209,9 @@ def _uvloop_loop_factory(use_subprocess: bool = False) -> Callable[[], asyncio.A
     return uvloop.new_event_loop
 
 
-def _auto_loop_factory(use_subprocess: bool = False) -> Callable[[], asyncio.AbstractEventLoop]:
+def _auto_loop_factory(
+    use_subprocess: bool = False,
+) -> Callable[[], asyncio.AbstractEventLoop]:
     """Resolve auto loop factory preferring uvloop when available."""
 
     try:

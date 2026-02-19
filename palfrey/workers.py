@@ -16,14 +16,18 @@ from palfrey.server import PalfreyServer
 
 SIGQUIT_SIGNAL = getattr(signal, "SIGQUIT", getattr(signal, "SIGBREAK", signal.SIGTERM))
 if not hasattr(signal, "SIGQUIT"):
-    signal.SIGQUIT = SIGQUIT_SIGNAL  # type: ignore[attr-defined]
+    signal.SIGQUIT = SIGQUIT_SIGNAL
+
+SIGUSR1_SIGNAL = getattr(signal, "SIGUSR1", getattr(signal, "SIGBREAK", signal.SIGTERM))
+if not hasattr(signal, "SIGUSR1"):
+    signal.SIGUSR1 = SIGUSR1_SIGNAL
 
 if not hasattr(signal, "siginterrupt"):
 
     def _siginterrupt(_sig: int, _flag: bool) -> None:
         return None
 
-    signal.siginterrupt = _siginterrupt  # type: ignore[attr-defined]
+    signal.siginterrupt = _siginterrupt
 
 
 def _load_gunicorn_runtime() -> tuple[type[Any], int | None]:
@@ -122,9 +126,9 @@ if _WORKER_BASE_CLASS is not object:
             for sig in self.SIGNALS:
                 signal.signal(sig, signal.SIG_DFL)
 
-            signal.signal(signal.SIGUSR1, self.handle_usr1)
+            signal.signal(SIGUSR1_SIGNAL, self.handle_usr1)
             if hasattr(signal, "siginterrupt"):
-                signal.siginterrupt(signal.SIGUSR1, False)
+                signal.siginterrupt(SIGUSR1_SIGNAL, False)
 
         def _install_sigquit_handler(self) -> None:
             """Install SIGQUIT loop handler for graceful worker shutdown."""

@@ -1,5 +1,3 @@
-"""Typed configuration model for Palfrey runtime settings."""
-
 from __future__ import annotations
 
 import asyncio
@@ -22,10 +20,12 @@ import click
 from palfrey.acceleration import parse_header_items
 from palfrey.types import AppType
 
+# Ensure AF_UNIX is defined for cross-platform compatibility where possible
 SOCKET_AF_UNIX = getattr(socket, "AF_UNIX", socket.AF_INET)
 if not hasattr(socket, "AF_UNIX"):
     socket.AF_UNIX = SOCKET_AF_UNIX
 
+# Type Aliases for valid configuration options
 KnownLoopType = Literal["none", "auto", "asyncio", "uvloop"]
 LoopType = KnownLoopType | str
 KnownHTTPType = Literal["auto", "h11", "httptools"]
@@ -38,12 +38,14 @@ KnownInterfaceType = Literal["auto", "asgi3", "asgi2", "wsgi"]
 InterfaceType = KnownInterfaceType | str
 LogLevel = Literal["critical", "error", "warning", "info", "debug", "trace"]
 
+# Validation sets for configuration parameters
 KNOWN_LOOP_TYPES = {"none", "auto", "asyncio", "uvloop"}
 KNOWN_HTTP_TYPES = {"auto", "h11", "httptools"}
 KNOWN_WS_TYPES = {"auto", "none", "websockets", "websockets-sansio", "wsproto"}
 KNOWN_LIFESPAN_MODES = {"auto", "on", "off"}
 KNOWN_INTERFACE_TYPES = {"auto", "asgi3", "asgi2", "wsgi"}
 KNOWN_LOG_LEVELS = {"critical", "error", "warning", "info", "debug", "trace"}
+
 logger = logging.getLogger("palfrey.error")
 TRACE_LOG_LEVEL = 5
 
@@ -82,15 +84,15 @@ LOGGING_CONFIG: dict[str, Any] = {
 
 
 def is_dir(path: Path) -> bool:
-    """Return whether path resolves to a directory.
+    """
+    Checks if a path object resolves to a valid directory on the filesystem.
 
     Args:
-        path: Path to validate.
+        path (Path): The filesystem path to investigate.
 
     Returns:
-        ``True`` when path exists and is a directory.
+        bool: True if the path exists and is a directory; False otherwise.
     """
-
     try:
         if not path.is_absolute():
             path = path.resolve()
@@ -103,16 +105,17 @@ def resolve_reload_patterns(
     patterns_list: list[str],
     directories_list: list[str],
 ) -> tuple[list[str], list[Path]]:
-    """Resolve reload glob patterns and directory roots.
+    """
+    Resolves and normalizes file glob patterns and directory roots for the reload supervisor.
 
     Args:
-        patterns_list: Glob patterns provided by user.
-        directories_list: Explicit directory entries.
+        patterns_list (list[str]): Glob patterns provided by the user for file watching.
+        directories_list (list[str]): Explicit directory paths to be included in the watch.
 
     Returns:
-        A tuple of normalized patterns and resolved root directories.
+        tuple[list[str], list[Path]]: A tuple containing a unique list of glob patterns and a
+            list of resolved directory Path objects.
     """
-
     directories: list[Path] = list(set(map(Path, directories_list.copy())))
     patterns: list[str] = patterns_list.copy()
 
@@ -132,6 +135,7 @@ def resolve_reload_patterns(
     directories = [Path(path).resolve() for path in directories]
     directories = list({path for path in directories if is_dir(path)})
 
+    # Eliminate child directories if their parent is already being watched
     nested_children: list[Path] = []
     for index, first in enumerate(directories):
         for second in directories[index + 1 :]:
@@ -145,15 +149,15 @@ def resolve_reload_patterns(
 
 
 def _normalize_dirs(dirs: list[str] | str | None) -> list[str]:
-    """Normalize optional string-or-list directory values.
+    """
+    Normalizes mixed directory inputs into a flat list of strings.
 
     Args:
-        dirs: Optional scalar/list value.
+        dirs (list[str] | str | None): Directory input which may be a string, list, or None.
 
     Returns:
-        List of normalized values.
+        list[str]: A unique list of directory path strings.
     """
-
     if dirs is None:
         return []
     if isinstance(dirs, str):
@@ -162,8 +166,15 @@ def _normalize_dirs(dirs: list[str] | str | None) -> list[str]:
 
 
 def _module_available(module_name: str) -> bool:
-    """Return whether a module can be imported in current environment."""
+    """
+    Determines if a specific Python module can be imported in the current environment.
 
+    Args:
+        module_name (str): The name of the module to search for.
+
+    Returns:
+        bool: True if the module is found; False otherwise.
+    """
     return find_spec(module_name) is not None
 
 
@@ -176,8 +187,21 @@ def create_ssl_context(
     ca_certs: str | os.PathLike[str] | None,
     ciphers: str | None,
 ) -> ssl.SSLContext:
-    """Create an SSL context using Uvicorn-compatible options."""
+    """
+    Constructs an SSLContext using standard Uvicorn/Palfrey configuration parameters.
 
+    Args:
+        certfile (str | os.PathLike[str]): Path to the certificate file.
+        keyfile (str | os.PathLike[str] | None): Path to the private key file.
+        password (str | None): Password for the key file, if applicable.
+        ssl_version (int): The protocol version (e.g., ssl.PROTOCOL_TLS_SERVER).
+        cert_reqs (int): Verify mode (e.g., ssl.CERT_REQUIRED).
+        ca_certs (str | os.PathLike[str] | None): Path to CA bundle.
+        ciphers (str | None): OpenSSL cipher suite string.
+
+    Returns:
+        ssl.SSLContext: A configured SSL context object ready for socket wrapping.
+    """
     context = ssl.SSLContext(ssl_version)
     get_password = (lambda: password) if password else None
     context.load_cert_chain(certfile, keyfile, get_password)
@@ -192,9 +216,16 @@ def create_ssl_context(
 def _asyncio_loop_factory(
     use_subprocess: bool = False,
 ) -> Callable[[], asyncio.AbstractEventLoop]:
-    """Return asyncio loop factory, matching Uvicorn platform behavior."""
+    """
+    Returns an event loop factory for the standard asyncio implementation.
 
-    if sys.platform == "win32" and not use_subprocess:  # pragma: py-not-win32
+    Args:
+        use_subprocess (bool): Whether the loop must support subprocess execution.
+
+    Returns:
+        Callable[[], asyncio.AbstractEventLoop]: The loop factory class or function.
+    """
+    if sys.platform == "win32" and not use_subprocess:
         return asyncio.ProactorEventLoop
     return asyncio.SelectorEventLoop
 
@@ -202,8 +233,15 @@ def _asyncio_loop_factory(
 def _uvloop_loop_factory(
     use_subprocess: bool = False,
 ) -> Callable[[], asyncio.AbstractEventLoop]:
-    """Return uvloop loop factory when uvloop is installed."""
+    """
+    Returns an event loop factory for the uvloop implementation.
 
+    Args:
+        use_subprocess (bool): Ignored here but kept for signature parity.
+
+    Returns:
+        Callable[[], asyncio.AbstractEventLoop]: The uvloop loop factory.
+    """
     import uvloop
 
     return uvloop.new_event_loop
@@ -212,21 +250,32 @@ def _uvloop_loop_factory(
 def _auto_loop_factory(
     use_subprocess: bool = False,
 ) -> Callable[[], asyncio.AbstractEventLoop]:
-    """Resolve auto loop factory preferring uvloop when available."""
+    """
+    Automatically selects the best available event loop factory.
 
+    Prefers uvloop on supported platforms, falling back to standard asyncio.
+
+    Args:
+        use_subprocess (bool): Whether subprocess support is required.
+
+    Returns:
+        Callable[[], asyncio.AbstractEventLoop]: The chosen loop factory.
+    """
     try:
         import uvloop  # noqa: F401
-    except ImportError:  # pragma: no cover - depends on environment.
+    except ImportError:
         return _asyncio_loop_factory(use_subprocess=use_subprocess)
     return _uvloop_loop_factory(use_subprocess=use_subprocess)
 
 
 @dataclass(slots=True)
 class PalfreyConfig:
-    """Configuration for server startup, protocol handling, and supervision.
+    """
+    The central configuration model for the Palfrey server runtime.
 
-    This model intentionally mirrors confirmed Uvicorn flags so CLI and Python
-    APIs remain behavior-compatible where Palfrey has parity coverage.
+    This class encapsulates all settings related to networking, protocol handling,
+    worker management, and security. It mirrors Uvicorn's configuration structure
+    to maintain a familiar interface for users.
     """
 
     app: AppType
@@ -296,8 +345,12 @@ class PalfreyConfig:
     )
 
     def __post_init__(self) -> None:
-        """Normalize environment-dependent defaults and user inputs."""
+        """
+        Normalizes and validates configuration settings after initialization.
 
+        This method performs input sanitization, resolves environmental defaults
+        (like worker count), and sets up directory watching parameters for the reloader.
+        """
         if ":" not in self.loop:
             self.loop = self.loop.lower()
         if isinstance(self.http, str) and ":" not in self.http:
@@ -306,12 +359,14 @@ class PalfreyConfig:
             self.ws = self.ws.lower()
         self.lifespan = self.lifespan.lower()
         self.interface = self.interface.lower()
+
         if isinstance(self.log_level, str):
             lowered = self.log_level.lower()
             if lowered not in KNOWN_LOG_LEVELS:
                 raise ValueError(f"Unsupported log level: {self.log_level}")
             self.log_level = lowered
 
+        # Validate implementation modes against known allowed sets
         if self.loop not in KNOWN_LOOP_TYPES and ":" not in self.loop:
             raise ValueError(f"Unsupported loop mode: {self.loop}")
         if isinstance(self.http, str):
@@ -325,6 +380,7 @@ class PalfreyConfig:
         if self.interface not in KNOWN_INTERFACE_TYPES:
             raise ValueError(f"Unsupported interface mode: {self.interface}")
 
+        # Resolve worker count from environment if not explicitly provided
         if self.workers is None:
             web_concurrency = os.getenv("WEB_CONCURRENCY")
             self.workers = int(web_concurrency) if web_concurrency else 1
@@ -337,11 +393,13 @@ class PalfreyConfig:
         if self.forwarded_allow_ips is None:
             self.forwarded_allow_ips = os.getenv("FORWARDED_ALLOW_IPS", "127.0.0.1")
 
+        # Handle reload logic and directory normalization
         if (
             self.reload_dirs or self.reload_includes or self.reload_excludes
         ) and not self.should_reload:
             logger.warning(
-                "Current configuration will not reload as not all conditions are met, please refer to documentation."
+                "Current configuration will not reload as not all conditions are met, "
+                "please refer to documentation."
             )
 
         if self.should_reload:
@@ -358,6 +416,7 @@ class PalfreyConfig:
                 [],
             )
 
+            # Exclude directories as requested
             reload_dirs_tmp = resolved_reload_dirs.copy()
             for excluded_dir in resolved_reload_dirs_excludes:
                 for reload_dir in reload_dirs_tmp:
@@ -372,7 +431,8 @@ class PalfreyConfig:
             if not resolved_reload_dirs:
                 if original_reload_dirs:
                     logger.warning(
-                        "Provided reload directories %s did not contain valid directories, watching current working directory.",
+                        "Provided reload directories %s did not contain valid directories, "
+                        "watching current working directory.",
                         original_reload_dirs,
                     )
                 resolved_reload_dirs = [Path.cwd()]
@@ -387,6 +447,7 @@ class PalfreyConfig:
         if self.app_dir is not None:
             self.app_dir = str(Path(self.app_dir).resolve())
 
+        # Normalize header cache
         if not self.headers:
             self._normalized_headers_cache = []
         else:
@@ -402,20 +463,32 @@ class PalfreyConfig:
 
     @property
     def normalized_headers(self) -> list[tuple[str, str]]:
-        """Return normalized response headers configured via CLI or API."""
+        """
+        Returns the parsed and normalized list of custom HTTP headers.
 
+        Returns:
+            list[tuple[str, str]]: A list of (name, value) string pairs.
+        """
         return self._normalized_headers_cache
 
     @property
     def workers_count(self) -> int:
-        """Return effective worker process count."""
+        """
+        Provides the effective number of worker processes to spawn.
 
+        Returns:
+            int: The worker count, defaulting to 1.
+        """
         return self.workers or 1
 
     @property
     def effective_http(self) -> KnownHTTPType:
-        """Return concrete HTTP backend mode after resolving ``auto``."""
+        """
+        Resolves the concrete HTTP implementation to use when 'auto' is selected.
 
+        Returns:
+            KnownHTTPType: Either 'httptools' if available, or 'h11'.
+        """
         if not isinstance(self.http, str):
             return "h11"
         if self.http == "auto":
@@ -426,8 +499,12 @@ class PalfreyConfig:
 
     @property
     def effective_ws(self) -> KnownWSType:
-        """Return concrete WebSocket backend mode after resolving ``auto``."""
+        """
+        Resolves the concrete WebSocket implementation to use.
 
+        Returns:
+            KnownWSType: The resolved WebSocket backend or 'none' if inapplicable.
+        """
         if self.interface == "wsgi":
             return "none"
         if not isinstance(self.ws, str):
@@ -452,26 +529,42 @@ class PalfreyConfig:
 
     @property
     def is_ssl(self) -> bool:
-        """Return whether TLS options are configured."""
+        """
+        Indicates whether the configuration includes SSL/TLS parameters.
 
+        Returns:
+            bool: True if cert or key files are provided.
+        """
         return bool(self.ssl_keyfile or self.ssl_certfile)
 
     @property
     def should_reload(self) -> bool:
-        """Return whether reload supervisor mode should be used."""
+        """
+        Determines if the server should run in auto-reload mode.
 
+        Returns:
+            bool: True if reload is enabled and the app is provided as a string.
+        """
         return isinstance(self.app, str) and self.reload
 
     @property
     def use_subprocess(self) -> bool:
-        """Return whether runtime requires subprocess supervision."""
+        """
+        Checks if the configuration requires spawning subprocesses.
 
+        Returns:
+            bool: True for reload mode or multiple workers.
+        """
         return bool(self.reload or self.workers_count > 1)
 
     @property
     def asgi_version(self) -> Literal["2.0", "3.0"]:
-        """Return ASGI version string implied by selected interface."""
+        """
+        Determines the ASGI version based on the selected interface.
 
+        Returns:
+            Literal["2.0", "3.0"]: The version string.
+        """
         mapping: dict[str, Literal["2.0", "3.0"]] = {
             "asgi2": "2.0",
             "asgi3": "3.0",
@@ -480,9 +573,16 @@ class PalfreyConfig:
         return mapping[self.interface]
 
     def bind_socket(self) -> socket.socket:
-        """Bind and return a listening socket for subprocess supervision modes."""
+        """
+        Creates and binds a server socket based on UDS, FD, or TCP configuration.
 
-        logger_args: list[str | int]
+        Returns:
+            socket.socket: A bound and inheritable socket object.
+
+        Raises:
+            SystemExit: If the socket cannot be bound.
+        """
+        logger_args: list[Any]
         if self.uds:
             sock = socket.socket(SOCKET_AF_UNIX, socket.SOCK_STREAM)
             try:
@@ -540,11 +640,12 @@ class PalfreyConfig:
         return sock
 
     def load(self) -> None:
-        """Load runtime application, SSL context, and encoded header state.
-
-        This mirrors Uvicorn's ``Config.load()`` contract for API-level parity.
         """
+        Loads the application, protocol classes, and initializes the SSL context.
 
+        This method triggers the actual importing of the application and the setup
+        of the internal protocol classes used by the Palfrey worker.
+        """
         assert not self.loaded
 
         if self.is_ssl:
@@ -570,6 +671,7 @@ class PalfreyConfig:
         else:
             self.encoded_headers = encoded
 
+        # Deferred imports for runtime dependencies
         from palfrey.importer import (
             AppFactoryError,
             AppImportError,
@@ -579,6 +681,7 @@ class PalfreyConfig:
         )
         from palfrey.lifespan import LifespanManager
 
+        # Resolve HTTP protocol class
         if isinstance(self.http, str):
             if self.http in KNOWN_HTTP_TYPES:
                 self.http_protocol_class = self.effective_http
@@ -591,6 +694,7 @@ class PalfreyConfig:
         else:
             self.http_protocol_class = self.http
 
+        # Resolve WebSocket protocol class
         if self.interface == "wsgi" or self.ws == "none":
             self.ws_protocol_class = None
         elif isinstance(self.ws, str):
@@ -621,17 +725,29 @@ class PalfreyConfig:
         self.loaded = True
 
     def setup_event_loop(self) -> None:
-        """Compatibility shim matching Uvicorn's removed API behavior."""
+        """
+        A deprecated method placeholder to match historical Uvicorn interface parity.
 
+        Raises:
+            AttributeError: Instructs user to use get_loop_factory.
+        """
         raise AttributeError(
             "The `setup_event_loop` method was replaced by `get_loop_factory` in uvicorn 0.36.0.\n"
-            "None of those methods are supposed to be used directly. If you are doing it, please let me know here: "
-            "https://github.com/Kludex/uvicorn/discussions/2706. Thank you, and sorry for the inconvenience."
+            "None of those methods are supposed to be used directly. If you are doing it, "
+            "please let me know here: https://github.com/Kludex/uvicorn/discussions/2706."
         )
 
     def get_loop_factory(self) -> Callable[[], asyncio.AbstractEventLoop] | None:
-        """Resolve configured loop mode into a concrete loop factory callable."""
+        """
+        Resolves the configured event loop string into a concrete factory function.
 
+        Returns:
+            Callable[[], asyncio.AbstractEventLoop] | None: A factory function or None if no
+                loop is needed.
+
+        Raises:
+            SystemExit: If a custom loop factory cannot be imported or is not callable.
+        """
         from palfrey.importer import ImportFromStringError, _import_from_string
 
         if self.loop == "none":
@@ -649,7 +765,7 @@ class PalfreyConfig:
             logger.error("Error loading custom loop setup function. %s", exc)
             raise SystemExit(1) from exc
         if not callable(loop_factory):
-            logger.error("Error loading custom loop setup function. Import target is not callable.")
+            logger.error("Error loading custom loop setup function. Import target not callable.")
             raise SystemExit(1)
         return cast("Callable[[], asyncio.AbstractEventLoop]", loop_factory)
 
@@ -663,19 +779,19 @@ class PalfreyConfig:
         app_dir: str | Path | None = None,
         **kwargs: Any,
     ) -> PalfreyConfig:
-        """Build a config from a `module:attribute` import target.
+        """
+        Factory method to create a PalfreyConfig from an application import string.
 
         Args:
-            app: Import path in `module:attribute` format.
-            host: Bind host.
-            port: Bind port.
-            app_dir: Optional application import directory.
-            **kwargs: Additional configuration options.
+            app (str): The import string (e.g. 'my_module:app').
+            host (str): Bind address.
+            port (int): Bind port.
+            app_dir (str | Path | None): Directory containing the app.
+            **kwargs: Arbitrary configuration overrides.
 
         Returns:
-            A configured ``PalfreyConfig`` instance.
+            PalfreyConfig: An initialized configuration instance.
         """
-
         options: dict[str, Any] = {
             "app": app,
             "host": host,
@@ -686,4 +802,5 @@ class PalfreyConfig:
         return cls(**options)
 
 
+# Alias for compatibility with older Uvicorn-based scripts
 Config = PalfreyConfig

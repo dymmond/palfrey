@@ -11,7 +11,8 @@ from collections.abc import Callable, Sequence
 ParseHeaderItemsFn = Callable[[list[str]], list[tuple[str, str]]]
 ParseRequestHeadFn = Callable[[bytes], tuple[str, str, str, list[tuple[str, str]]]]
 SplitCSVValuesFn = Callable[[str], list[str]]
-UnmaskWebSocketPayloadFn = Callable[[bytes, bytes], bytes]
+WebSocketPayloadBuffer = bytes | bytearray | memoryview
+UnmaskWebSocketPayloadFn = Callable[[WebSocketPayloadBuffer, bytes], bytes]
 
 _parse_header_items: ParseHeaderItemsFn | None = None
 _parse_request_head: ParseRequestHeadFn | None = None
@@ -120,7 +121,7 @@ def parse_request_head(data: bytes) -> tuple[str, str, str, list[tuple[str, str]
     return method, target, version, headers
 
 
-def unmask_websocket_payload(payload: bytes, masking_key: bytes) -> bytes:
+def unmask_websocket_payload(payload: WebSocketPayloadBuffer, masking_key: bytes) -> bytes:
     """Apply WebSocket masking key to payload bytes.
 
     Args:
@@ -140,4 +141,25 @@ def unmask_websocket_payload(payload: bytes, masking_key: bytes) -> bytes:
     if HAS_RUST_EXTENSION and _unmask_websocket_payload is not None:
         return _unmask_websocket_payload(payload, masking_key)
 
-    return bytes(byte ^ masking_key[index % 4] for index, byte in enumerate(payload))
+    m0, m1, m2, m3 = masking_key
+    output = bytearray(payload)
+    length = len(output)
+    index = 0
+
+    while index + 4 <= length:
+        output[index] ^= m0
+        output[index + 1] ^= m1
+        output[index + 2] ^= m2
+        output[index + 3] ^= m3
+        index += 4
+
+    if index < length:
+        output[index] ^= m0
+        index += 1
+    if index < length:
+        output[index] ^= m1
+        index += 1
+    if index < length:
+        output[index] ^= m2
+
+    return bytes(output)

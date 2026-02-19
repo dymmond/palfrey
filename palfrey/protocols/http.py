@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-import datetime as dt
+from contextlib import suppress
 from dataclasses import dataclass, field
-from email.utils import format_datetime
+from typing import Any
 from urllib.parse import unquote
 
 from palfrey.acceleration import parse_request_head
 from palfrey.config import PalfreyConfig
+from palfrey.http_date import cached_http_date_header
 from palfrey.types import ASGIApplication, ClientAddress, Headers, Message, Scope, ServerAddress
 
 
@@ -33,9 +34,77 @@ class HTTPResponse:
     body_chunks: list[bytes] = field(default_factory=list)
 
 
+class _HTTPToolsParserProtocol:
+    """Fast callback protocol for ``httptools.HttpRequestParser``."""
+
+    __slots__ = ("method", "target", "http_version", "headers", "_parser")
+
+    def __init__(self) -> None:
+        """Initialize parser callback state."""
+
+        self.method = ""
+        self.target = ""
+        self.http_version = "HTTP/1.1"
+        self.headers: list[tuple[str, str]] = []
+        self._parser: Any = None
+
+    def bind_parser(self, parser: Any) -> None:
+        """Attach parser object for method/version extraction callbacks."""
+
+        self._parser = parser
+
+    def on_url(self, url: bytes) -> None:
+        """Capture request URL bytes."""
+
+        self.target = url.decode("latin-1")
+
+    def on_header(self, name: bytes, value: bytes) -> None:
+        """Capture header tuple bytes as decoded latin-1 strings."""
+
+        self.headers.append((name.decode("latin-1"), value.decode("latin-1")))
+
+    def on_headers_complete(self) -> None:
+        """Capture parsed method and protocol version."""
+
+        parser = self._parser
+        self.http_version = f"HTTP/{parser.get_http_version()}"
+        self.method = parser.get_method().decode("latin-1")
+
+    def on_message_complete(self) -> None:
+        """Complete request head callback."""
+
+        return None
+
+
+_HTTPTOOLS_MODULE: Any | None = None
+_HTTPTOOLS_UPGRADE_EXC_TYPE: type[BaseException] | None = None
+
+
+def _get_httptools_backend() -> tuple[Any, type[BaseException] | None]:
+    """Load and cache ``httptools`` module and upgrade exception type."""
+
+    global _HTTPTOOLS_MODULE, _HTTPTOOLS_UPGRADE_EXC_TYPE
+
+    if _HTTPTOOLS_MODULE is not None:
+        return _HTTPTOOLS_MODULE, _HTTPTOOLS_UPGRADE_EXC_TYPE
+
+    try:
+        import httptools
+    except ImportError as exc:  # pragma: no cover - dependency validation in config.
+        raise ValueError("httptools parser is unavailable") from exc
+
+    upgrade_exc = getattr(getattr(httptools, "parser", None), "errors", None)
+    upgrade_exc_type = getattr(upgrade_exc, "HttpParserUpgrade", None)
+    if not isinstance(upgrade_exc_type, type):
+        upgrade_exc_type = None
+
+    _HTTPTOOLS_MODULE = httptools
+    _HTTPTOOLS_UPGRADE_EXC_TYPE = upgrade_exc_type
+    return httptools, upgrade_exc_type
+
+
 def _http_date_header() -> bytes:
-    now = dt.datetime.now(dt.timezone.utc)
-    return format_datetime(now, usegmt=True).encode("latin-1")
+    return cached_http_date_header()
 
 
 def _normalize_connection_value(headers: list[tuple[str, str]]) -> str:
@@ -179,7 +248,13 @@ def _parse_request_head(
         return _parse_request_head_h11(head)
     if parser_mode == "httptools":
         return _parse_request_head_httptools(head)
-    return parse_request_head(head)
+
+    try:
+        return parse_request_head(head)
+    except ValueError:
+        with suppress(ValueError):
+            return _parse_request_head_httptools(head)
+        return _parse_request_head_h11(head)
 
 
 def _parse_request_head_h11(
@@ -212,41 +287,11 @@ def _parse_request_head_httptools(
 ) -> tuple[str, str, str, list[tuple[str, str]]]:
     """Parse HTTP request head using ``httptools`` for parity mode."""
 
-    try:
-        import httptools
-    except ImportError as exc:  # pragma: no cover - dependency validation in config.
-        raise ValueError("httptools parser is unavailable") from exc
-
-    class ParserProtocol:
-        method: str
-        target: str
-        http_version: str
-        headers: list[tuple[str, str]]
-
-        def __init__(self) -> None:
-            self.method = ""
-            self.target = ""
-            self.http_version = "HTTP/1.1"
-            self.headers = []
-            self._current_header_name: str | None = None
-
-        def on_url(self, url: bytes) -> None:
-            self.target = url.decode("latin-1")
-
-        def on_header(self, name: bytes, value: bytes) -> None:
-            self.headers.append((name.decode("latin-1"), value.decode("latin-1")))
-
-        def on_headers_complete(self) -> None:
-            self.http_version = f"HTTP/{parser.get_http_version()}"
-            self.method = parser.get_method().decode("latin-1")
-
-        def on_message_complete(self) -> None:
-            return None
-
-    protocol = ParserProtocol()
+    httptools, upgrade_exc_type = _get_httptools_backend()
+    protocol = _HTTPToolsParserProtocol()
     parser = httptools.HttpRequestParser(protocol)
-    upgrade_exc = getattr(getattr(httptools, "parser", None), "errors", None)
-    upgrade_exc_type = getattr(upgrade_exc, "HttpParserUpgrade", None)
+    protocol.bind_parser(parser)
+
     try:
         parser.feed_data(head)
     except Exception as exc:  # noqa: BLE001
@@ -305,16 +350,21 @@ async def run_http_asgi(
     """Execute an ASGI app for HTTP scope and capture its response."""
 
     response = HTTPResponse()
-    body_sent = False
-
-    receive_queue: asyncio.Queue[Message] = asyncio.Queue()
-    await receive_queue.put({"type": "http.request", "body": request_body, "more_body": False})
+    request_sent = False
+    body_complete = False
+    request_message: Message = {"type": "http.request", "body": request_body, "more_body": False}
+    disconnect_message: Message = {"type": "http.disconnect"}
 
     async def receive() -> Message:
-        return await receive_queue.get()
+        nonlocal request_sent
+
+        if not request_sent:
+            request_sent = True
+            return request_message
+        return disconnect_message
 
     async def send(message: Message) -> None:
-        nonlocal body_sent
+        nonlocal body_complete
 
         message_type = message["type"]
         if message_type == "http.response.start":
@@ -323,11 +373,13 @@ async def run_http_asgi(
             return
 
         if message_type == "http.response.body":
-            if body_sent:
+            if body_complete:
                 return
             body = message.get("body", b"")
+            if not isinstance(body, bytes):
+                body = bytes(body)
             response.body_chunks.append(body)
-            body_sent = not message.get("more_body", False)
+            body_complete = not message.get("more_body", False)
             return
 
         raise RuntimeError(f"Unsupported HTTP ASGI message type: {message_type}")

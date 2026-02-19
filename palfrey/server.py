@@ -179,20 +179,28 @@ class PalfreyServer:
         context = ConnectionContext(client=client, server=server, is_tls=ssl_object is not None)
 
         keep_processing = True
+        first_request = True
+        keep_alive_timeout = self.config.timeout_keep_alive
 
         try:
             while keep_processing:
+                request_coro = read_http_request(
+                    reader,
+                    max_head_size=self.config.h11_max_incomplete_event_size or 1_048_576,
+                    parser_mode=self.config.http,
+                )
                 try:
-                    request = await asyncio.wait_for(
-                        read_http_request(
-                            reader,
-                            max_head_size=self.config.h11_max_incomplete_event_size or 1_048_576,
-                            parser_mode=self.config.effective_http,
-                        ),
-                        timeout=self.config.timeout_keep_alive,
-                    )
+                    if first_request and keep_alive_timeout > 0:
+                        request = await request_coro
+                    else:
+                        request = await asyncio.wait_for(
+                            request_coro,
+                            timeout=keep_alive_timeout,
+                        )
                 except asyncio.TimeoutError:
                     break
+
+                first_request = False
                 if request is None:
                     break
 

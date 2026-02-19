@@ -182,6 +182,11 @@ class PalfreyConfig:
     app_dir: str | None = ""
     factory: bool = False
     h11_max_incomplete_event_size: int | None = None
+    _normalized_headers_cache: list[tuple[str, str]] = field(
+        default_factory=list,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         """Normalize environment-dependent defaults and user inputs."""
@@ -271,18 +276,24 @@ class PalfreyConfig:
         if self.app_dir is not None:
             self.app_dir = str(Path(self.app_dir).resolve())
 
+        if not self.headers:
+            self._normalized_headers_cache = []
+        else:
+            first_item = self.headers[0]
+            if isinstance(first_item, tuple):
+                self._normalized_headers_cache = [
+                    (str(name), str(value)) for name, value in self.headers
+                ]
+            else:
+                self._normalized_headers_cache = parse_header_items(
+                    [str(item) for item in self.headers]
+                )
+
     @property
     def normalized_headers(self) -> list[tuple[str, str]]:
         """Return normalized response headers configured via CLI or API."""
 
-        if not self.headers:
-            return []
-
-        first_item = self.headers[0]
-        if isinstance(first_item, tuple):
-            return [(str(name), str(value)) for name, value in self.headers]
-
-        return parse_header_items([str(item) for item in self.headers])
+        return self._normalized_headers_cache
 
     @property
     def workers_count(self) -> int:

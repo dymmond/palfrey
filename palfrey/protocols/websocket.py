@@ -5,18 +5,17 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
-import datetime as dt
 import hashlib
 import importlib
 import struct
 from dataclasses import dataclass
-from email.utils import format_datetime
 from importlib.util import find_spec
 from typing import Any, cast
 from urllib.parse import unquote
 
 from palfrey.acceleration import unmask_websocket_payload
 from palfrey.config import PalfreyConfig
+from palfrey.http_date import cached_http_date_header
 from palfrey.types import ASGIApplication, ClientAddress, Message, Scope, ServerAddress
 
 _WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -39,6 +38,15 @@ def _header_value(headers: list[tuple[str, str]], key: str) -> str | None:
     return None
 
 
+def _header_map(headers: list[tuple[str, str]]) -> dict[str, str]:
+    """Build case-insensitive string header lookup map."""
+
+    mapped: dict[str, str] = {}
+    for name, value in headers:
+        mapped[name.lower()] = value
+    return mapped
+
+
 def build_websocket_scope(
     *,
     target: str,
@@ -47,6 +55,7 @@ def build_websocket_scope(
     server: ServerAddress,
     root_path: str,
     is_tls: bool,
+    protocol_header: str | None = None,
 ) -> Scope:
     """Build an ASGI websocket scope."""
 
@@ -57,7 +66,8 @@ def build_websocket_scope(
     full_path = root_path + decoded_path
     full_raw_path = root_path_bytes + raw_path
 
-    protocol_header = _header_value(headers, "sec-websocket-protocol")
+    if protocol_header is None:
+        protocol_header = _header_value(headers, "sec-websocket-protocol")
     subprotocols = []
     if protocol_header:
         subprotocols = [item.strip() for item in protocol_header.split(",") if item.strip()]
@@ -88,9 +98,32 @@ def _accept_value(client_key: str) -> str:
     return base64.b64encode(digest).decode("ascii")
 
 
+def _build_handshake_response_for_key(
+    client_key: str,
+    *,
+    subprotocol: str | None,
+    extra_headers: list[tuple[bytes, bytes]] | None = None,
+) -> bytes:
+    """Create HTTP 101 response bytes from pre-resolved client key."""
+
+    response_headers = [
+        b"HTTP/1.1 101 Switching Protocols",
+        b"upgrade: websocket",
+        b"connection: Upgrade",
+        b"sec-websocket-accept: " + _accept_value(client_key).encode("ascii"),
+    ]
+
+    if subprotocol:
+        response_headers.append(b"sec-websocket-protocol: " + subprotocol.encode("latin-1"))
+
+    for name, value in extra_headers or []:
+        response_headers.append(name + b": " + value)
+
+    return b"\r\n".join(response_headers) + b"\r\n\r\n"
+
+
 def _http_date_header() -> bytes:
-    now = dt.datetime.now(dt.timezone.utc)
-    return format_datetime(now, usegmt=True).encode("latin-1")
+    return cached_http_date_header()
 
 
 def _default_websocket_headers(config: PalfreyConfig) -> list[tuple[bytes, bytes]]:
@@ -128,20 +161,11 @@ def build_handshake_response(
     if not client_key:
         raise ValueError("Missing Sec-WebSocket-Key")
 
-    response_headers = [
-        b"HTTP/1.1 101 Switching Protocols",
-        b"upgrade: websocket",
-        b"connection: Upgrade",
-        b"sec-websocket-accept: " + _accept_value(client_key).encode("ascii"),
-    ]
-
-    if subprotocol:
-        response_headers.append(b"sec-websocket-protocol: " + subprotocol.encode("latin-1"))
-
-    for name, value in extra_headers or []:
-        response_headers.append(name + b": " + value)
-
-    return b"\r\n".join(response_headers) + b"\r\n\r\n"
+    return _build_handshake_response_for_key(
+        client_key,
+        subprotocol=subprotocol,
+        extra_headers=extra_headers,
+    )
 
 
 def _validate_handshake(headers: list[tuple[str, str]]) -> None:
@@ -160,6 +184,28 @@ def _validate_handshake(headers: list[tuple[str, str]]) -> None:
 
     if len(decoded) != 16:
         raise ValueError("Invalid Sec-WebSocket-Key length")
+
+
+def _validate_handshake_from_map(headers_map: dict[str, str]) -> str:
+    """Validate websocket handshake headers and return client key."""
+
+    version = headers_map.get("sec-websocket-version")
+    if version != "13":
+        raise ValueError("Unsupported websocket version")
+
+    key = headers_map.get("sec-websocket-key")
+    if not key:
+        raise ValueError("Missing Sec-WebSocket-Key")
+
+    try:
+        decoded = base64.b64decode(key.encode("ascii"), validate=True)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError("Invalid Sec-WebSocket-Key") from exc
+
+    if len(decoded) != 16:
+        raise ValueError("Invalid Sec-WebSocket-Key length")
+
+    return key
 
 
 def _encode_frame(opcode: int, payload: bytes = b"") -> bytes:
@@ -210,9 +256,9 @@ async def _read_frame(reader: asyncio.StreamReader, max_size: int) -> WebSocketF
     if not masked:
         raise ValueError("Client websocket frames must be masked")
 
-    masked_payload = await reader.readexactly(4 + length)
-    masking_key = masked_payload[:4]
-    payload = unmask_websocket_payload(masked_payload[4:], masking_key)
+    masking_key = await reader.readexactly(4)
+    masked_payload = await reader.readexactly(length)
+    payload = unmask_websocket_payload(masked_payload, masking_key)
 
     return WebSocketFrame(fin=fin, opcode=opcode, payload=payload)
 
@@ -227,8 +273,9 @@ def _try_parse_frame_from_buffer(
     if len(buffer) < 2:
         return None
 
-    first = buffer[0]
-    second = buffer[1]
+    view = memoryview(buffer)
+    first = view[0]
+    second = view[1]
     fin = (first & 0x80) != 0
     opcode = first & 0x0F
 
@@ -239,12 +286,12 @@ def _try_parse_frame_from_buffer(
     if payload_length == 126:
         if len(buffer) < offset + 2:
             return None
-        payload_length = struct.unpack("!H", bytes(buffer[offset : offset + 2]))[0]
+        payload_length = struct.unpack_from("!H", view, offset)[0]
         offset += 2
     elif payload_length == 127:
         if len(buffer) < offset + 8:
             return None
-        payload_length = struct.unpack("!Q", bytes(buffer[offset : offset + 8]))[0]
+        payload_length = struct.unpack_from("!Q", view, offset)[0]
         offset += 8
 
     if payload_length > max_size:
@@ -257,8 +304,8 @@ def _try_parse_frame_from_buffer(
     if len(buffer) < total_size:
         return None
 
-    masking_key = bytes(buffer[offset : offset + 4])
-    masked_payload = bytes(buffer[offset + 4 : total_size])
+    masking_key = bytes(view[offset : offset + 4])
+    masked_payload = view[offset + 4 : total_size]
     payload = unmask_websocket_payload(masked_payload, masking_key)
     frame = WebSocketFrame(fin=fin, opcode=opcode, payload=payload)
     return frame, total_size
@@ -315,8 +362,9 @@ async def _handle_websocket_core(
 ) -> None:
     """Run the clean-room Palfrey WebSocket backend."""
 
+    headers_map = _header_map(headers)
     try:
-        _validate_handshake(headers)
+        client_key = _validate_handshake_from_map(headers_map)
     except ValueError:
         await _write_bad_websocket_request(writer)
         return
@@ -328,6 +376,7 @@ async def _handle_websocket_core(
         server=server,
         root_path=config.root_path,
         is_tls=is_tls,
+        protocol_header=headers_map.get("sec-websocket-protocol"),
     )
 
     accepted = False
@@ -440,8 +489,8 @@ async def _handle_websocket_core(
                 return
 
             accept_subprotocol = message.get("subprotocol")
-            response = build_handshake_response(
-                headers,
+            response = _build_handshake_response_for_key(
+                client_key,
                 subprotocol=accept_subprotocol,
                 extra_headers=_merge_websocket_accept_headers(config, message.get("headers")),
             )

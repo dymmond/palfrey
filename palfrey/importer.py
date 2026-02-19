@@ -32,13 +32,7 @@ class ResolvedApp:
 
 
 def _import_from_string(target: str) -> object:
-    """Import an object from a ``module:attribute`` target string.
-
-    This follows Uvicorn's importer behavior:
-    - validates ``<module>:<attribute>``
-    - supports dotted attribute traversal (``module:obj.attr``)
-    - re-raises nested import errors so internal module failures are not masked
-    """
+    """Import an object from a ``module:attribute`` target string."""
 
     module_name, separator, attrs = target.partition(":")
     if not separator or not module_name or not attrs:

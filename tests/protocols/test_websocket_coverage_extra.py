@@ -1,5 +1,3 @@
-"""Additional websocket branch-coverage tests."""
-
 from __future__ import annotations
 
 import asyncio
@@ -232,7 +230,9 @@ def _install_fake_wsproto(
     return capture
 
 
-def test_wsproto_backend_rejects_bad_initial_receive(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_wsproto_backend_rejects_bad_initial_receive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _install_fake_wsproto(monkeypatch, raise_on_receive_calls={1})
     config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="wsproto")
     writer = CaptureWriter()
@@ -397,7 +397,9 @@ def test_wsproto_backend_close_before_accept_returns_http_403(
     assert b"403 Forbidden" in b"".join(writer.writes)
 
 
-def test_wsproto_backend_raises_on_send_before_accept(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_wsproto_backend_raises_on_send_before_accept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _install_fake_wsproto(monkeypatch, initial_events=[("request",)])
     config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="wsproto")
     writer = CaptureWriter()
@@ -423,7 +425,9 @@ def test_wsproto_backend_raises_on_send_before_accept(monkeypatch: pytest.Monkey
         asyncio.run(scenario())
 
 
-def test_wsproto_backend_http_rejection_extension_flow(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_wsproto_backend_http_rejection_extension_flow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _install_fake_wsproto(monkeypatch, initial_events=[("request",)])
     config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="wsproto")
     writer = CaptureWriter()
@@ -436,7 +440,13 @@ def test_wsproto_backend_http_rejection_extension_flow(monkeypatch: pytest.Monke
                 "headers": [(b"content-type", b"text/plain")],
             }
         )
-        await send({"type": "websocket.http.response.body", "body": b"denied", "more_body": False})
+        await send(
+            {
+                "type": "websocket.http.response.body",
+                "body": b"denied",
+                "more_body": False,
+            }
+        )
 
     async def scenario() -> None:
         reader = await make_stream_reader(b"")
@@ -458,7 +468,9 @@ def test_wsproto_backend_http_rejection_extension_flow(monkeypatch: pytest.Monke
     assert b"denied" in payload
 
 
-def test_wsproto_backend_http_body_before_start_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_wsproto_backend_http_body_before_start_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _install_fake_wsproto(monkeypatch, initial_events=[("request",)])
     config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="wsproto")
     writer = CaptureWriter()
@@ -758,7 +770,9 @@ def test_wsproto_backend_http_response_more_body_and_non_bytes_payload(
     assert payload.endswith(b"abc")
 
 
-def test_wsproto_backend_duplicate_accept_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_wsproto_backend_duplicate_accept_is_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _install_fake_wsproto(monkeypatch, initial_events=[("request",)])
     config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="wsproto")
     writer = CaptureWriter()

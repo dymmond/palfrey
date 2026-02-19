@@ -141,9 +141,10 @@ test_man = "pytest -- {args} -s -vv"
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+fix = true
 
 [tool.ruff.lint]
-select = ["E", "W", "F", "I", "B", "UP", "N"]
+select = ["E", "W", "F", "I", "B", "UP", "N", "I"]
 ignore = ["E501"]
 
 [tool.ruff.lint.isort]

@@ -1,5 +1,3 @@
-"""Additional runtime/helper coverage tests."""
-
 from __future__ import annotations
 
 import io
@@ -31,7 +29,9 @@ def test_load_env_file_skips_comments_blank_and_invalid_lines(
     assert os.environ["GOOD"] == "1"
 
 
-def test_configure_logging_accepts_raw_config_parser(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_configure_logging_accepts_raw_config_parser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     parser = RawConfigParser()
     captured: dict[str, object] = {}
 
@@ -45,7 +45,9 @@ def test_configure_logging_accepts_raw_config_parser(monkeypatch: pytest.MonkeyP
     assert captured["disable"] is False
 
 
-def test_configure_logging_accepts_file_like_object(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_configure_logging_accepts_file_like_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     stream = io.StringIO("[loggers]\nkeys=root\n")
     captured: dict[str, object] = {}
 
@@ -91,7 +93,10 @@ def test_acceleration_rust_branches(monkeypatch: pytest.MonkeyPatch) -> None:
         "HTTP/1.1",
         [],
     )
-    assert acceleration.parse_header_items(["x-a:1", "x-b:2"]) == [("x-a", "1"), ("x-b", "2")]
+    assert acceleration.parse_header_items(["x-a:1", "x-b:2"]) == [
+        ("x-a", "1"),
+        ("x-b", "2"),
+    ]
 
 
 def test_acceleration_rust_header_error_maps_to_header_parse_error(

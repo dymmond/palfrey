@@ -1,5 +1,3 @@
-"""Custom protocol class fixtures for config load parity tests."""
-
 from __future__ import annotations
 
 import asyncio

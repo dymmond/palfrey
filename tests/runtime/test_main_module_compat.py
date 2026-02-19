@@ -1,5 +1,3 @@
-"""Parity tests for ``palfrey.main`` module exports."""
-
 from __future__ import annotations
 
 import importlib

@@ -1,5 +1,3 @@
-"""Runtime orchestration tests."""
-
 from __future__ import annotations
 
 import logging
@@ -142,7 +140,9 @@ def test_run_config_uses_reload_supervisor_for_parent_process(
     assert called == ["env", "auto", "init:python", "fds:1", "run", "close"]
 
 
-def test_run_config_runs_server_when_reload_child(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_config_runs_server_when_reload_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     called: list[str] = []
 
     class FakeServer:

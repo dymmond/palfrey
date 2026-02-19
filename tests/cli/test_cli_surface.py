@@ -1,5 +1,3 @@
-"""CLI surface and validation tests."""
-
 from __future__ import annotations
 
 from click.testing import CliRunner

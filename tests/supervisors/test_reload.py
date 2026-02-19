@@ -1,5 +1,3 @@
-"""Reload supervisor helper tests."""
-
 from __future__ import annotations
 
 import signal
@@ -15,14 +13,18 @@ from palfrey.config import PalfreyConfig
 from palfrey.supervisors.reload import ReloadSupervisor, build_reload_argv
 
 
-def test_build_reload_argv_uses_current_process_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_reload_argv_uses_current_process_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(sys, "argv", ["-m", "palfrey", "tests.fixtures.apps:http_app"])
     argv = build_reload_argv()
     assert argv[0] == sys.executable
     assert argv[1:] == ["-m", "palfrey", "tests.fixtures.apps:http_app"]
 
 
-def test_build_reload_argv_appends_fd_when_provided(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_reload_argv_appends_fd_when_provided(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(sys, "argv", ["-m", "palfrey", "tests.fixtures.apps:http_app"])
     argv = build_reload_argv(fd=99)
     assert argv[-2:] == ["--fd", "99"]
@@ -92,7 +94,9 @@ def test_changed_paths_respects_include_and_exclude(tmp_path: Path) -> None:
     assert exclude_file not in changed
 
 
-def test_watch_roots_defaults_to_current_directory(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_watch_roots_defaults_to_current_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = PalfreyConfig(app="tests.fixtures.apps:http_app", reload=False, reload_dirs=[])
     supervisor = ReloadSupervisor(config=config, argv=["python", "-m", "palfrey"])
     monkeypatch.setattr(Path, "cwd", classmethod(lambda cls: Path("/tmp")))
@@ -223,7 +227,9 @@ def test_restart_clears_tracked_mtimes(monkeypatch: pytest.MonkeyPatch, tmp_path
     assert supervisor._mtimes == {}
 
 
-def test_run_restarts_when_changed_paths_detected(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_restarts_when_changed_paths_detected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = PalfreyConfig(app="tests.fixtures.apps:http_app", reload=True, reload_delay=0)
     supervisor = ReloadSupervisor(config=config, argv=["python", "-m", "palfrey"])
     calls: list[str] = []

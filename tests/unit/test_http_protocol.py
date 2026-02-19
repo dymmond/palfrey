@@ -1,5 +1,3 @@
-"""HTTP protocol helper tests."""
-
 from __future__ import annotations
 
 from palfrey.config import PalfreyConfig

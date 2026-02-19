@@ -1,5 +1,3 @@
-"""WebSocket protocol helper tests."""
-
 from __future__ import annotations
 
 import asyncio
@@ -344,7 +342,9 @@ def test_handle_websocket_http_response_extension_returns_http_reply() -> None:
     assert payload.endswith(b"denied")
 
 
-def test_handle_websocket_dispatches_wsproto_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_handle_websocket_dispatches_wsproto_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="wsproto")
     writer = CaptureWriter()
     called: list[str] = []
@@ -412,7 +412,9 @@ def test_handle_websocket_dispatches_websockets_sansio_backend(
     assert called == ["sansio"]
 
 
-def test_handle_websocket_dispatches_websockets_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_handle_websocket_dispatches_websockets_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="websockets")
     writer = CaptureWriter()
     called: list[str] = []
@@ -484,7 +486,9 @@ def test_handle_websocket_auto_dispatches_websockets_backend(
     assert core_called == []
 
 
-def test_wsproto_backend_requires_wsproto_dependency(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_wsproto_backend_requires_wsproto_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="wsproto")
     writer = CaptureWriter()
     monkeypatch.setattr(websocket_module, "find_spec", lambda name: None)
@@ -538,7 +542,9 @@ def test_websockets_sansio_backend_requires_websockets_dependency(
         asyncio.run(scenario())
 
 
-def test_wsproto_backend_roundtrip_with_fake_wsproto(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_wsproto_backend_roundtrip_with_fake_wsproto(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = PalfreyConfig(
         app="tests.fixtures.apps:websocket_app",
         ws="wsproto",
@@ -695,7 +701,9 @@ def test_wsproto_backend_roundtrip_with_fake_wsproto(monkeypatch: pytest.MonkeyP
     assert (b"x-app", b"2") in accept_events[0].extra_headers
 
 
-def test_wsproto_backend_processes_ping_and_close_events(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_wsproto_backend_processes_ping_and_close_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="wsproto")
     writer = CaptureWriter()
 
@@ -810,7 +818,11 @@ def test_wsproto_backend_processes_ping_and_close_events(monkeypatch: pytest.Mon
     async def app(scope, receive, send):
         await send({"type": "websocket.accept"})
         message = await receive()
-        assert message == {"type": "websocket.disconnect", "code": 1001, "reason": "bye"}
+        assert message == {
+            "type": "websocket.disconnect",
+            "code": 1001,
+            "reason": "bye",
+        }
 
     async def scenario() -> None:
         reader = await make_stream_reader(b"client-payload")
@@ -1417,7 +1429,11 @@ def test_websockets_sansio_backend_processes_ping_and_close_events(
         assert await receive() == {"type": "websocket.connect"}
         await send({"type": "websocket.accept"})
         message = await receive()
-        assert message == {"type": "websocket.disconnect", "code": 1001, "reason": "bye"}
+        assert message == {
+            "type": "websocket.disconnect",
+            "code": 1001,
+            "reason": "bye",
+        }
 
     async def scenario() -> None:
         reader = await make_stream_reader(b"x")
@@ -1641,7 +1657,9 @@ class CaptureWriterWithTransport(CaptureWriter):
         self.transport = object()
 
 
-def test_websockets_backend_accept_headers_and_roundtrip(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_websockets_backend_accept_headers_and_roundtrip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = PalfreyConfig(
         app="tests.fixtures.apps:websocket_app",
         ws="websockets",
@@ -1763,7 +1781,9 @@ def test_websockets_backend_close_before_accept_reports_disconnect_1006(
     assert rejected.status == 403
 
 
-def test_websockets_backend_rejects_messages_after_close(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_websockets_backend_rejects_messages_after_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="websockets")
     writer = CaptureWriterWithTransport()
     _install_fake_websockets_backend(monkeypatch)
@@ -2358,7 +2378,11 @@ def test_websockets_sansio_backend_works_with_permessage_deflate_disabled(
     async def app(scope, receive, send):
         assert await receive() == {"type": "websocket.connect"}
         await send({"type": "websocket.accept"})
-        assert await receive() == {"type": "websocket.disconnect", "code": 1001, "reason": "bye"}
+        assert await receive() == {
+            "type": "websocket.disconnect",
+            "code": 1001,
+            "reason": "bye",
+        }
 
     async def scenario() -> None:
         reader = await make_stream_reader(b"x")
@@ -2448,7 +2472,11 @@ def test_websockets_sansio_backend_binary_send_close_and_invalid_state(
         await send({"type": "websocket.accept"})
         await send({"type": "websocket.send", "bytes": b"bin"})
         await send({"type": "websocket.close", "code": 1001, "reason": "bye"})
-        assert await receive() == {"type": "websocket.disconnect", "code": 1001, "reason": "bye"}
+        assert await receive() == {
+            "type": "websocket.disconnect",
+            "code": 1001,
+            "reason": "bye",
+        }
 
     async def scenario() -> None:
         reader = await make_stream_reader(b"")
@@ -2509,10 +2537,18 @@ def test_websockets_sansio_backend_initial_response_message_flow_errors(
     async def app(scope, receive, send):
         assert await receive() == {"type": "websocket.connect"}
         await send(
-            {"type": "websocket.http.response.start", "status": 404, "headers": [(b"x", b"1")]}
+            {
+                "type": "websocket.http.response.start",
+                "status": 404,
+                "headers": [(b"x", b"1")],
+            }
         )
         await send(
-            {"type": "websocket.http.response.body", "body": bytearray(b"a"), "more_body": True}
+            {
+                "type": "websocket.http.response.body",
+                "body": bytearray(b"a"),
+                "more_body": True,
+            }
         )
         await send({"type": "websocket.http.response.body", "body": b"b"})
         assert await receive() == {"type": "websocket.disconnect", "code": 1006}

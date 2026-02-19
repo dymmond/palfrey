@@ -1,5 +1,3 @@
-"""Trusted-host matrix parity tests for proxy headers middleware."""
-
 from __future__ import annotations
 
 import pytest

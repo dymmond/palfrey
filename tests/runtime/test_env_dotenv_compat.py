@@ -1,5 +1,3 @@
-"""Env-file loading parity tests for optional python-dotenv support."""
-
 from __future__ import annotations
 
 import os

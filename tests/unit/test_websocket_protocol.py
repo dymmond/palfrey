@@ -1,5 +1,3 @@
-"""WebSocket protocol helper tests."""
-
 from __future__ import annotations
 
 from palfrey.protocols.websocket import build_handshake_response

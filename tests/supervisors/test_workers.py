@@ -1,5 +1,3 @@
-"""Worker supervisor logic tests."""
-
 from __future__ import annotations
 
 import socket
@@ -31,7 +29,9 @@ class FakeProcess:
         self.alive = False
 
 
-def test_reap_and_restart_maintains_worker_count(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_reap_and_restart_maintains_worker_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = PalfreyConfig(app="tests.fixtures.apps:http_app", workers=2)
     supervisor = WorkerSupervisor(config=config)
 
@@ -56,7 +56,9 @@ def test_reap_and_restart_maintains_worker_count(monkeypatch: pytest.MonkeyPatch
     assert spawned
 
 
-def test_stop_workers_signals_and_kills_stuck_workers(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_stop_workers_signals_and_kills_stuck_workers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = PalfreyConfig(
         app="tests.fixtures.apps:http_app",
         workers=1,
@@ -81,7 +83,9 @@ def test_stop_workers_signals_and_kills_stuck_workers(monkeypatch: pytest.Monkey
     assert alive_process.killed
 
 
-def test_spawn_initial_workers_uses_effective_worker_count(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_spawn_initial_workers_uses_effective_worker_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = PalfreyConfig(app="tests.fixtures.apps:http_app", workers=3)
     supervisor = WorkerSupervisor(config=config)
 
@@ -96,7 +100,9 @@ def test_spawn_initial_workers_uses_effective_worker_count(monkeypatch: pytest.M
     assert len(calls) == 3
 
 
-def test_spawn_worker_creates_process_and_starts_it(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_spawn_worker_creates_process_and_starts_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = PalfreyConfig(app="tests.fixtures.apps:http_app", workers=1)
     supervisor = WorkerSupervisor(config=config)
 
@@ -178,7 +184,9 @@ def test_worker_entry_bootstraps_server(monkeypatch: pytest.MonkeyPatch) -> None
     assert calls == ["init", "run"]
 
 
-def test_worker_entry_passes_parent_sockets_to_server(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_worker_entry_passes_parent_sockets_to_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = PalfreyConfig(app="tests.fixtures.apps:http_app")
     calls: list[object] = []
 

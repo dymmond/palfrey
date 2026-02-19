@@ -1,5 +1,3 @@
-"""Integration tests for default/custom HTTP response headers."""
-
 from __future__ import annotations
 
 import socket

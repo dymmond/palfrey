@@ -1,5 +1,3 @@
-"""Loop setup behavior tests."""
-
 from __future__ import annotations
 
 import asyncio
@@ -30,7 +28,9 @@ def test_asyncio_loop_setup_is_noop() -> None:
     assert asyncio.get_event_loop_policy() is policy_before
 
 
-def test_auto_loop_setup_swallows_missing_uvloop(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_auto_loop_setup_swallows_missing_uvloop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import builtins
 
     real_import = builtins.__import__

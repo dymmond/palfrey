@@ -1,5 +1,3 @@
-"""Logging setup utilities for Palfrey."""
-
 from __future__ import annotations
 
 import http
@@ -23,7 +21,17 @@ ACCESS_LOG_FORMAT = '%(levelprefix)s %(client_addr)s - "%(request_line)s" %(stat
 
 
 class ColourizedFormatter(logging.Formatter):
-    """Formatter that supports level coloring and optional ``color_message`` fields."""
+    """
+    A custom log formatter that applies ANSI color codes to log levels for terminal output.
+
+    This formatter enhances visibility by mapping specific log levels (e.g., INFO, ERROR) to
+    distinct colors. It also supports a 'color_message' attribute on log records to allow
+    pre-colored message strings to bypass standard formatting.
+
+    Attributes:
+        level_name_colors (dict[int, Callable[[str], str]]): A mapping of logging levels
+            to functions that apply terminal styling via click.
+    """
 
     level_name_colors = {
         TRACE_LEVEL: lambda level_name: click.style(str(level_name), fg="blue"),
@@ -66,7 +74,12 @@ class ColourizedFormatter(logging.Formatter):
 
 
 class DefaultFormatter(ColourizedFormatter):
-    """Default log formatter that targets stderr coloring behavior."""
+    """
+    A specialized formatter for general logs that defaults to stderr coloring behavior.
+
+    This class mirrors the behavior of ColourizedFormatter but explicitly checks
+    sys.stderr for TTY status when determining if colors should be used.
+    """
 
     def __init__(
         self,

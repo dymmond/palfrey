@@ -1,5 +1,3 @@
-"""Additional proxy header middleware parity tests."""
-
 from __future__ import annotations
 
 import asyncio

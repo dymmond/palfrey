@@ -1,5 +1,3 @@
-"""Additional worker supervisor behavior tests."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -58,7 +56,9 @@ def test_reap_joins_dead_workers(monkeypatch: pytest.MonkeyPatch) -> None:
     assert dead.joined is True
 
 
-def test_stop_workers_skips_process_without_pid(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_stop_workers_skips_process_without_pid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = PalfreyConfig(
         app="tests.fixtures.apps:http_app", workers=1, timeout_worker_healthcheck=0
     )
@@ -72,7 +72,9 @@ def test_stop_workers_skips_process_without_pid(monkeypatch: pytest.MonkeyPatch)
     assert calls == []
 
 
-def test_stop_workers_joins_exited_processes_without_kill(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_stop_workers_joins_exited_processes_without_kill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = PalfreyConfig(
         app="tests.fixtures.apps:http_app", workers=1, timeout_worker_healthcheck=1
     )
@@ -98,7 +100,9 @@ def test_stop_workers_kills_stuck_workers(monkeypatch: pytest.MonkeyPatch) -> No
     assert process.killed is True
 
 
-def test_run_registers_sigint_and_sigterm_handlers(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_registers_sigint_and_sigterm_handlers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = PalfreyConfig(app="tests.fixtures.apps:http_app")
     supervisor = WorkerSupervisor(config=config)
     handlers: list[int] = []
@@ -125,7 +129,9 @@ def test_run_registers_sigint_and_sigterm_handlers(monkeypatch: pytest.MonkeyPat
     assert calls == ["spawn", "reap", "stop"]
 
 
-def test_spawn_initial_workers_with_single_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_spawn_initial_workers_with_single_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = PalfreyConfig(app="tests.fixtures.apps:http_app", workers=1)
     supervisor = WorkerSupervisor(config=config)
     called = {"count": 0}

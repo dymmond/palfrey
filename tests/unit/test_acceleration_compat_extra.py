@@ -1,5 +1,3 @@
-"""Additional acceleration fallback tests."""
-
 from __future__ import annotations
 
 import pytest
@@ -34,7 +32,9 @@ def test_parse_request_head_rejects_invalid_shapes(
         acceleration.parse_request_head(line)
 
 
-def test_parse_request_head_preserves_latin1_header_values(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_parse_request_head_preserves_latin1_header_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(acceleration, "HAS_RUST_EXTENSION", False)
     request_line = b"GET / HTTP/1.1\r\nX-Name: Caf\xe9\r\n\r\n"
     method, target, version, headers = acceleration.parse_request_head(request_line)

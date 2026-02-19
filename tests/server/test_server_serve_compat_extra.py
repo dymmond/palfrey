@@ -1,5 +1,3 @@
-"""Extended tests for ``PalfreyServer.serve`` branch behavior."""
-
 from __future__ import annotations
 
 import asyncio

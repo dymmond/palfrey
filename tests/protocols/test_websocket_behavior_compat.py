@@ -1,5 +1,3 @@
-"""WebSocket behavior parity tests for handshake and frame handling."""
-
 from __future__ import annotations
 
 import asyncio
@@ -550,7 +548,10 @@ def test_core_backend_fragmented_binary_roundtrip() -> None:
 
     async def app(scope, receive, send):
         await send({"type": "websocket.accept"})
-        assert await receive() == {"type": "websocket.receive", "bytes": b"\x00\x01\x02"}
+        assert await receive() == {
+            "type": "websocket.receive",
+            "bytes": b"\x00\x01\x02",
+        }
 
     async def scenario() -> None:
         reader = await make_stream_reader(incoming)

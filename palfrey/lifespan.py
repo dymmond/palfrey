@@ -1,5 +1,3 @@
-"""ASGI lifespan protocol support."""
-
 from __future__ import annotations
 
 import asyncio
@@ -9,37 +7,67 @@ from typing import Any
 from palfrey.logging_config import get_logger
 from palfrey.types import ASGIApplication, Message, Scope
 
+# Initialize specialized logger for lifespan events
 logger = get_logger("palfrey.lifespan")
 
+# Error message constant for protocol violations
 STATE_TRANSITION_ERROR = "Got invalid state transition on lifespan protocol."
 
 
 @dataclass(slots=True)
 class LifespanManager:
-    """Coordinate ASGI lifespan startup and shutdown events.
+    """
+    Coordinates the ASGI lifespan protocol to manage application startup and shutdown.
 
-    The manager runs the lifespan scope in a dedicated task and exchanges events
-    through asyncio queues.
+    This manager encapsulates the logic for broadcasting 'lifespan.startup' and
+    'lifespan.shutdown' events to an ASGI application. It maintains an internal state
+    dictionary that can be shared across the application and monitors for protocol
+    violations or application-level failures during these critical phases.
     """
 
     app: ASGIApplication
     lifespan_mode: str = "auto"
     should_exit: bool = False
     state: dict[str, Any] = field(default_factory=dict)
+
+    # Internal communication primitives for the lifespan task
     _receive_queue: asyncio.Queue[Message] = field(default_factory=asyncio.Queue)
     _startup_event: asyncio.Event = field(default_factory=asyncio.Event)
     _shutdown_event: asyncio.Event = field(default_factory=asyncio.Event)
     _task: asyncio.Task[None] | None = None
+
+    # Track failure states to inform the server runtime
     _error_occurred: bool = False
     _startup_failed: bool = False
     _shutdown_failed: bool = False
 
     async def _receive(self) -> Message:
+        """
+        ASGI receive callable for the lifespan scope.
+
+        Returns:
+            Message: The next lifespan event (startup or shutdown) from the manager.
+        """
         return await self._receive_queue.get()
 
     async def _send(self, message: Message) -> None:
+        """
+        ASGI send callable for the lifespan scope.
+
+        Handles 'complete' and 'failed' signals from the application and updates
+        the manager's internal event synchronization objects.
+
+        Args:
+            message (Message): The message sent by the application.
+
+        Raises:
+            RuntimeError: If the application sends an event out of order or an
+                unrecognized message type.
+        """
         message_type = str(message.get("type", ""))
+
         if message_type == "lifespan.startup.complete":
+            # Startup can only complete if we aren't already started or shutting down
             if self._startup_event.is_set() or self._shutdown_event.is_set():
                 raise RuntimeError(STATE_TRANSITION_ERROR)
             self._startup_event.set()
@@ -56,6 +84,7 @@ class LifespanManager:
             return
 
         if message_type == "lifespan.shutdown.complete":
+            # Shutdown can only complete after a successful startup
             if not self._startup_event.is_set() or self._shutdown_event.is_set():
                 raise RuntimeError(STATE_TRANSITION_ERROR)
             self._shutdown_event.set()
@@ -74,6 +103,12 @@ class LifespanManager:
         raise RuntimeError(f"Unexpected lifespan message: {message_type}")
 
     async def _run_lifespan(self) -> None:
+        """
+        Internal task runner that executes the application's lifespan callable.
+
+        This method prepares the 'lifespan' scope and handles exceptions. If 'auto' mode
+        is enabled, it gracefully downgrades on failures; otherwise, it logs errors.
+        """
         scope: Scope = {
             "type": "lifespan",
             "asgi": {"version": "3.0", "spec_version": "2.3"},
@@ -81,25 +116,32 @@ class LifespanManager:
         }
         try:
             await self.app(scope, self._receive, self._send)
-        except BaseException as exc:  # noqa: BLE001
+        except BaseException as exc:
             self._error_occurred = True
+            # If the app explicitly failed via message, don't log the re-raised exception
             if self._startup_failed or self._shutdown_failed:
                 return
+
             if self.lifespan_mode == "auto":
                 logger.info("ASGI 'lifespan' protocol appears unsupported.")
             else:
                 logger.error("Exception in 'lifespan' protocol", exc_info=exc)
         finally:
+            # Ensure the server doesn't hang if the lifespan task exits unexpectedly
             self._startup_event.set()
             self._shutdown_event.set()
 
     async def startup(self) -> None:
-        """Trigger and await application startup completion.
+        """
+        Initiates the application startup sequence and waits for completion.
+
+        Signals the application to start by putting a 'lifespan.startup' message
+        into the receive queue and waits for the application to acknowledge.
 
         Raises:
-            RuntimeError: If startup fails.
+            RuntimeError: If the application startup fails and the manager is in
+                a strict lifespan mode.
         """
-
         if self._task is None:
             self._task = asyncio.create_task(self._run_lifespan())
 
@@ -111,14 +153,20 @@ class LifespanManager:
             logger.error("Application startup failed. Exiting.")
             self.should_exit = True
             return
+
         logger.info("Application startup complete.")
 
     async def shutdown(self) -> None:
-        """Trigger and await application shutdown completion."""
+        """
+        Initiates the application shutdown sequence and waits for completion.
 
+        Signals the application to shut down by putting a 'lifespan.shutdown' message
+        into the receive queue and ensures the lifespan task is cleaned up.
+        """
         if self._task is None:
             return
 
+        # If an error occurred during startup/runtime, we might not be able to shut down
         if self._error_occurred:
             await self._task
             self._task = None
@@ -134,5 +182,6 @@ class LifespanManager:
         else:
             logger.info("Application shutdown complete.")
 
+        # Ensure the background task is fully joined
         await self._task
         self._task = None

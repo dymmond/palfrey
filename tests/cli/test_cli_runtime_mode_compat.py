@@ -1,5 +1,3 @@
-"""CLI runtime-mode parity tests for string-based mode options."""
-
 from __future__ import annotations
 
 from click.testing import CliRunner

@@ -1,5 +1,3 @@
-"""Core async server implementation for Palfrey."""
-
 from __future__ import annotations
 
 import asyncio
@@ -16,7 +14,7 @@ from dataclasses import dataclass, field
 from email.utils import formatdate
 from importlib.util import find_spec
 from types import FrameType
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from palfrey.config import PalfreyConfig, create_ssl_context
 from palfrey.importer import ResolvedApp, resolve_application as _resolve_application
@@ -36,39 +34,57 @@ from palfrey.protocols.http import (
 )
 from palfrey.protocols.utils import get_path_with_query_string
 from palfrey.protocols.websocket import handle_websocket
-from palfrey.types import ClientAddress, ServerAddress
+
+if TYPE_CHECKING:
+    from palfrey.types import ClientAddress, ServerAddress
 
 logger = get_logger("palfrey.server")
 access_logger = get_logger("palfrey.access")
+
 PIPELINE_QUEUE_LIMIT = 16
 SOCKET_AF_UNIX = getattr(socket, "AF_UNIX", socket.AF_INET)
+
 if not hasattr(socket, "AF_UNIX"):
     socket.AF_UNIX = SOCKET_AF_UNIX
 
-# Python on Windows doesn't expose asyncio.start_unix_server. Keep a stable
-# attribute so tests and call-sites can uniformly monkeypatch/resolve it.
 if not hasattr(asyncio, "start_unix_server"):
 
     async def _unsupported_start_unix_server(*_args: Any, **_kwargs: Any) -> asyncio.Server:
+        """
+        Fallback for platforms where Unix Domain Sockets are not available.
+
+        Raises:
+            NotImplementedError: Always, as UDS is unsupported on the current platform.
+        """
         raise NotImplementedError("Unix domain sockets are not supported on this platform.")
 
     asyncio.start_unix_server = _unsupported_start_unix_server
 
-# Compatibility alias retained for tests and monkeypatch-based integrations.
 resolve_application = _resolve_application
-
 
 HANDLED_SIGNALS = (
     signal.SIGINT,
     signal.SIGTERM,
 )
-if os.name == "nt":  # pragma: py-not-win32
+if os.name == "nt":
     HANDLED_SIGNALS += (signal.SIGBREAK,)
 
 
 @dataclass(slots=True)
 class ConnectionContext:
-    """Connection metadata used while processing one TCP stream."""
+    """
+    Metadata container for an active network connection.
+
+    This class stores identifying information about the client and server endpoints,
+    encryption status, and callbacks for HTTP-specific signaling like '100 Continue'.
+
+    Attributes:
+        client (ClientAddress): The remote address of the connecting client.
+        server (ServerAddress): The local address the server is listening on.
+        is_tls (bool): Flag indicating if the connection is wrapped in SSL/TLS.
+        on_100_continue (Callable[[], Awaitable[None]] | None): Optional async
+            callback to trigger an HTTP 100 Continue response.
+    """
 
     client: ClientAddress
     server: ServerAddress
@@ -78,19 +94,31 @@ class ConnectionContext:
 
 @dataclass(slots=True, eq=False)
 class _TrackedConnection:
-    """Connection wrapper that exposes ``shutdown`` for graceful stop handling."""
+    """
+    A lightweight wrapper for tracking active stream writers.
+
+    This allows the server to keep a registry of open connections that can be
+    closed collectively during a graceful shutdown phase.
+    """
 
     writer: asyncio.StreamWriter
 
     def shutdown(self) -> None:
-        """Close the underlying writer to stop new request processing."""
-
+        """
+        Initiate the closing of the network stream.
+        """
         self.writer.close()
 
 
 @dataclass(slots=True)
 class _QueuedRequest:
-    """Represents one parsed request or a terminal read outcome."""
+    """
+    Internal container for requests moving through the pipelining queue.
+
+    Attributes:
+        request (HTTPRequest | None): The parsed HTTP request object.
+        error (Exception | None): Any exception encountered during the read phase.
+    """
 
     request: HTTPRequest | None = None
     error: Exception | None = None
@@ -98,7 +126,19 @@ class _QueuedRequest:
 
 @dataclass(slots=True)
 class ServerState:
-    """Shared server state container, compatible with Uvicorn concepts."""
+    """
+    Shared state shared across all connections and tasks within the server.
+
+    This mimics Uvicorn's state container, tracking global metrics and
+    active resources.
+
+    Attributes:
+        total_requests (int): Cumulative count of requests processed.
+        connections (set[Any]): Registry of active _TrackedConnection objects.
+        tasks (set[asyncio.Task[None]]): Registry of active asyncio tasks.
+        default_headers (list[tuple[bytes, bytes]]): Cached headers to be
+            included in every response.
+    """
 
     total_requests: int = 0
     connections: set[Any] = field(default_factory=set)
@@ -108,7 +148,17 @@ class ServerState:
 
 @dataclass(slots=True)
 class PalfreyServer:
-    """Run an ASGI application using Palfrey protocol and supervision layers."""
+    """
+    The core Palfrey server responsible for managing the ASGI lifecycle.
+
+    This class handles socket binding, signal management, connection
+    orchestration, and the main execution loop. It supports HTTP/1.1
+    and WebSocket protocols via pluggable backends.
+
+    Attributes:
+        config (PalfreyConfig): Configuration object defining server behavior.
+        server_state (ServerState): Container for runtime metrics and tracking.
+    """
 
     config: PalfreyConfig
     server_state: ServerState = field(default_factory=ServerState)
@@ -129,19 +179,26 @@ class PalfreyServer:
 
     @property
     def started(self) -> bool:
-        """Return whether the server reached listening state."""
-
+        """
+        Indicates if the server has successfully entered the listening state.
+        """
         return self._started or self._server is not None
 
     async def serve(self, sockets: list[socket.socket] | None = None) -> None:
-        """Start server, run until shutdown, and gracefully clean up resources."""
+        """
+        Public entry point to start the server asynchronously.
 
+        Args:
+            sockets (list[socket.socket] | None): Optional list of pre-bound
+                sockets to use for listening.
+        """
         with self.capture_signals():
             await self._serve(sockets=sockets)
 
     async def _serve(self, sockets: list[socket.socket] | None = None) -> None:
-        """Start server, run until shutdown, and gracefully clean up resources."""
-
+        """
+        Internal implementation of the server startup and lifecycle.
+        """
         configure_logging(self.config)
         self._validate_protocol_backends()
         if not self.config.loaded:
@@ -154,6 +211,7 @@ class PalfreyServer:
         self._max_requests_before_exit = self._compute_max_requests_before_exit()
         self._base_default_headers = self._build_static_default_headers()
 
+        # Handle ASGI Lifespan protocol (startup/shutdown events)
         if self.config.lifespan_class is not None:
             self._lifespan = self.config.lifespan_class(
                 self._resolved_app.app,
@@ -199,6 +257,7 @@ class PalfreyServer:
                     self._servers.append(server)
                 self._server = self._servers[0] if self._servers else None
             elif self.config.fd is not None:
+                # Support for file-descriptor based socket inheritance
                 server_socket = socket.fromfd(self.config.fd, SOCKET_AF_UNIX, socket.SOCK_STREAM)
                 server_socket.setblocking(False)
                 if use_protocol_factory:
@@ -217,6 +276,7 @@ class PalfreyServer:
                         backlog=self.config.backlog,
                     )
             elif self.config.uds:
+                # Logic for Unix Domain Socket binding and permission handling
                 uds_perms = 0o666
                 if os.path.exists(self.config.uds):
                     uds_perms = os.stat(self.config.uds).st_mode
@@ -244,6 +304,7 @@ class PalfreyServer:
                 with contextlib.suppress(OSError):
                     os.chmod(self.config.uds, uds_perms)
             else:
+                # Standard TCP host/port binding
                 if use_protocol_factory:
                     assert protocol_factory is not None
                     self._server = await loop.create_server(
@@ -287,17 +348,21 @@ class PalfreyServer:
         await self._shutdown()
 
     def run(self, sockets: list[socket.socket] | None = None) -> None:
-        """Run server inside a fresh asyncio event loop."""
+        """
+        Blocks while running the server in a new event loop.
+        """
         asyncio.run(self.serve(sockets=sockets))
 
     def request_shutdown(self) -> None:
-        """Trigger server shutdown from external coordinator code."""
-
+        """
+        Signals the server to begin the graceful shutdown process.
+        """
         self._shutdown_event.set()
 
     def _handle_exit_signal(self, sig: signal.Signals) -> None:
-        """Handle process signal semantics for graceful and forced exits."""
-
+        """
+        Handles OS signals like SIGINT or SIGTERM.
+        """
         if self._shutdown_event.is_set() and sig == signal.SIGINT:
             self._force_exit = True
             return
@@ -305,8 +370,9 @@ class PalfreyServer:
 
     @contextlib.contextmanager
     def capture_signals(self):
-        """Capture and restore process signal handlers around server runtime."""
-
+        """
+        Context manager to intercept OS signals for graceful termination.
+        """
         if threading.current_thread() is not threading.main_thread():
             yield
             return
@@ -322,14 +388,16 @@ class PalfreyServer:
             signal.raise_signal(captured_signal)
 
     def handle_exit(self, sig: int, _frame: FrameType | None) -> None:
-        """Signal handler compatible with ``signal.signal`` callback shape."""
-
+        """
+        Callback for signal.signal to register captured signals.
+        """
         self._captured_signals.append(sig)
         self._handle_exit_signal(signal.Signals(sig))
 
     async def _main_loop(self) -> None:
-        """Run periodic server maintenance ticks until shutdown criteria are met."""
-
+        """
+        Main execution sleep loop that periodically executes maintenance ticks.
+        """
         counter = 0
         should_exit = await self._on_tick(counter)
         while not should_exit:
@@ -338,8 +406,9 @@ class PalfreyServer:
             should_exit = await self._on_tick(counter)
 
     async def _on_tick(self, counter: int) -> bool:
-        """Run one server tick, mirroring Uvicorn's maintenance cadence."""
-
+        """
+        Logic executed every 100ms for status updates and limit checking.
+        """
         if counter % 10 == 0:
             if not self._base_default_headers:
                 self._base_default_headers = self._build_static_default_headers()
@@ -377,8 +446,9 @@ class PalfreyServer:
         return False
 
     async def _shutdown(self) -> None:
-        """Perform graceful server shutdown with connection/task draining."""
-
+        """
+        Handles the stopping of listeners and draining of active connections.
+        """
         logger.info("Shutting down")
 
         servers = list(self._servers)
@@ -418,8 +488,9 @@ class PalfreyServer:
             await self._lifespan.shutdown()
 
     async def _wait_tasks_to_complete(self) -> None:
-        """Wait for active connections and in-flight tasks to drain."""
-
+        """
+        Drains active connections and tasks until the set is empty or forced out.
+        """
         if self.server_state.connections and not self._force_exit:
             logger.info("Waiting for connections to close. (CTRL+C to force quit)")
             while self.server_state.connections and not self._force_exit:
@@ -435,6 +506,9 @@ class PalfreyServer:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
+        """
+        Individual connection handler for each incoming stream.
+        """
         if self._resolved_app is None:
             return
 
@@ -442,11 +516,7 @@ class PalfreyServer:
         sockname = writer.get_extra_info("sockname")
         ssl_object = writer.get_extra_info("ssl_object")
 
-        client = self._normalize_address(
-            peername,
-            default_host="0.0.0.0",
-            default_port=0,
-        )
+        client = self._normalize_address(peername, default_host="0.0.0.0", default_port=0)
         server = self._normalize_address(
             sockname,
             default_host=self.config.host,
@@ -463,6 +533,8 @@ class PalfreyServer:
         keep_processing = True
         keep_alive_timeout = self.config.timeout_keep_alive
         request_queue: asyncio.Queue[_QueuedRequest] = asyncio.Queue(maxsize=PIPELINE_QUEUE_LIMIT)
+
+        # Start the pipelining reader task
         request_reader_task = asyncio.create_task(
             self._queue_connection_requests(
                 reader=reader,
@@ -488,6 +560,7 @@ class PalfreyServer:
                 if request is None:
                     break
 
+                # WebSocket Upgrade handling
                 if is_websocket_upgrade(request):
                     await stop_request_reader()
                     if self.config.effective_ws == "none":
@@ -519,6 +592,7 @@ class PalfreyServer:
                         )
                     break
 
+                # HTTP 100-Continue handshake
                 if requires_100_continue(request):
 
                     async def send_continue() -> None:
@@ -529,6 +603,7 @@ class PalfreyServer:
                 else:
                     context.on_100_continue = None
 
+                # Concurrency limit checks
                 if self._is_concurrency_limit_exceeded():
                     await self._write_response(
                         writer,
@@ -550,8 +625,8 @@ class PalfreyServer:
                     response = await self._handle_http_request(request, context)
                 finally:
                     await self._leave_request_slot()
-                keep_processing = should_keep_alive(request, response)
 
+                keep_processing = should_keep_alive(request, response)
                 await self._write_response(writer, response, keep_alive=keep_processing)
 
                 self.server_state.total_requests += 1
@@ -567,7 +642,7 @@ class PalfreyServer:
             error_response = HTTPResponse(status=400, headers=[(b"content-type", b"text/plain")])
             error_response.body_chunks = [b"Bad Request"]
             await self._write_response(writer, error_response, keep_alive=False)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.exception("Connection handler failed: %s", exc)
             error_response = HTTPResponse(status=500, headers=[(b"content-type", b"text/plain")])
             error_response.body_chunks = [b"Internal Server Error"]
@@ -588,8 +663,9 @@ class PalfreyServer:
         queue: asyncio.Queue[_QueuedRequest],
         keep_alive_timeout: float,
     ) -> None:
-        """Read requests continuously and enqueue them for pipelined processing."""
-
+        """
+        Background reader that parses requests from the stream and puts them in a queue.
+        """
         first_request = True
         try:
             while True:
@@ -602,14 +678,11 @@ class PalfreyServer:
                     if first_request and keep_alive_timeout > 0:
                         request = await request_coro
                     else:
-                        request = await asyncio.wait_for(
-                            request_coro,
-                            timeout=keep_alive_timeout,
-                        )
+                        request = await asyncio.wait_for(request_coro, timeout=keep_alive_timeout)
                 except asyncio.TimeoutError:
                     await self._queue_with_backpressure(reader, queue, _QueuedRequest(request=None))
                     return
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     await self._queue_with_backpressure(reader, queue, _QueuedRequest(error=exc))
                     return
 
@@ -626,8 +699,9 @@ class PalfreyServer:
         queue: asyncio.Queue[_QueuedRequest],
         item: _QueuedRequest,
     ) -> None:
-        """Queue an item while pausing reads when request pipeline is saturated."""
-
+        """
+        Enqueues requests while applying backpressure to the transport when the queue is full.
+        """
         paused = False
         if queue.full():
             self._pause_stream_reader(reader)
@@ -640,8 +714,9 @@ class PalfreyServer:
 
     @staticmethod
     def _pause_stream_reader(reader: asyncio.StreamReader) -> None:
-        """Pause socket reads for a stream reader transport when available."""
-
+        """
+        Instructs the transport to stop reading from the socket.
+        """
         transport = getattr(reader, "_transport", None)
         if transport is None:
             return
@@ -650,8 +725,9 @@ class PalfreyServer:
 
     @staticmethod
     def _resume_stream_reader(reader: asyncio.StreamReader) -> None:
-        """Resume socket reads for a stream reader transport when available."""
-
+        """
+        Instructs the transport to resume reading from the socket.
+        """
         transport = getattr(reader, "_transport", None)
         if transport is None:
             return
@@ -663,6 +739,9 @@ class PalfreyServer:
         request: HTTPRequest,
         context: ConnectionContext,
     ) -> HTTPResponse:
+        """
+        Converts a parsed HTTP request into an ASGI scope and runs the application.
+        """
         if self._resolved_app is None:
             raise RuntimeError("Application is not resolved.")
 
@@ -684,12 +763,9 @@ class PalfreyServer:
             expect_100_continue=requires_100_continue(request),
             on_100_continue=context.on_100_continue,
         )
+
         default_headers = self.server_state.default_headers or None
-        append_default_response_headers(
-            response,
-            self.config,
-            default_headers=default_headers,
-        )
+        append_default_response_headers(response, self.config, default_headers=default_headers)
 
         if self.config.access_log:
             request_path = get_path_with_query_string(scope)
@@ -711,19 +787,26 @@ class PalfreyServer:
         *,
         keep_alive: bool,
     ) -> None:
+        """
+        Serializes and writes the HTTP response to the stream.
+        """
         payload = encode_http_response(response, keep_alive=keep_alive)
         writer.write(payload)
         await writer.drain()
 
     def _service_unavailable_response(self) -> HTTPResponse:
+        """
+        Creates a standard 503 Service Unavailable response.
+        """
         response = HTTPResponse(status=503, headers=[(b"content-type", b"text/plain")])
         response.body_chunks = [b"Service Unavailable"]
         append_default_response_headers(response, self.config)
         return response
 
     async def _enter_request_slot(self) -> bool:
-        """Attempt to reserve request-processing capacity."""
-
+        """
+        Decrements the available concurrency slot count.
+        """
         limit = self.config.limit_concurrency
         if limit is None:
             return True
@@ -735,16 +818,18 @@ class PalfreyServer:
             return True
 
     def _is_concurrency_limit_exceeded(self) -> bool:
-        """Return whether current connection/task counts exceed configured limit."""
-
+        """
+        Checks if current global resource usage exceeds configured limits.
+        """
         limit = self.config.limit_concurrency
         if limit is None:
             return False
         return len(self.server_state.connections) >= limit or len(self.server_state.tasks) >= limit
 
     async def _leave_request_slot(self) -> None:
-        """Release request-processing capacity token."""
-
+        """
+        Increments the available concurrency slot count.
+        """
         limit = self.config.limit_concurrency
         if limit is None:
             return
@@ -760,6 +845,9 @@ class PalfreyServer:
         default_host: str,
         default_port: int,
     ) -> tuple[str, int]:
+        """
+        Ensures socket addresses are returned as a host/port tuple.
+        """
         if isinstance(value, tuple) and len(value) >= 2:
             host = str(value[0])
             try:
@@ -770,6 +858,9 @@ class PalfreyServer:
         return default_host, default_port
 
     def _build_ssl_context(self) -> ssl.SSLContext | None:
+        """
+        Constructs the SSLContext for encrypted connections.
+        """
         if self.config.ssl_context is not None:
             return self.config.ssl_context
         if not self.config.is_ssl:
@@ -788,8 +879,9 @@ class PalfreyServer:
         return self.config.ssl_context
 
     def _compute_max_requests_before_exit(self) -> int | None:
-        """Compute effective max requests, including configured jitter."""
-
+        """
+        Computes the maximum request threshold with an optional random jitter.
+        """
         if self.config.limit_max_requests is None:
             return None
 
@@ -799,8 +891,9 @@ class PalfreyServer:
         )
 
     def _build_static_default_headers(self) -> list[tuple[bytes, bytes]]:
-        """Build configured default response headers excluding dynamic date."""
-
+        """
+        Generates the static portion of default response headers.
+        """
         encoded_headers = list(getattr(self.config, "encoded_headers", []))
         if encoded_headers:
             return encoded_headers
@@ -815,16 +908,19 @@ class PalfreyServer:
         return configured_headers
 
     def _use_protocol_factory_mode(self) -> bool:
-        """Return whether runtime should delegate I/O to protocol-class factory."""
-
+        """
+        Detects if the configuration specifies a low-level asyncio.Protocol class.
+        """
         protocol_class = self.config.http_protocol_class
         return isinstance(protocol_class, type) and issubclass(protocol_class, asyncio.Protocol)
 
     def _build_protocol_factory(
-        self, loop: asyncio.AbstractEventLoop
+        self,
+        loop: asyncio.AbstractEventLoop,
     ) -> Callable[[], asyncio.Protocol]:
-        """Build protocol factory callable for custom protocol-class execution."""
-
+        """
+        Constructs a factory that instantiates custom HTTP protocol classes.
+        """
         protocol_class = cast(type[asyncio.Protocol], self.config.http_protocol_class)
         protocol_constructor = cast("Callable[..., asyncio.Protocol]", protocol_class)
         app_state = getattr(self._lifespan, "state", {}) if self._lifespan is not None else {}
@@ -842,8 +938,9 @@ class PalfreyServer:
         return create_protocol
 
     def _use_custom_ws_protocol_mode(self) -> bool:
-        """Return whether runtime should delegate websocket handling to a protocol class."""
-
+        """
+        Detects if the configuration specifies a low-level WebSocket protocol class.
+        """
         protocol_class = self.config.ws_protocol_class
         return isinstance(protocol_class, type) and issubclass(protocol_class, asyncio.Protocol)
 
@@ -854,13 +951,9 @@ class PalfreyServer:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
-        """Delegate websocket bytes to a custom asyncio.Protocol class.
-
-        This mirrors Uvicorn's support for custom ``ws`` protocol classes by
-        instantiating the configured protocol and forwarding the already-read
-        handshake bytes followed by subsequent socket payloads.
         """
-
+        Hand-off mechanism for delegating WebSocket traffic to a custom protocol class.
+        """
         protocol_class = cast(type[asyncio.Protocol], self.config.ws_protocol_class)
         protocol_constructor = cast("Callable[..., asyncio.Protocol]", protocol_class)
 
@@ -896,19 +989,17 @@ class PalfreyServer:
 
     @staticmethod
     def _serialize_http_request(request: HTTPRequest) -> bytes:
-        """Serialize parsed request metadata back into raw HTTP bytes."""
-
+        """
+        Re-serializes an HTTPRequest object into raw bytes for custom protocols.
+        """
         lines = [f"{request.method} {request.target} {request.http_version}\r\n"]
         lines.extend(f"{name}: {value}\r\n" for name, value in request.headers)
         return ("".join(lines) + "\r\n").encode("latin-1") + request.body
 
     def _validate_protocol_backends(self) -> None:
-        """Validate that selected protocol backend dependencies are importable.
-
-        Raises:
-            RuntimeError: If an explicitly selected backend is unavailable.
         """
-
+        Ensures that dependencies for explicitly selected protocols are installed.
+        """
         if self.config.http == "httptools" and find_spec("httptools") is None:
             raise RuntimeError("HTTP mode 'httptools' requires the 'httptools' package.")
 

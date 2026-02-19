@@ -1,5 +1,3 @@
-"""Top-level runtime orchestration for Palfrey."""
-
 from __future__ import annotations
 
 import contextlib
@@ -34,14 +32,26 @@ STARTUP_FAILURE = 3
 
 
 def _configure_loop(loop_mode: str) -> None:
-    """Apply event loop policy according to configured mode."""
+    """
+    Initialize and install the requested event loop policy.
 
+    Args:
+        loop_mode (str): The identifier for the loop implementation (e.g., "uvloop", "asyncio").
+    """
     resolve_loop_setup(loop_mode)()
 
 
 def _normalize_cli_list(value: list[str] | str | None) -> list[str]:
-    """Normalize run() list-or-string API values into list form."""
+    """
+    Ensure that configuration values intended as lists are properly typed.
 
+    Args:
+        value (list[str] | str | None): The input value which could be a single string,
+            a list of strings, or None.
+
+    Returns:
+        list[str]: A list of strings. Returns an empty list if input is None.
+    """
     if value is None:
         return []
     if isinstance(value, str):
@@ -50,21 +60,30 @@ def _normalize_cli_list(value: list[str] | str | None) -> list[str]:
 
 
 def _run_config(config: PalfreyConfig) -> PalfreyServer | None:
-    """Run Palfrey according to supervision and runtime configuration.
+    """
+    Execute the server startup logic based on the provided configuration object.
+
+    This function determines whether to start a single server instance, a reload
+    supervisor for development, or a worker supervisor for multi-process deployments.
 
     Args:
-        config: Runtime options.
+        config (PalfreyConfig): The fully initialized configuration for the runtime.
+
+    Returns:
+        PalfreyServer | None: The server instance if running in single-process mode,
+            otherwise None if a supervisor has taken over the process execution.
 
     Raises:
-        RuntimeError: If incompatible options are selected.
+        RuntimeError: If 'reload' or 'workers' is requested but the application
+            is not provided as an import string.
     """
-
     load_env_file(config.env_file)
     _configure_loop(config.loop)
 
     if config.reload and config.workers_count > 1:
         logger.warning('"workers" flag is ignored when reloading is enabled.')
 
+    # Multi-process or reload modes require an import string to re-import the app in children
     if (config.reload or config.workers_count > 1) and not isinstance(config.app, str):
         raise RuntimeError(
             "You must pass the application as an import string to enable 'reload' or 'workers'."
@@ -72,6 +91,7 @@ def _run_config(config: PalfreyConfig) -> PalfreyServer | None:
 
     bound_sockets: list[socket.socket] = []
     try:
+        # Check if we are the parent process responsible for spawning reloader children
         if config.should_reload and os.environ.get("PALFREY_RELOAD_CHILD") != "1":
             parent_socket = config.bind_socket()
             bound_sockets = [parent_socket]
@@ -82,16 +102,20 @@ def _run_config(config: PalfreyConfig) -> PalfreyServer | None:
             )
             supervisor.run()
             return None
+
+        # Handle multi-worker orchestration
         if config.workers_count > 1:
             parent_socket = config.bind_socket()
             bound_sockets = [parent_socket]
             WorkerSupervisor(config=config, sockets=bound_sockets).run()
             return None
 
+        # Standard single-process server execution
         server = PalfreyServer(config)
         server.run()
         return server
     finally:
+        # Ensure sockets are closed and Unix Domain Sockets are unlinked on exit
         for bound_socket in bound_sockets:
             with contextlib.suppress(OSError):
                 bound_socket.close()
@@ -101,7 +125,12 @@ def _run_config(config: PalfreyConfig) -> PalfreyServer | None:
 
 @overload
 def run(config: PalfreyConfig) -> None:
-    """Run Palfrey from a pre-built configuration."""
+    """
+    Run Palfrey using a pre-constructed configuration object.
+
+    Args:
+        config (PalfreyConfig): An existing PalfreyConfig instance.
+    """
 
 
 @overload
@@ -159,7 +188,9 @@ def run(
     factory: bool = False,
     h11_max_incomplete_event_size: int | None = None,
 ) -> None:
-    """Run Palfrey from an application callable/import string and keyword options."""
+    """
+    Run Palfrey by passing an application and configuration options as keywords.
+    """
 
 
 def run(
@@ -216,15 +247,32 @@ def run(
     factory: bool = False,
     h11_max_incomplete_event_size: int | None = None,
 ) -> None:
-    """Run Palfrey using a config object or direct app/kwargs inputs.
+    """
+    Main entry point for running the Palfrey server.
+
+    This function accepts either a pre-configured PalfreyConfig object or an
+    application (callable or string) plus various keyword arguments to construct
+    the configuration dynamically.
 
     Args:
-        config_or_app: Either a ``PalfreyConfig`` instance or an app target.
-        **kwargs: Configuration options when ``config_or_app`` is an app target.
+        config_or_app (PalfreyConfig | AppType): The application or config instance.
+        host (str): Bind socket to this host. Defaults to "127.0.0.1".
+        port (int): Bind socket to this port. Defaults to 8000.
+        uds (str | None): Bind to a UNIX domain socket. Defaults to None.
+        fd (int | None): Bind to an existing file descriptor. Defaults to None.
+        loop (LoopType): Event loop implementation. Defaults to "auto".
+        http (HTTPType): HTTP protocol implementation. Defaults to "auto".
+        ws (WSType): WebSocket protocol implementation. Defaults to "auto".
+        reload (bool): Enable auto-reload on file changes. Defaults to False.
+        workers (int | None): Number of worker processes. Defaults to None.
+        log_config (dict[str, Any] | str | RawConfigParser | IO[Any] | None):
+            Logging configuration dictionary or path. Defaults to None.
+        **kwargs: Additional server tuning and SSL parameters.
     """
     if isinstance(config_or_app, PalfreyConfig):
         config = config_or_app
     else:
+        # Construct config from keyword arguments if an app was provided directly
         config = PalfreyConfig(
             app=config_or_app,
             host=host,
@@ -279,6 +327,7 @@ def run(
             h11_max_incomplete_event_size=h11_max_incomplete_event_size,
         )
 
+    # Ensure the application directory is in the python path for imports
     if config.app_dir is not None:
         sys.path.insert(0, config.app_dir)
 
@@ -293,6 +342,7 @@ def run(
     except KeyboardInterrupt:
         return
 
+    # If the server failed to start in single-process mode, exit with a failure code
     if (
         server is not None
         and not server.started

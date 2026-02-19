@@ -1,5 +1,3 @@
-"""Custom loop import-string parity tests."""
-
 from __future__ import annotations
 
 import importlib

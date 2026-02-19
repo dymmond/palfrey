@@ -1,5 +1,3 @@
-"""Additional runtime orchestration tests."""
-
 from __future__ import annotations
 
 import pytest
@@ -9,7 +7,9 @@ from palfrey.config import PalfreyConfig
 from palfrey.runtime import _configure_loop, _run_config
 
 
-def test_configure_loop_invokes_registered_setup(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_configure_loop_invokes_registered_setup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     called: list[str] = []
     monkeypatch.setattr(
         runtime_module,
@@ -20,7 +20,9 @@ def test_configure_loop_invokes_registered_setup(monkeypatch: pytest.MonkeyPatch
     assert called == ["custom"]
 
 
-def test_run_config_starts_server_for_single_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_config_starts_server_for_single_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     called: list[str] = []
 
     class FakeServer:

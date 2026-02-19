@@ -1,5 +1,3 @@
-"""Additional logging config parity tests."""
-
 from __future__ import annotations
 
 import json
@@ -62,7 +60,9 @@ def test_configure_logging_with_dict_payload_applies_log_level_overrides(
     }
     monkeypatch.setattr(logging_config_module.logging.config, "dictConfig", lambda _value: None)
     monkeypatch.setattr(
-        logging_config_module.logging.config, "fileConfig", lambda *_args, **_kwargs: None
+        logging_config_module.logging.config,
+        "fileConfig",
+        lambda *_args, **_kwargs: None,
     )
 
     configure_logging(
@@ -82,7 +82,11 @@ def test_configure_logging_with_dict_payload_disables_access_logger(
         "handlers": {"default": {"class": "logging.StreamHandler"}},
         "root": {"handlers": ["default"], "level": "INFO"},
         "loggers": {
-            "palfrey.access": {"handlers": ["default"], "level": "INFO", "propagate": True}
+            "palfrey.access": {
+                "handlers": ["default"],
+                "level": "INFO",
+                "propagate": True,
+            }
         },
     }
     monkeypatch.setattr(logging_config_module.logging.config, "dictConfig", lambda _value: None)

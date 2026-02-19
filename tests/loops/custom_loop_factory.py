@@ -1,5 +1,3 @@
-"""Test fixture module for custom loop setup import-string resolution."""
-
 CALLED = False
 
 

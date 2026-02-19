@@ -1,5 +1,3 @@
-"""HTTP integration tests using the real Palfrey CLI subprocess."""
-
 from __future__ import annotations
 
 import socket

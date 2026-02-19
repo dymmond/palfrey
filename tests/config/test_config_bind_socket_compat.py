@@ -1,5 +1,3 @@
-"""Socket-binding parity tests for parent-process supervision modes."""
-
 from __future__ import annotations
 
 from pathlib import Path

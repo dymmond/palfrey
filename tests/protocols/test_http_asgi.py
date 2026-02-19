@@ -1,5 +1,3 @@
-"""Additional HTTP protocol behavior tests."""
-
 from __future__ import annotations
 
 import asyncio
@@ -111,7 +109,13 @@ def test_run_http_asgi_rejects_messages_after_response_completion() -> None:
         asyncio.run(
             run_http_asgi(
                 app,
-                {"type": "http", "headers": [], "path": "/", "method": "GET", "state": {}},
+                {
+                    "type": "http",
+                    "headers": [],
+                    "path": "/",
+                    "method": "GET",
+                    "state": {},
+                },
                 b"",
             )
         )

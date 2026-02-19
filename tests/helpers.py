@@ -1,5 +1,3 @@
-"""Test helpers shared across Palfrey test modules."""
-
 from __future__ import annotations
 
 import asyncio

@@ -1,5 +1,3 @@
-"""Public API parity tests for top-level package exports."""
-
 from __future__ import annotations
 
 import palfrey

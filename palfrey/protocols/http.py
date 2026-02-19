@@ -1,5 +1,3 @@
-"""HTTP/1.1 protocol handling for Palfrey."""
-
 from __future__ import annotations
 
 import asyncio
@@ -7,18 +5,52 @@ import http
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
 
 from palfrey.acceleration import parse_request_head
-from palfrey.config import PalfreyConfig
 from palfrey.http_date import cached_http_date_header
-from palfrey.types import ASGIApplication, ClientAddress, Headers, Message, Scope, ServerAddress
+
+if TYPE_CHECKING:
+    from palfrey.config import PalfreyConfig
+    from palfrey.types import (
+        ASGIApplication,
+        ClientAddress,
+        Headers,
+        Message,
+        Scope,
+        ServerAddress,
+    )
+
+# Import types for internal use within this module
+from palfrey.types import (
+    ASGIApplication,
+    ClientAddress,
+    Headers,
+    Message,
+    Scope,
+    ServerAddress,
+)
 
 
 @dataclass(slots=True)
 class HTTPRequest:
-    """Parsed HTTP request metadata and body payload."""
+    """
+    Data container for a parsed HTTP request, including headers and body content.
+
+    This class normalizes the body representation into both a contiguous byte
+    string and a list of chunks, facilitating easier processing for both
+    synchronous logic and asynchronous streaming.
+
+    Attributes:
+        method (str): The HTTP method (e.g., 'GET', 'POST').
+        target (str): The full request URI or path.
+        http_version (str): The protocol version (e.g., 'HTTP/1.1').
+        headers (list[tuple[str, str]]): List of header name-value pairs as strings.
+        body (bytes): The complete request body as a single byte string.
+        body_chunks (list[bytes]): The body split into chunks, as received
+            from the wire.
+    """
 
     method: str
     target: str
@@ -28,17 +60,31 @@ class HTTPRequest:
     body_chunks: list[bytes] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        """Normalize body and body chunk fields for ASGI receive streaming."""
-
+        """
+        Synchronize the body and body_chunks attributes after initialization.
+        """
         if self.body_chunks:
             self.body = b"".join(self.body_chunks)
             return
+        # Ensure body_chunks is always a list for consistent iteration
         self.body_chunks = [self.body] if self.body else [b""]
 
 
 @dataclass(slots=True)
 class HTTPResponse:
-    """HTTP response assembled from ASGI send events."""
+    """
+    Representation of an outgoing HTTP response constructed from ASGI events.
+
+    This object acts as a collector for headers and body chunks sent by the
+    application before they are serialized to the network socket.
+
+    Attributes:
+        status (int): HTTP status code (default 500).
+        headers (Headers): List of header tuples in bytes.
+        body_chunks (list[bytes]): Fragments of the response body.
+        chunked_encoding (bool): Whether the response uses Transfer-Encoding: chunked.
+        suppress_body (bool): If True, the body is omitted (e.g., for HEAD requests).
+    """
 
     status: int = 500
     headers: Headers = field(default_factory=list)
@@ -48,13 +94,20 @@ class HTTPResponse:
 
 
 class _HTTPToolsParserProtocol:
-    """Fast callback protocol for ``httptools.HttpRequestParser``."""
+    """
+    Callback handler for the C-based httptools request parser.
+
+    This class implements the required interface for httptools, capturing
+    URL fragments, headers, and protocol metadata as they are parsed from
+    incoming byte streams.
+    """
 
     __slots__ = ("method", "target", "http_version", "headers", "_parser")
 
     def __init__(self) -> None:
-        """Initialize parser callback state."""
-
+        """
+        Initialize the parser protocol state.
+        """
         self.method = ""
         self.target = ""
         self.http_version = "HTTP/1.1"
@@ -62,30 +115,45 @@ class _HTTPToolsParserProtocol:
         self._parser: Any = None
 
     def bind_parser(self, parser: Any) -> None:
-        """Attach parser object for method/version extraction callbacks."""
+        """
+        Link the protocol to the specific parser instance for metadata extraction.
 
+        Args:
+            parser (Any): The httptools.HttpRequestParser instance.
+        """
         self._parser = parser
 
     def on_url(self, url: bytes) -> None:
-        """Capture request URL bytes."""
+        """
+        Captured during the request line parsing.
 
+        Args:
+            url (bytes): Raw URL bytes.
+        """
         self.target = url.decode("latin-1")
 
     def on_header(self, name: bytes, value: bytes) -> None:
-        """Capture header tuple bytes as decoded latin-1 strings."""
+        """
+        Captured for every header field.
 
+        Args:
+            name (bytes): Header field name.
+            value (bytes): Header field value.
+        """
         self.headers.append((name.decode("latin-1"), value.decode("latin-1")))
 
     def on_headers_complete(self) -> None:
-        """Capture parsed method and protocol version."""
-
+        """
+        Finalize the request line and metadata once headers are finished.
+        """
         parser = self._parser
         self.http_version = f"HTTP/{parser.get_http_version()}"
         self.method = parser.get_method().decode("latin-1")
 
     def on_message_complete(self) -> None:
-        """Complete request head callback."""
-
+        """
+        Notification that the entire request head has been processed.
+        """
         return None
 
 
@@ -94,8 +162,12 @@ _HTTPTOOLS_UPGRADE_EXC_TYPE: type[BaseException] | None = None
 
 
 def _get_httptools_backend() -> tuple[Any, type[BaseException] | None]:
-    """Load and cache ``httptools`` module and upgrade exception type."""
+    """
+    Load the httptools library and its specific exception types lazily.
 
+    Returns:
+        tuple: (httptools module, Upgrade exception class).
+    """
     global _HTTPTOOLS_MODULE, _HTTPTOOLS_UPGRADE_EXC_TYPE
 
     if _HTTPTOOLS_MODULE is not None:
@@ -103,7 +175,7 @@ def _get_httptools_backend() -> tuple[Any, type[BaseException] | None]:
 
     try:
         import httptools
-    except ImportError as exc:  # pragma: no cover - dependency validation in config.
+    except ImportError as exc:
         raise ValueError("httptools parser is unavailable") from exc
 
     upgrade_exc = getattr(getattr(httptools, "parser", None), "errors", None)
@@ -117,10 +189,16 @@ def _get_httptools_backend() -> tuple[Any, type[BaseException] | None]:
 
 
 def _http_date_header() -> bytes:
+    """
+    Retrieve a current HTTP-formatted date string for response headers.
+    """
     return cached_http_date_header()
 
 
 def _normalize_connection_value(headers: list[tuple[str, str]]) -> str:
+    """
+    Helper to extract and normalize the 'Connection' header value.
+    """
     for name, value in headers:
         if name.lower() == "connection":
             return value.lower()
@@ -128,6 +206,9 @@ def _normalize_connection_value(headers: list[tuple[str, str]]) -> str:
 
 
 def _is_websocket_upgrade(headers: list[tuple[str, str]]) -> bool:
+    """
+    Check headers to determine if the client is requesting a WebSocket upgrade.
+    """
     upgrade = ""
     connection = ""
     for name, value in headers:
@@ -141,6 +222,9 @@ def _is_websocket_upgrade(headers: list[tuple[str, str]]) -> bool:
 
 
 def _header_lookup(headers: list[tuple[str, str]], key: str) -> str | None:
+    """
+    Case-insensitive search for a header value in a list of string tuples.
+    """
     for name, value in headers:
         if name.lower() == key.lower():
             return value
@@ -151,6 +235,19 @@ async def _read_chunked_body_chunks(
     reader: asyncio.StreamReader,
     body_limit: int,
 ) -> list[bytes]:
+    """
+    Read an HTTP body formatted with chunked transfer encoding.
+
+    Args:
+        reader (asyncio.StreamReader): The source socket reader.
+        body_limit (int): Maximum total bytes allowed for the body.
+
+    Returns:
+        list[bytes]: A list of body chunks.
+
+    Raises:
+        ValueError: If the encoding is malformed or the limit is exceeded.
+    """
     body_chunks: list[bytes] = []
     total = 0
 
@@ -159,6 +256,7 @@ async def _read_chunked_body_chunks(
         if not chunk_size_line:
             raise ValueError("Unexpected EOF while reading chunked body")
 
+        # Split on semicolon to ignore chunk extensions
         chunk_size_text = chunk_size_line.split(b";", 1)[0].strip()
         try:
             chunk_size = int(chunk_size_text, 16)
@@ -166,6 +264,7 @@ async def _read_chunked_body_chunks(
             raise ValueError("Malformed chunked encoding size") from exc
 
         if chunk_size == 0:
+            # Last chunk is 0 followed by CRLF
             await reader.readuntil(b"\r\n")
             break
 
@@ -187,8 +286,17 @@ async def _read_content_length_body_chunks(
     content_length: int,
     body_limit: int,
 ) -> list[bytes]:
-    """Read a fixed-size body into ASGI-style chunks."""
+    """
+    Read a fixed-size body from the stream into manageable chunks.
 
+    Args:
+        reader (asyncio.StreamReader): The socket reader.
+        content_length (int): Total expected bytes from Content-Length header.
+        body_limit (int): Maximum bytes allowed by server configuration.
+
+    Returns:
+        list[bytes]: List of body fragments.
+    """
     if content_length > body_limit:
         raise ValueError("HTTP body exceeds configured limit")
     if content_length <= 0:
@@ -211,21 +319,20 @@ async def read_http_request(
     body_limit: int = 4_194_304,
     parser_mode: str = "auto",
 ) -> HTTPRequest | None:
-    """Read and parse one HTTP request from a stream.
+    """
+    Read and parse a full HTTP request (head and body) from the reader.
 
     Args:
-        reader: Client stream reader.
-        max_head_size: Maximum allowed head bytes before delimiter.
-        body_limit: Maximum body bytes accepted for a single request.
+        reader (asyncio.StreamReader): The client stream reader.
+        max_head_size (int): Max allowed bytes for the request line and headers.
+        body_limit (int): Max allowed bytes for the body.
+        parser_mode (str): Choice of parser ('httptools', 'h11', or 'auto').
 
     Returns:
-        Parsed request object, or ``None`` when EOF is reached.
-
-    Raises:
-        ValueError: If parsing fails or limits are exceeded.
+        HTTPRequest | None: The parsed request, or None if the client disconnected.
     """
-
     try:
+        # Read until the double CRLF signaling the end of headers
         head = await reader.readuntil(b"\r\n\r\n")
     except asyncio.LimitOverrunError as exc:
         raise ValueError("HTTP head exceeds configured limit") from exc
@@ -247,6 +354,7 @@ async def read_http_request(
         except ValueError as exc:
             raise ValueError("Invalid Content-Length header") from exc
 
+    # Determine body reading strategy
     body_chunks: list[bytes] = [b""]
     if "chunked" in transfer_encoding:
         body_chunks = await _read_chunked_body_chunks(reader, body_limit)
@@ -268,24 +376,15 @@ def _parse_request_head(
     head: bytes,
     parser_mode: str,
 ) -> tuple[str, str, str, list[tuple[str, str]]]:
-    """Parse request head bytes with configured backend mode.
-
-    Args:
-        head: Raw request head bytes ending with CRLFCRLF.
-        parser_mode: HTTP parser mode.
-
-    Returns:
-        Parsed request line and headers.
-
-    Raises:
-        ValueError: If the parser mode cannot decode request bytes.
     """
-
+    Dispatch head parsing to the chosen backend.
+    """
     if parser_mode == "h11":
         return _parse_request_head_h11(head)
     if parser_mode == "httptools":
         return _parse_request_head_httptools(head)
 
+    # Auto-detection logic: try native, then httptools, then h11
     try:
         return parse_request_head(head)
     except ValueError:
@@ -297,11 +396,12 @@ def _parse_request_head(
 def _parse_request_head_h11(
     head: bytes,
 ) -> tuple[str, str, str, list[tuple[str, str]]]:
-    """Parse HTTP request head using ``h11`` for parity mode."""
-
+    """
+    Use the pure-python h11 library to parse request headers.
+    """
     try:
         import h11
-    except ImportError as exc:  # pragma: no cover - dependency validation in config.
+    except ImportError as exc:
         raise ValueError("h11 parser is unavailable") from exc
 
     connection = h11.Connection(h11.SERVER)
@@ -322,8 +422,9 @@ def _parse_request_head_h11(
 def _parse_request_head_httptools(
     head: bytes,
 ) -> tuple[str, str, str, list[tuple[str, str]]]:
-    """Parse HTTP request head using ``httptools`` for parity mode."""
-
+    """
+    Use the high-performance httptools library to parse request headers.
+    """
     httptools, upgrade_exc_type = _get_httptools_backend()
     protocol = _HTTPToolsParserProtocol()
     parser = httptools.HttpRequestParser(protocol)
@@ -331,9 +432,8 @@ def _parse_request_head_httptools(
 
     try:
         parser.feed_data(head)
-    except Exception as exc:  # noqa: BLE001
-        # httptools raises HttpParserUpgrade when a valid Upgrade request head
-        # is parsed; treat this as success and continue with parsed fields.
+    except Exception as exc:
+        # Handle the specific case where httptools signals a protocol upgrade
         if not (isinstance(upgrade_exc_type, type) and isinstance(exc, upgrade_exc_type)):
             raise ValueError("Invalid HTTP request line") from exc
 
@@ -350,8 +450,19 @@ def build_http_scope(
     root_path: str,
     is_tls: bool,
 ) -> Scope:
-    """Build an ASGI HTTP scope from request metadata."""
+    """
+    Convert an internal HTTPRequest into an ASGI 3.0 scope dictionary.
 
+    Args:
+        request (HTTPRequest): Parsed request data.
+        client (ClientAddress): IP and port of the client.
+        server (ServerAddress): IP and port of the server.
+        root_path (str): The mounting point of the application.
+        is_tls (bool): True if connection is encrypted.
+
+    Returns:
+        Scope: A dictionary conforming to the ASGI HTTP specification.
+    """
     path, _, query = request.target.partition("?")
     decoded_path = unquote(path)
     raw_path = path.encode("latin-1")
@@ -387,8 +498,22 @@ async def run_http_asgi(
     expect_100_continue: bool = False,
     on_100_continue: Callable[[], Awaitable[None]] | None = None,
 ) -> HTTPResponse:
-    """Execute one ASGI HTTP request/response cycle with Uvicorn-style semantics."""
+    """
+    Orchestrate the ASGI request/response lifecycle.
 
+    This function wraps the application call, providing the 'receive' and 'send'
+    coroutines required by the ASGI spec.
+
+    Args:
+        app (ASGIApplication): The user-provided ASGI application.
+        scope (Scope): The connection scope.
+        request_body (bytes | list[bytes]): The input body.
+        expect_100_continue (bool): If the client expects a 100-Continue response.
+        on_100_continue (Callable): Callback to send the 100 status code.
+
+    Returns:
+        HTTPResponse: The resulting response state.
+    """
     response = HTTPResponse()
     body_chunks = request_body if isinstance(request_body, list) else [request_body]
     if not body_chunks:
@@ -403,6 +528,9 @@ async def run_http_asgi(
     expected_content_length = 0
 
     async def _send_internal_server_error() -> None:
+        """
+        Internal helper to create a 500 response if the app crashes before sending headers.
+        """
         nonlocal response_started, response_complete, chunked_encoding, expected_content_length
         response_started = True
         response_complete = True
@@ -420,6 +548,9 @@ async def run_http_asgi(
         message_complete.set()
 
     async def receive() -> Message:
+        """
+        ASGI receive callable for streaming the request body to the app.
+        """
         nonlocal waiting_for_100_continue, body_index
 
         if waiting_for_100_continue:
@@ -440,6 +571,9 @@ async def run_http_asgi(
         return {"type": "http.disconnect"}
 
     async def send(message: Message) -> None:
+        """
+        ASGI send callable for streaming the response from the app to the server.
+        """
         nonlocal response_started, response_complete, waiting_for_100_continue
         nonlocal chunked_encoding, expected_content_length
 
@@ -459,6 +593,7 @@ async def run_http_asgi(
             ]
             response.suppress_body = scope.get("method") == "HEAD"
 
+            # Parse headers for content-length or transfer-encoding
             for name, value in response.headers:
                 lowered_name = name.lower()
                 lowered_value = value.lower()
@@ -472,6 +607,7 @@ async def run_http_asgi(
                     chunked_encoding = True
                     expected_content_length = 0
 
+            # Default to chunked if no length is provided
             if (
                 chunked_encoding is None
                 and scope.get("method") != "HEAD"
@@ -516,7 +652,7 @@ async def run_http_asgi(
 
     try:
         result = await app(scope, receive, send)
-    except BaseException as exc:  # noqa: BLE001
+    except BaseException as exc:
         if not response_started:
             await _send_internal_server_error()
         elif isinstance(exc, RuntimeError):
@@ -534,8 +670,9 @@ async def run_http_asgi(
 
 
 def _coerce_header_bytes(value: object) -> bytes:
-    """Normalize header names/values to bytes."""
-
+    """
+    Ensure header values are in raw byte format.
+    """
     if isinstance(value, bytes):
         return value
     if isinstance(value, bytearray):
@@ -549,8 +686,14 @@ def append_default_response_headers(
     *,
     default_headers: list[tuple[bytes, bytes]] | None = None,
 ) -> None:
-    """Add default response headers controlled by runtime configuration."""
+    """
+    Apply configured default headers (like 'Server' or 'Date') to the response.
 
+    Args:
+        response (HTTPResponse): Response to modify.
+        config (PalfreyConfig): Application configuration.
+        default_headers (list[tuple[bytes, bytes]] | None): Cached list of headers.
+    """
     existing_headers = {name.lower() for name, _ in response.headers}
 
     if default_headers is not None:
@@ -584,13 +727,22 @@ def append_default_response_headers(
 
 
 def encode_http_response(response: HTTPResponse, keep_alive: bool) -> bytes:
-    """Serialize a captured HTTP response to wire bytes."""
+    """
+    Serialize the HTTPResponse object into raw wire bytes for network transmission.
 
+    Args:
+        response (HTTPResponse): Response data collected from the app.
+        keep_alive (bool): Whether the connection should remain open.
+
+    Returns:
+        bytes: Serialized HTTP response.
+    """
     try:
         reason = http.HTTPStatus(response.status).phrase.encode("ascii")
     except ValueError:
         reason = b""
 
+    # Status line
     header_lines: list[bytes] = [f"HTTP/1.1 {response.status}".encode("ascii") + b" " + reason]
 
     has_content_length = False
@@ -609,12 +761,15 @@ def encode_http_response(response: HTTPResponse, keep_alive: bool) -> bytes:
     payload_chunks = [] if response.suppress_body else response.body_chunks
     payload = b"".join(payload_chunks)
 
+    # Automatic Content-Length insertion
     if not has_content_length and not has_transfer_encoding:
         header_lines.append(b"content-length: " + str(len(payload)).encode("ascii"))
 
+    # Connection persistence signaling
     if not has_connection:
         header_lines.append(b"connection: keep-alive" if keep_alive else b"connection: close")
 
+    # Serialize chunked body if applicable
     if has_transfer_encoding:
         chunked_chunks: list[bytes] = []
         for chunk in payload_chunks:
@@ -630,8 +785,9 @@ def encode_http_response(response: HTTPResponse, keep_alive: bool) -> bytes:
 
 
 def should_keep_alive(request: HTTPRequest, response: HTTPResponse) -> bool:
-    """Evaluate HTTP keep-alive behavior from request and response headers."""
-
+    """
+    Determine if the TCP connection should persist based on headers and protocol version.
+    """
     request_connection = _normalize_connection_value(request.headers)
     response_connection = ""
     for name, value in response.headers:
@@ -642,6 +798,7 @@ def should_keep_alive(request: HTTPRequest, response: HTTPResponse) -> bool:
     if "close" in request_connection or "close" in response_connection:
         return False
 
+    # HTTP/1.0 requires explicit Keep-Alive
     if request.http_version == "HTTP/1.0" and "keep-alive" not in request_connection:
         return False
 
@@ -649,14 +806,16 @@ def should_keep_alive(request: HTTPRequest, response: HTTPResponse) -> bool:
 
 
 def is_websocket_upgrade(request: HTTPRequest) -> bool:
-    """Return whether the request asks for a WebSocket protocol upgrade."""
-
+    """
+    Check if the request is a WebSocket handshake.
+    """
     return _is_websocket_upgrade(request.headers)
 
 
 def requires_100_continue(request: HTTPRequest) -> bool:
-    """Return whether request asks for ``100-continue`` expectation."""
-
+    """
+    Verify if the client is waiting for a '100 Continue' response before sending the body.
+    """
     expect = _header_lookup(request.headers, "expect")
     if not expect:
         return False

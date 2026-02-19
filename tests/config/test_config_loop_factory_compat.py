@@ -1,5 +1,3 @@
-"""Loop-factory compatibility tests mirrored from Uvicorn config behavior."""
-
 from __future__ import annotations
 
 import asyncio

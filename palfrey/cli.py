@@ -1,9 +1,3 @@
-"""Palfrey command-line interface.
-
-The CLI is implemented with Click and mirrors Uvicorn-confirmed option names so
-users can migrate without relearning flag semantics.
-"""
-
 from __future__ import annotations
 
 import os
@@ -34,21 +28,35 @@ INTERFACE_CHOICES = click.Choice(list(get_args(KnownInterfaceType)))
 
 
 def _metavar_from_type(_type: Any) -> str:
+    """
+    Generates a metavar string representation for Click help text based on a Literal type.
+
+    Args:
+        _type (Any): A type hint, usually a typing.Literal, to extract arguments from.
+
+    Returns:
+        str: A formatted string containing valid type options, e.g., '[auto|h11|httptools]'.
+    """
     return f"[{'|'.join(key for key in get_args(_type) if key != 'none')}]"
 
 
 def _mirror_uvicorn_envvars() -> list[str]:
-    """Mirror ``UVICORN_*`` values into ``PALFREY_*`` when missing.
-
-    This preserves Palfrey's native env-var prefix while keeping drop-in
-    compatibility with existing Uvicorn-oriented shell environments.
     """
+    Mirrors environment variables prefixed with 'UVICORN_' to 'PALFREY_' equivalents.
 
+    This ensures that configuration set for Uvicorn-based environments is automatically
+    honored by Palfrey if no specific Palfrey configuration is present.
+
+    Returns:
+        list[str]: A list of the keys that were newly created in os.environ.
+    """
     mirrored_keys: list[str] = []
+    # Use tuple(items) to avoid modification errors while iterating over the environment
     for key, value in tuple(os.environ.items()):
         if not key.startswith("UVICORN_"):
             continue
         palfrey_key = "PALFREY_" + key[len("UVICORN_") :]
+        # Only mirror if the Palfrey-specific key isn't already set manually
         if palfrey_key in os.environ:
             continue
         os.environ[palfrey_key] = value
@@ -57,27 +65,52 @@ def _mirror_uvicorn_envvars() -> list[str]:
 
 
 def _restore_mirrored_envvars(keys: list[str]) -> None:
+    """
+    Removes mirrored environment variables from the current process environment.
+
+    Args:
+        keys (list[str]): The list of keys to remove from os.environ.
+    """
     for key in keys:
         os.environ.pop(key, None)
 
 
 class _DualPrefixCommand(click.Command):
-    """Click command that refreshes Uvicorn env-var aliases before parsing."""
+    """
+    A custom Click Command class that injects Uvicorn environment aliases before execution.
 
-    def main(self, *args, **kwargs):
+    This class wraps the main command execution to ensure environment variable mirroring
+    happens before Click parses arguments, and cleanup happens after the command finishes.
+    """
+
+    def main(self, *args: Any, **kwargs: Any) -> Any:
+        """
+        Overrides the standard Click main entry point to handle environment mirroring.
+
+        Args:
+            *args (Any): Positional arguments passed to main.
+            **kwargs (Any): Keyword arguments passed to main.
+
+        Returns:
+            Any: The result of the superclass main method.
+        """
         mirrored_keys = _mirror_uvicorn_envvars()
         try:
             return super().main(*args, **kwargs)
         finally:
+            # Ensure the environment is cleaned up even if the command crashes
             _restore_mirrored_envvars(mirrored_keys)
 
 
 def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> None:
-    """Print detailed version output and exit.
-
-    `--version` callback shape and output fields.
     """
+    Callback function for the --version flag to display system and package information.
 
+    Args:
+        ctx (click.Context): The current Click context.
+        param (click.Parameter): The parameter object for the version flag.
+        value (bool): The boolean value indicating if the flag was provided.
+    """
     if not value or ctx.resilient_parsing:
         return
 
@@ -262,7 +295,8 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
     "--proxy-headers/--no-proxy-headers",
     is_flag=True,
     default=True,
-    help="Enable/Disable X-Forwarded-Proto, X-Forwarded-For to populate url scheme and remote address info.",
+    help="Enable/Disable X-Forwarded-Proto, X-Forwarded-For to populate url scheme and "
+    "remote address info.",
 )
 @click.option(
     "--server-header/--no-server-header",
@@ -280,10 +314,9 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
     "--forwarded-allow-ips",
     default=None,
     type=str,
-    help="Comma separated list of IP Addresses, IP Networks, or literals "
-    "(e.g. UNIX Socket path) to trust with proxy headers. Defaults to the "
-    "$FORWARDED_ALLOW_IPS environment variable if available, or '127.0.0.1'. "
-    "The literal '*' means trust everything.",
+    help="Comma separated list of IP Addresses, IP Networks, or literals (e.g. UNIX Socket path) "
+    "to trust with proxy headers. Defaults to the $FORWARDED_ALLOW_IPS environment variable "
+    "if available, or '127.0.0.1'. The literal '*' means trust everything.",
 )
 @click.option(
     "--root-path",
@@ -295,7 +328,8 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
     "--limit-concurrency",
     default=None,
     type=int,
-    help="Maximum number of concurrent connections or tasks to allow, before issuing HTTP 503 responses.",
+    help="Maximum number of concurrent connections or tasks to allow before issuing "
+    "HTTP 503 responses.",
 )
 @click.option(
     "--backlog",
@@ -314,15 +348,15 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
     default=0,
     show_default=True,
     type=int,
-    help="Maximum jitter to add to limit_max_requests."
-    " Staggers worker restarts to avoid all workers restarting simultaneously.",
+    help="Maximum jitter to add to limit_max_requests. Staggers worker restarts to avoid "
+    "all workers restarting simultaneously.",
 )
 @click.option(
     "--timeout-keep-alive",
     default=5,
     show_default=True,
     type=int,
-    help="Close Keep-Alive connections if no new data is received within this timeout (in seconds).",
+    help="Close Keep-Alive connections if no new data is received within this timeout (seconds).",
 )
 @click.option(
     "--timeout-graceful-shutdown",
@@ -406,8 +440,8 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
     default="",
     show_default=True,
     type=str,
-    help="Look for APP in the specified directory, by adding this to the PYTHONPATH."
-    " Defaults to the current working directory.",
+    help="Look for APP in the specified directory, by adding this to the PYTHONPATH. "
+    "Defaults to the current working directory.",
 )
 @click.option(
     "--h11-max-incomplete-event-size",
@@ -473,12 +507,20 @@ def main(
     factory: bool,
     h11_max_incomplete_event_size: int | None,
 ) -> None:
+    """
+    Main entry point for the Palfrey CLI.
+
+    This function assembles the PalfreyConfig based on CLI arguments and starts the server.
+    """
     try:
         resolved_log_config: dict[str, Any] | str | None
         if log_config is None:
+            # Use the default internal logging configuration if none is provided
             resolved_log_config = deepcopy(LOGGING_CONFIG)
         else:
             resolved_log_config = log_config
+
+        # Initialize the configuration object with parsed CLI options
         config = PalfreyConfig(
             app=app,
             host=host,
@@ -530,6 +572,8 @@ def main(
             factory=factory,
             h11_max_incomplete_event_size=h11_max_incomplete_event_size,
         )
+        # Execute the server runtime
         run(config)
     except (AppImportError, ImportError, RuntimeError, ValueError) as exc:
+        # Wrap common startup errors in a Click-friendly exception for clean output
         raise click.ClickException(str(exc)) from exc

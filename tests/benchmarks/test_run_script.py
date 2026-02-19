@@ -1,5 +1,3 @@
-"""Tests for benchmark runner robustness."""
-
 from __future__ import annotations
 
 import errno
@@ -59,7 +57,9 @@ def test_create_connection_with_retry_raises_non_retryable_errno(
     assert exc_info.value.errno == errno.ECONNREFUSED
 
 
-def test_run_http_raises_when_worker_thread_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_http_raises_when_worker_thread_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def fake_http_worker(port: int, requests: int) -> int:
         raise RuntimeError("boom")
 
@@ -69,7 +69,9 @@ def test_run_http_raises_when_worker_thread_fails(monkeypatch: pytest.MonkeyPatc
         bench_run._run_http(port=8000, requests=10, concurrency=2)
 
 
-def test_run_ws_raises_when_worker_thread_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_ws_raises_when_worker_thread_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def fake_ws_worker(port: int, messages: int) -> int:
         raise RuntimeError("boom")
 
@@ -101,13 +103,17 @@ def test_build_command_uses_current_interpreter_when_python_env_is_unset(
     assert command[0] == bench_run.sys.executable
 
 
-def test_build_command_allows_python_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_command_allows_python_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("PYTHON", "/tmp/custom-python")
     command = bench_run._build_command("uvicorn", 8123)
     assert command[0] == "/tmp/custom-python"
 
 
-def test_benchmark_server_skips_disabled_scenarios(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_benchmark_server_skips_disabled_scenarios(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     call_counts = {"http": 0, "ws": 0, "stop": 0}
     fake_process = object()
 

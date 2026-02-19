@@ -10,7 +10,13 @@ import pytest
 
 import palfrey.logging_config as logging_config_module
 from palfrey.config import PalfreyConfig
-from palfrey.logging_config import TRACE_LEVEL, _to_logging_level, configure_logging
+from palfrey.logging_config import (
+    TRACE_LEVEL,
+    AccessFormatter,
+    DefaultFormatter,
+    _to_logging_level,
+    configure_logging,
+)
 
 
 def test_to_logging_level_trace_maps_to_trace_level() -> None:
@@ -43,6 +49,53 @@ def test_configure_logging_with_dict_payload_uses_dictconfig(
 
     configure_logging(PalfreyConfig(app="tests.fixtures.apps:http_app", log_config=payload))
     assert captured["payload"] == payload
+
+
+def test_configure_logging_with_dict_payload_applies_log_level_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "handlers": {"default": {"class": "logging.StreamHandler"}},
+        "root": {"handlers": ["default"], "level": "INFO"},
+    }
+    monkeypatch.setattr(logging_config_module.logging.config, "dictConfig", lambda _value: None)
+    monkeypatch.setattr(
+        logging_config_module.logging.config, "fileConfig", lambda *_args, **_kwargs: None
+    )
+
+    configure_logging(
+        PalfreyConfig(app="tests.fixtures.apps:http_app", log_config=payload, log_level="debug")
+    )
+    assert logging.getLogger("palfrey.error").level == logging.DEBUG
+    assert logging.getLogger("palfrey.access").level == logging.DEBUG
+    assert logging.getLogger("palfrey.asgi").level == logging.DEBUG
+
+
+def test_configure_logging_with_dict_payload_disables_access_logger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "handlers": {"default": {"class": "logging.StreamHandler"}},
+        "root": {"handlers": ["default"], "level": "INFO"},
+        "loggers": {
+            "palfrey.access": {"handlers": ["default"], "level": "INFO", "propagate": True}
+        },
+    }
+    monkeypatch.setattr(logging_config_module.logging.config, "dictConfig", lambda _value: None)
+
+    access_logger = logging.getLogger("palfrey.access")
+    access_logger.handlers = [logging.NullHandler()]
+    access_logger.propagate = True
+
+    configure_logging(
+        PalfreyConfig(app="tests.fixtures.apps:http_app", log_config=payload, access_log=False)
+    )
+    assert access_logger.handlers == []
+    assert access_logger.propagate is False
 
 
 def test_configure_logging_with_json_file_uses_dictconfig(
@@ -119,6 +172,43 @@ def test_configure_logging_basic_config_uses_provided_level(
         captured.update(kwargs)
 
     monkeypatch.setattr(logging_config_module.logging, "basicConfig", fake_basic_config)
-    configure_logging(PalfreyConfig(app="tests.fixtures.apps:http_app", log_level="debug"))
+    configure_logging(
+        PalfreyConfig(app="tests.fixtures.apps:http_app", log_level="debug", log_config=None)
+    )
     assert captured["level"] == logging.DEBUG
     assert captured["force"] is True
+
+
+def test_default_formatter_includes_levelprefix_without_color() -> None:
+    formatter = DefaultFormatter("%(levelprefix)s %(message)s", use_colors=False)
+    record = logging.LogRecord(
+        name="palfrey.error",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="hello",
+        args=(),
+        exc_info=None,
+    )
+    rendered = formatter.format(record)
+    assert rendered.startswith("INFO:")
+    assert rendered.endswith("hello")
+
+
+def test_access_formatter_renders_status_phrase_without_color() -> None:
+    formatter = AccessFormatter(
+        "%(client_addr)s %(request_line)s %(status_code)s", use_colors=False
+    )
+    record = logging.LogRecord(
+        name="palfrey.access",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg='%s - "%s %s HTTP/%s" %s',
+        args=("127.0.0.1", "GET", "/items", "1.1", 200),
+        exc_info=None,
+    )
+    rendered = formatter.format(record)
+    assert "127.0.0.1" in rendered
+    assert "GET /items HTTP/1.1" in rendered
+    assert "200 OK" in rendered

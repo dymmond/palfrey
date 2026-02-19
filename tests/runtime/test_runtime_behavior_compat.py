@@ -65,21 +65,40 @@ def test_run_config_uses_reload_supervisor_for_reload_parent(
     called: list[str] = []
 
     class FakeReloadSupervisor:
-        def __init__(self, config: PalfreyConfig, argv: list[str]) -> None:
+        def __init__(
+            self,
+            config: PalfreyConfig,
+            argv: list[str],
+            pass_fds: tuple[int, ...] = (),
+        ) -> None:
             called.append("init")
+            called.append(f"pass_fds:{len(pass_fds)}")
 
         def run(self) -> None:
             called.append("run")
 
     monkeypatch.setattr(runtime_module, "ReloadSupervisor", FakeReloadSupervisor)
-    monkeypatch.setattr(runtime_module, "build_reload_argv", lambda: ["python", "-m", "palfrey"])
+    monkeypatch.setattr(
+        runtime_module,
+        "build_reload_argv",
+        lambda *, fd=None: ["python", "-m", "palfrey", "--fd", str(fd)],
+    )
     monkeypatch.setattr(runtime_module, "load_env_file", lambda _: None)
     monkeypatch.setattr(runtime_module, "_configure_loop", lambda _: None)
+    monkeypatch.setattr(
+        PalfreyConfig,
+        "bind_socket",
+        lambda self: type(
+            "Sock",
+            (),
+            {"fileno": lambda self: 55, "close": lambda self: None},
+        )(),
+    )
     monkeypatch.delenv("PALFREY_RELOAD_CHILD", raising=False)
 
     config = PalfreyConfig(app="tests.fixtures.apps:http_app", reload=True)
     _run_config(config)
-    assert called == ["init", "run"]
+    assert called == ["init", "pass_fds:1", "run"]
 
 
 def test_run_config_uses_worker_supervisor_for_multi_worker(
@@ -88,8 +107,9 @@ def test_run_config_uses_worker_supervisor_for_multi_worker(
     called: list[str] = []
 
     class FakeWorkerSupervisor:
-        def __init__(self, config: PalfreyConfig) -> None:
+        def __init__(self, config: PalfreyConfig, sockets=None) -> None:
             called.append("init")
+            called.append(f"sockets:{0 if sockets is None else len(sockets)}")
 
         def run(self) -> None:
             called.append("run")
@@ -97,10 +117,19 @@ def test_run_config_uses_worker_supervisor_for_multi_worker(
     monkeypatch.setattr(runtime_module, "WorkerSupervisor", FakeWorkerSupervisor)
     monkeypatch.setattr(runtime_module, "load_env_file", lambda _: None)
     monkeypatch.setattr(runtime_module, "_configure_loop", lambda _: None)
+    monkeypatch.setattr(
+        PalfreyConfig,
+        "bind_socket",
+        lambda self: type(
+            "Sock",
+            (),
+            {"fileno": lambda self: 77, "close": lambda self: None},
+        )(),
+    )
 
     config = PalfreyConfig(app="tests.fixtures.apps:http_app", workers=2)
     _run_config(config)
-    assert called == ["init", "run"]
+    assert called == ["init", "sockets:1", "run"]
 
 
 def test_run_config_removes_uds_socket_on_exit(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:

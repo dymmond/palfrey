@@ -25,6 +25,7 @@ class ReloadSupervisor:
 
     config: PalfreyConfig
     argv: list[str]
+    pass_fds: tuple[int, ...] = ()
     _process: subprocess.Popen[bytes] | subprocess.Popen[str] | None = None
     _stop: bool = False
     _mtimes: dict[Path, float] = field(default_factory=dict)
@@ -56,9 +57,13 @@ class ReloadSupervisor:
     def _spawn(self) -> None:
         env = os.environ.copy()
         env["PALFREY_RELOAD_CHILD"] = "1"
-        self._process = subprocess.Popen(self.argv, env=env)
+        if self.pass_fds and os.name != "nt":
+            self._process = subprocess.Popen(self.argv, env=env, pass_fds=self.pass_fds)
+        else:
+            self._process = subprocess.Popen(self.argv, env=env)
 
     def _restart(self) -> None:
+        self._mtimes.clear()
         self._terminate()
         self._spawn()
 
@@ -66,7 +71,7 @@ class ReloadSupervisor:
         if self._process is None:
             return
         if self._process.poll() is None:
-            self._process.send_signal(signal.SIGINT)
+            self._process.send_signal(signal.SIGTERM)
             try:
                 self._process.wait(timeout=10)
             except subprocess.TimeoutExpired:
@@ -135,7 +140,10 @@ class ReloadSupervisor:
         return changed
 
 
-def build_reload_argv() -> list[str]:
+def build_reload_argv(*, fd: int | None = None) -> list[str]:
     """Build argv used to respawn the current Palfrey CLI command."""
 
-    return [sys.executable, *sys.argv]
+    argv = [sys.executable, *sys.argv]
+    if fd is not None:
+        argv.extend(["--fd", str(fd)])
+    return argv

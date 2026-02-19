@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import errno
 import hashlib
 import json
 import os
@@ -11,6 +12,7 @@ import random
 import socket
 import struct
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -18,6 +20,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = "benchmarks.apps:app"
+RETRYABLE_CONNECT_ERRNOS = {
+    errno.EADDRNOTAVAIL,
+    errno.EADDRINUSE,
+    errno.EAGAIN,
+}
 
 
 @dataclass(slots=True)
@@ -55,11 +62,67 @@ def _wait_for_port(port: int, timeout: float = 20.0) -> None:
     raise TimeoutError(f"Server did not become ready on port {port}")
 
 
+def _create_connection_with_retry(
+    host: str,
+    port: int,
+    *,
+    timeout: float = 5.0,
+    attempts: int = 200,
+    initial_backoff: float = 0.005,
+    max_backoff: float = 0.5,
+) -> socket.socket:
+    """Create a TCP connection with retry for transient local socket exhaustion."""
+
+    backoff = initial_backoff
+    last_error: OSError | None = None
+    for attempt in range(attempts):
+        try:
+            return socket.create_connection((host, port), timeout=timeout)
+        except OSError as exc:
+            last_error = exc
+            if exc.errno not in RETRYABLE_CONNECT_ERRNOS or attempt == attempts - 1:
+                raise
+            time.sleep(backoff * (1.0 + random.random() * 0.1))
+            backoff = min(max_backoff, backoff * 2)
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Unable to create connection and no socket error was captured")
+
+
 def _build_command(server: str, port: int) -> list[str]:
-    python = os.environ.get("PYTHON", "python3")
+    python = os.environ.get("PYTHON", sys.executable)
     if server == "palfrey":
-        return [python, "-m", "palfrey", APP, "--host", "127.0.0.1", "--port", str(port)]
-    return [python, "-m", "uvicorn", APP, "--host", "127.0.0.1", "--port", str(port)]
+        return [
+            python,
+            "-m",
+            "palfrey",
+            APP,
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--no-access-log",
+            "--http",
+            "httptools",
+            "--ws",
+            "websockets",
+        ]
+    return [
+        python,
+        "-m",
+        "uvicorn",
+        APP,
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--no-access-log",
+        "--http",
+        "h11",
+        "--ws",
+        "websockets",
+    ]
 
 
 def _spawn_server(server: str, port: int) -> subprocess.Popen[str]:
@@ -85,28 +148,150 @@ def _stop_server(process: subprocess.Popen[str]) -> None:
 
 
 def _http_worker(port: int, requests: int) -> int:
+    if requests <= 0:
+        return 0
+
+    keep_alive_payload = b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n\r\n"
+    close_payload = b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+
+    conn: socket.socket | None = None
     completed = 0
-    for _ in range(requests):
-        with socket.create_connection(("127.0.0.1", port), timeout=5) as conn:
-            payload = b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
-            conn.sendall(payload)
-            response = conn.recv(4096)
-            if b"200" not in response:
+    try:
+        while completed < requests:
+            is_last = completed == requests - 1
+            if conn is None:
+                conn = _create_connection_with_retry("127.0.0.1", port, timeout=5)
+
+            payload = close_payload if is_last else keep_alive_payload
+            try:
+                conn.sendall(payload)
+                status_code = _read_http_status_code(conn)
+            except (OSError, RuntimeError):
+                conn.close()
+                conn = None
+                continue
+
+            if status_code != 200:
                 raise RuntimeError("HTTP benchmark received non-200 response")
             completed += 1
+            if is_last:
+                conn.close()
+                conn = None
+    finally:
+        if conn is not None:
+            conn.close()
+
     return completed
+
+
+def _read_http_status_code(sock: socket.socket) -> int:
+    """Read one HTTP response and return status code."""
+
+    buffer = bytearray()
+    while b"\r\n\r\n" not in buffer:
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise RuntimeError("Socket closed before HTTP headers were received")
+        buffer.extend(chunk)
+
+    head, _, remainder = bytes(buffer).partition(b"\r\n\r\n")
+    lines = head.split(b"\r\n")
+    if not lines:
+        raise RuntimeError("Empty HTTP response head")
+    status_line = lines[0].decode("latin-1")
+    parts = status_line.split(" ", 2)
+    if len(parts) < 2:
+        raise RuntimeError(f"Malformed HTTP status line: {status_line!r}")
+
+    try:
+        status_code = int(parts[1])
+    except ValueError as exc:
+        raise RuntimeError(f"Malformed HTTP status code: {status_line!r}") from exc
+
+    headers: dict[bytes, bytes] = {}
+    for line in lines[1:]:
+        name, _, value = line.partition(b":")
+        headers[name.strip().lower()] = value.strip()
+
+    transfer_encoding = headers.get(b"transfer-encoding", b"").lower()
+    if b"chunked" in transfer_encoding:
+        _consume_chunked_body(sock, remainder)
+        return status_code
+
+    content_length = headers.get(b"content-length")
+    if content_length is None:
+        return status_code
+
+    try:
+        expected = int(content_length.decode("ascii"))
+    except ValueError as exc:
+        raise RuntimeError("Malformed Content-Length header in benchmark response") from exc
+
+    body = bytearray(remainder)
+    while len(body) < expected:
+        chunk = sock.recv(expected - len(body))
+        if not chunk:
+            raise RuntimeError("Socket closed before full HTTP body was received")
+        body.extend(chunk)
+
+    return status_code
+
+
+def _consume_chunked_body(sock: socket.socket, initial: bytes) -> None:
+    """Consume one chunked HTTP body from socket stream."""
+
+    body = bytearray(initial)
+    index = 0
+
+    def ensure(size: int) -> None:
+        while len(body) < size:
+            chunk = sock.recv(4096)
+            if not chunk:
+                raise RuntimeError("Socket closed before full chunked body was received")
+            body.extend(chunk)
+
+    while True:
+        while True:
+            line_end = body.find(b"\r\n", index)
+            if line_end != -1:
+                break
+            ensure(len(body) + 1)
+
+        chunk_size_line = bytes(body[index:line_end]).split(b";", 1)[0].strip()
+        try:
+            chunk_size = int(chunk_size_line, 16)
+        except ValueError as exc:
+            raise RuntimeError("Malformed chunked response from benchmark target") from exc
+
+        index = line_end + 2
+        ensure(index + chunk_size + 2)
+
+        index += chunk_size
+        if body[index : index + 2] != b"\r\n":
+            raise RuntimeError("Malformed chunk delimiter in benchmark response")
+        index += 2
+
+        if chunk_size == 0:
+            return
 
 
 def _run_http(port: int, requests: int, concurrency: int) -> tuple[int, float]:
     completed_total = 0
     lock = threading.Lock()
+    errors: list[Exception] = []
+    errors_lock = threading.Lock()
 
     per_worker = requests // concurrency
     remainder = requests % concurrency
 
     def worker(work: int) -> None:
         nonlocal completed_total
-        completed = _http_worker(port, work)
+        try:
+            completed = _http_worker(port, work)
+        except Exception as exc:  # noqa: BLE001
+            with errors_lock:
+                errors.append(exc)
+            return
         with lock:
             completed_total += completed
 
@@ -120,6 +305,9 @@ def _run_http(port: int, requests: int, concurrency: int) -> tuple[int, float]:
 
     for thread in threads:
         thread.join()
+
+    if errors:
+        raise RuntimeError(f"HTTP benchmark worker failed: {errors[0]}") from errors[0]
 
     duration = time.perf_counter() - start
     return completed_total, duration
@@ -196,7 +384,7 @@ def _read_exact(sock: socket.socket, size: int) -> bytes:
 
 
 def _ws_worker(port: int, messages: int) -> int:
-    with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+    with _create_connection_with_retry("127.0.0.1", port, timeout=5) as sock:
         _ws_handshake(sock, port)
         completed = 0
         for index in range(messages):
@@ -212,10 +400,17 @@ def _ws_worker(port: int, messages: int) -> int:
 def _run_ws(port: int, clients: int, messages_per_client: int) -> tuple[int, float]:
     completed_total = 0
     lock = threading.Lock()
+    errors: list[Exception] = []
+    errors_lock = threading.Lock()
 
     def worker() -> None:
         nonlocal completed_total
-        completed = _ws_worker(port, messages_per_client)
+        try:
+            completed = _ws_worker(port, messages_per_client)
+        except Exception as exc:  # noqa: BLE001
+            with errors_lock:
+                errors.append(exc)
+            return
         with lock:
             completed_total += completed
 
@@ -228,6 +423,9 @@ def _run_ws(port: int, clients: int, messages_per_client: int) -> tuple[int, flo
 
     for thread in threads:
         thread.join()
+
+    if errors:
+        raise RuntimeError(f"WebSocket benchmark worker failed: {errors[0]}") from errors[0]
 
     duration = time.perf_counter() - start
     return completed_total, duration
@@ -243,26 +441,33 @@ def _benchmark_server(
 ) -> list[ScenarioResult]:
     port = _available_port()
     process = _spawn_server(server, port)
+    results: list[ScenarioResult] = []
     try:
-        http_ops, http_duration = _run_http(port, http_requests, http_concurrency)
-        ws_ops, ws_duration = _run_ws(port, ws_clients, ws_messages)
+        if http_requests > 0:
+            http_ops, http_duration = _run_http(port, http_requests, http_concurrency)
+            results.append(
+                ScenarioResult(
+                    server=server,
+                    scenario="http",
+                    operations=http_ops,
+                    duration_seconds=http_duration,
+                )
+            )
+
+        if ws_clients > 0 and ws_messages > 0:
+            ws_ops, ws_duration = _run_ws(port, ws_clients, ws_messages)
+            results.append(
+                ScenarioResult(
+                    server=server,
+                    scenario="websocket",
+                    operations=ws_ops,
+                    duration_seconds=ws_duration,
+                )
+            )
     finally:
         _stop_server(process)
 
-    return [
-        ScenarioResult(
-            server=server,
-            scenario="http",
-            operations=http_ops,
-            duration_seconds=http_duration,
-        ),
-        ScenarioResult(
-            server=server,
-            scenario="websocket",
-            operations=ws_ops,
-            duration_seconds=ws_duration,
-        ),
-    ]
+    return results
 
 
 def _relative_ratio(results: list[ScenarioResult], scenario: str) -> float | None:
@@ -283,8 +488,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--http-requests", type=int, default=2000)
     parser.add_argument("--http-concurrency", type=int, default=20)
-    parser.add_argument("--ws-clients", type=int, default=20)
-    parser.add_argument("--ws-messages", type=int, default=50)
+    parser.add_argument("--ws-clients", type=int, default=1)
+    parser.add_argument("--ws-messages", type=int, default=1000)
     parser.add_argument("--json-output", type=Path, default=None)
     args = parser.parse_args()
 

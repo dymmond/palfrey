@@ -1,4 +1,36 @@
-# Palfrey Documentation
+# Palfrey
+
+<p align="center">
+  <a href="https://palfrey.dymmond.com"><img src="https://res.cloudinary.com/dymmond/image/upload/v1771522360/Palfrey/Logo/logo_ocxyty.png" alt='Palfrey'></a>
+</p>
+
+<p align="center">
+    <em>Palfrey is a clean-room, high-performance Python ASGI server with source-traceable parity mapping.</em>
+</p>
+
+<p align="center">
+<a href="https://github.com/dymmond/palfrey/actions/workflows/test-suite.yml/badge.svg?event=push&branch=main" target="_blank">
+    <img src="https://github.com/dymmond/palfrey/actions/workflows/test-suite.yml/badge.svg?event=push&branch=main" alt="Test Suite">
+</a>
+
+<a href="https://pypi.org/project/palfrey" target="_blank">
+    <img src="https://img.shields.io/pypi/v/palfrey?color=%2334D058&label=pypi%20package" alt="Package version">
+</a>
+
+<a href="https://pypi.org/project/palfrey" target="_blank">
+    <img src="https://img.shields.io/pypi/pyversions/palfrey.svg?color=%2334D058" alt="Supported Python versions">
+</a>
+</p>
+
+---
+
+**Documentation**: [https://palfrey.dev](https://palfrey.dev) 📚
+
+**Source Code**: [https://github.com/dymmond/palfrey](https://github.com/dymmond/palfrey)
+
+**The official supported version is always the latest released**.
+
+---
 
 Palfrey is an ASGI server for Python applications.
 This documentation is intentionally written for two audiences:

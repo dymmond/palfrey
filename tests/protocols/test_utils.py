@@ -1,5 +1,3 @@
-"""Protocol utility parity tests adapted from Uvicorn patterns."""
-
 from __future__ import annotations
 
 import socket

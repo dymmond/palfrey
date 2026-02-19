@@ -5,18 +5,17 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
-import datetime as dt
 import hashlib
 import importlib
 import struct
 from dataclasses import dataclass
-from email.utils import format_datetime
 from importlib.util import find_spec
 from typing import Any, cast
 from urllib.parse import unquote
 
 from palfrey.acceleration import unmask_websocket_payload
 from palfrey.config import PalfreyConfig
+from palfrey.http_date import cached_http_date_header
 from palfrey.types import ASGIApplication, ClientAddress, Message, Scope, ServerAddress
 
 _WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -39,6 +38,15 @@ def _header_value(headers: list[tuple[str, str]], key: str) -> str | None:
     return None
 
 
+def _header_map(headers: list[tuple[str, str]]) -> dict[str, str]:
+    """Build case-insensitive string header lookup map."""
+
+    mapped: dict[str, str] = {}
+    for name, value in headers:
+        mapped[name.lower()] = value
+    return mapped
+
+
 def build_websocket_scope(
     *,
     target: str,
@@ -47,6 +55,7 @@ def build_websocket_scope(
     server: ServerAddress,
     root_path: str,
     is_tls: bool,
+    protocol_header: str | None = None,
 ) -> Scope:
     """Build an ASGI websocket scope."""
 
@@ -57,7 +66,8 @@ def build_websocket_scope(
     full_path = root_path + decoded_path
     full_raw_path = root_path_bytes + raw_path
 
-    protocol_header = _header_value(headers, "sec-websocket-protocol")
+    if protocol_header is None:
+        protocol_header = _header_value(headers, "sec-websocket-protocol")
     subprotocols = []
     if protocol_header:
         subprotocols = [item.strip() for item in protocol_header.split(",") if item.strip()]
@@ -88,9 +98,32 @@ def _accept_value(client_key: str) -> str:
     return base64.b64encode(digest).decode("ascii")
 
 
+def _build_handshake_response_for_key(
+    client_key: str,
+    *,
+    subprotocol: str | None,
+    extra_headers: list[tuple[bytes, bytes]] | None = None,
+) -> bytes:
+    """Create HTTP 101 response bytes from pre-resolved client key."""
+
+    response_headers = [
+        b"HTTP/1.1 101 Switching Protocols",
+        b"upgrade: websocket",
+        b"connection: Upgrade",
+        b"sec-websocket-accept: " + _accept_value(client_key).encode("ascii"),
+    ]
+
+    if subprotocol:
+        response_headers.append(b"sec-websocket-protocol: " + subprotocol.encode("latin-1"))
+
+    for name, value in extra_headers or []:
+        response_headers.append(name + b": " + value)
+
+    return b"\r\n".join(response_headers) + b"\r\n\r\n"
+
+
 def _http_date_header() -> bytes:
-    now = dt.datetime.now(dt.timezone.utc)
-    return format_datetime(now, usegmt=True).encode("latin-1")
+    return cached_http_date_header()
 
 
 def _default_websocket_headers(config: PalfreyConfig) -> list[tuple[bytes, bytes]]:
@@ -128,20 +161,11 @@ def build_handshake_response(
     if not client_key:
         raise ValueError("Missing Sec-WebSocket-Key")
 
-    response_headers = [
-        b"HTTP/1.1 101 Switching Protocols",
-        b"upgrade: websocket",
-        b"connection: Upgrade",
-        b"sec-websocket-accept: " + _accept_value(client_key).encode("ascii"),
-    ]
-
-    if subprotocol:
-        response_headers.append(b"sec-websocket-protocol: " + subprotocol.encode("latin-1"))
-
-    for name, value in extra_headers or []:
-        response_headers.append(name + b": " + value)
-
-    return b"\r\n".join(response_headers) + b"\r\n\r\n"
+    return _build_handshake_response_for_key(
+        client_key,
+        subprotocol=subprotocol,
+        extra_headers=extra_headers,
+    )
 
 
 def _validate_handshake(headers: list[tuple[str, str]]) -> None:
@@ -160,6 +184,28 @@ def _validate_handshake(headers: list[tuple[str, str]]) -> None:
 
     if len(decoded) != 16:
         raise ValueError("Invalid Sec-WebSocket-Key length")
+
+
+def _validate_handshake_from_map(headers_map: dict[str, str]) -> str:
+    """Validate websocket handshake headers and return client key."""
+
+    version = headers_map.get("sec-websocket-version")
+    if version != "13":
+        raise ValueError("Unsupported websocket version")
+
+    key = headers_map.get("sec-websocket-key")
+    if not key:
+        raise ValueError("Missing Sec-WebSocket-Key")
+
+    try:
+        decoded = base64.b64decode(key.encode("ascii"), validate=True)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError("Invalid Sec-WebSocket-Key") from exc
+
+    if len(decoded) != 16:
+        raise ValueError("Invalid Sec-WebSocket-Key length")
+
+    return key
 
 
 def _encode_frame(opcode: int, payload: bytes = b"") -> bytes:
@@ -210,9 +256,9 @@ async def _read_frame(reader: asyncio.StreamReader, max_size: int) -> WebSocketF
     if not masked:
         raise ValueError("Client websocket frames must be masked")
 
-    masked_payload = await reader.readexactly(4 + length)
-    masking_key = masked_payload[:4]
-    payload = unmask_websocket_payload(masked_payload[4:], masking_key)
+    masking_key = await reader.readexactly(4)
+    masked_payload = await reader.readexactly(length)
+    payload = unmask_websocket_payload(masked_payload, masking_key)
 
     return WebSocketFrame(fin=fin, opcode=opcode, payload=payload)
 
@@ -227,8 +273,9 @@ def _try_parse_frame_from_buffer(
     if len(buffer) < 2:
         return None
 
-    first = buffer[0]
-    second = buffer[1]
+    view = memoryview(buffer)
+    first = view[0]
+    second = view[1]
     fin = (first & 0x80) != 0
     opcode = first & 0x0F
 
@@ -239,12 +286,12 @@ def _try_parse_frame_from_buffer(
     if payload_length == 126:
         if len(buffer) < offset + 2:
             return None
-        payload_length = struct.unpack("!H", bytes(buffer[offset : offset + 2]))[0]
+        payload_length = struct.unpack_from("!H", view, offset)[0]
         offset += 2
     elif payload_length == 127:
         if len(buffer) < offset + 8:
             return None
-        payload_length = struct.unpack("!Q", bytes(buffer[offset : offset + 8]))[0]
+        payload_length = struct.unpack_from("!Q", view, offset)[0]
         offset += 8
 
     if payload_length > max_size:
@@ -257,8 +304,8 @@ def _try_parse_frame_from_buffer(
     if len(buffer) < total_size:
         return None
 
-    masking_key = bytes(buffer[offset : offset + 4])
-    masked_payload = bytes(buffer[offset + 4 : total_size])
+    masking_key = bytes(view[offset : offset + 4])
+    masked_payload = view[offset + 4 : total_size]
     payload = unmask_websocket_payload(masked_payload, masking_key)
     frame = WebSocketFrame(fin=fin, opcode=opcode, payload=payload)
     return frame, total_size
@@ -288,8 +335,18 @@ async def _write_bad_websocket_request(writer: asyncio.StreamWriter) -> None:
     await writer.drain()
 
 
-async def _flush_websockets_output(connection: Any, writer: asyncio.StreamWriter) -> None:
-    """Flush pending bytes generated by websockets protocol engines."""
+async def _flush_websockets_output(
+    connection: Any,
+    writer: asyncio.StreamWriter,
+    *,
+    force: bool = False,
+    high_watermark_bytes: int = 262_144,
+) -> None:
+    """Flush pending bytes generated by websockets protocol engines.
+
+    Drain calls are expensive on local high-throughput loops, so we only
+    apply backpressure when requested or when write buffers cross a threshold.
+    """
 
     output = connection.data_to_send()
     if isinstance(output, (bytes, bytearray)):
@@ -298,6 +355,17 @@ async def _flush_websockets_output(connection: Any, writer: asyncio.StreamWriter
         payload = b"".join(cast("list[bytes]", output))
     if payload:
         writer.write(payload)
+
+    if force:
+        await writer.drain()
+        return
+
+    transport = getattr(writer, "transport", None) or getattr(writer, "_transport", None)
+    if transport is None:
+        return
+
+    get_size = getattr(transport, "get_write_buffer_size", None)
+    if callable(get_size) and int(get_size()) >= high_watermark_bytes:
         await writer.drain()
 
 
@@ -312,11 +380,13 @@ async def _handle_websocket_core(
     client: ClientAddress,
     server: ServerAddress,
     is_tls: bool,
+    connect_event_first: bool = False,
 ) -> None:
     """Run the clean-room Palfrey WebSocket backend."""
 
+    headers_map = _header_map(headers)
     try:
-        _validate_handshake(headers)
+        client_key = _validate_handshake_from_map(headers_map)
     except ValueError:
         await _write_bad_websocket_request(writer)
         return
@@ -328,6 +398,7 @@ async def _handle_websocket_core(
         server=server,
         root_path=config.root_path,
         is_tls=is_tls,
+        protocol_header=headers_map.get("sec-websocket-protocol"),
     )
 
     accepted = False
@@ -341,6 +412,7 @@ async def _handle_websocket_core(
     fragmented_opcode: int | None = None
     fragmented_chunks: list[bytes] = []
     read_buffer = bytearray()
+    connect_sent = not connect_event_first
     transport = getattr(writer, "transport", None) or getattr(writer, "_transport", None)
     high_watermark_bytes = 262_144
 
@@ -355,7 +427,11 @@ async def _handle_websocket_core(
             await writer.drain()
 
     async def receive() -> Message:
-        nonlocal closed, close_disconnect_code, fragmented_opcode
+        nonlocal closed, close_disconnect_code, fragmented_opcode, connect_sent
+
+        if not connect_sent:
+            connect_sent = True
+            return {"type": "websocket.connect"}
 
         while True:
             if closed:
@@ -440,8 +516,8 @@ async def _handle_websocket_core(
                 return
 
             accept_subprotocol = message.get("subprotocol")
-            response = build_handshake_response(
-                headers,
+            response = _build_handshake_response_for_key(
+                client_key,
                 subprotocol=accept_subprotocol,
                 extra_headers=_merge_websocket_accept_headers(config, message.get("headers")),
             )
@@ -554,6 +630,21 @@ async def _handle_websocket_websockets_backend(
     This backend uses the ``websockets`` asyncio connection implementation
     (distinct from the clean-room frame engine and wsproto backend).
     """
+
+    if config.loaded:
+        await _handle_websocket_core(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=headers,
+            target=target,
+            client=client,
+            server=server,
+            is_tls=is_tls,
+            connect_event_first=True,
+        )
+        return
 
     if find_spec("websockets") is None:
         raise RuntimeError("WebSocket mode 'websockets' requires the 'websockets' package.")
@@ -924,7 +1015,7 @@ async def _handle_websocket_websockets_sansio_backend(
     upgrade_response = conn.accept(request_event)
     if int(getattr(upgrade_response, "status_code", 500)) != 101:
         conn.send_response(upgrade_response)
-        await _flush_websockets_output(conn, writer)
+        await _flush_websockets_output(conn, writer, force=True)
         return
 
     scope = build_websocket_scope(
@@ -951,7 +1042,7 @@ async def _handle_websocket_websockets_sansio_backend(
             return
         response = conn.reject(500, "Internal Server Error")
         conn.send_response(response)
-        await _flush_websockets_output(conn, writer)
+        await _flush_websockets_output(conn, writer, force=True)
         close_sent = True
         handshake_complete = True
 
@@ -971,7 +1062,7 @@ async def _handle_websocket_websockets_sansio_backend(
             if reason:
                 message["reason"] = reason
             queue.put_nowait(message)
-            await _flush_websockets_output(conn, writer)
+            await _flush_websockets_output(conn, writer, force=True)
             close_sent = True
             return
 
@@ -979,7 +1070,7 @@ async def _handle_websocket_websockets_sansio_backend(
             if fragmented_type is None:
                 queue.put_nowait({"type": "websocket.disconnect", "code": 1002})
                 conn.send_close(1002, "unexpected continuation frame")
-                await _flush_websockets_output(conn, writer)
+                await _flush_websockets_output(conn, writer, force=True)
                 close_sent = True
                 return
             fragmented_payload.extend(bytes(frame.data))
@@ -995,7 +1086,7 @@ async def _handle_websocket_websockets_sansio_backend(
                 except UnicodeDecodeError:
                     queue.put_nowait({"type": "websocket.disconnect", "code": 1007})
                     conn.send_close(1007, "invalid UTF-8 payload")
-                    await _flush_websockets_output(conn, writer)
+                    await _flush_websockets_output(conn, writer, force=True)
                     close_sent = True
             else:
                 queue.put_nowait({"type": "websocket.receive", "bytes": payload})
@@ -1009,7 +1100,7 @@ async def _handle_websocket_websockets_sansio_backend(
                 except UnicodeDecodeError:
                     queue.put_nowait({"type": "websocket.disconnect", "code": 1007})
                     conn.send_close(1007, "invalid UTF-8 payload")
-                    await _flush_websockets_output(conn, writer)
+                    await _flush_websockets_output(conn, writer, force=True)
                     close_sent = True
                 return
             fragmented_type = "text"
@@ -1027,7 +1118,7 @@ async def _handle_websocket_websockets_sansio_backend(
 
         queue.put_nowait({"type": "websocket.disconnect", "code": 1002})
         conn.send_close(1002, "unsupported frame opcode")
-        await _flush_websockets_output(conn, writer)
+        await _flush_websockets_output(conn, writer, force=True)
         close_sent = True
 
     async def pump_reader() -> None:
@@ -1060,7 +1151,7 @@ async def _handle_websocket_websockets_sansio_backend(
                 if reason:
                     message["reason"] = reason
                 queue.put_nowait(message)
-                await _flush_websockets_output(conn, writer)
+                await _flush_websockets_output(conn, writer, force=True)
                 close_sent = True
                 return
 
@@ -1091,7 +1182,7 @@ async def _handle_websocket_websockets_sansio_backend(
                     accept_headers.append(("Sec-WebSocket-Protocol", str(subprotocol)))
                 upgrade_response.headers.update(accept_headers)
                 conn.send_response(upgrade_response)
-                await _flush_websockets_output(conn, writer)
+                await _flush_websockets_output(conn, writer, force=True)
                 handshake_complete = True
                 return
 
@@ -1099,7 +1190,7 @@ async def _handle_websocket_websockets_sansio_backend(
                 queue.put_nowait({"type": "websocket.disconnect", "code": 1006})
                 reject_response = conn.reject(403, "")
                 conn.send_response(reject_response)
-                await _flush_websockets_output(conn, writer)
+                await _flush_websockets_output(conn, writer, force=True)
                 handshake_complete = True
                 close_sent = True
                 return
@@ -1141,7 +1232,7 @@ async def _handle_websocket_websockets_sansio_backend(
                         disconnect_message["reason"] = reason
                     queue.put_nowait(disconnect_message)
                     conn.send_close(code, reason)
-                    await _flush_websockets_output(conn, writer)
+                    await _flush_websockets_output(conn, writer, force=True)
                     close_sent = True
                     return
 
@@ -1174,7 +1265,7 @@ async def _handle_websocket_websockets_sansio_backend(
             reject_response.headers.update(response_headers)
             queue.put_nowait({"type": "websocket.disconnect", "code": 1006})
             conn.send_response(reject_response)
-            await _flush_websockets_output(conn, writer)
+            await _flush_websockets_output(conn, writer, force=True)
             close_sent = True
             return
 
@@ -1200,7 +1291,7 @@ async def _handle_websocket_websockets_sansio_backend(
 
     if app_task in done and not close_sent and handshake_complete:
         conn.send_close(1000, "")
-        await _flush_websockets_output(conn, writer)
+        await _flush_websockets_output(conn, writer, force=True)
 
     for task in pending:
         task.cancel()
@@ -1561,20 +1652,6 @@ async def handle_websocket(
         return
 
     if selected_ws == "none":
-        await _handle_websocket_core(
-            app,
-            config,
-            reader=reader,
-            writer=writer,
-            headers=headers,
-            target=target,
-            client=client,
-            server=server,
-            is_tls=is_tls,
-        )
-        return
-
-    if selected_ws == "websockets" and config.ws == "auto":
         await _handle_websocket_core(
             app,
             config,

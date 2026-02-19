@@ -443,6 +443,47 @@ def test_handle_websocket_dispatches_websockets_backend(monkeypatch: pytest.Monk
     assert called == ["websockets"]
 
 
+def test_handle_websocket_auto_dispatches_websockets_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="auto")
+    writer = CaptureWriter()
+    called: list[str] = []
+    core_called: list[str] = []
+
+    monkeypatch.setattr(PalfreyConfig, "effective_ws", property(lambda self: "websockets"))
+
+    async def fake_backend(*args, **kwargs):
+        called.append("websockets")
+
+    async def fake_core(*args, **kwargs):
+        core_called.append("core")
+
+    monkeypatch.setattr(websocket_module, "_handle_websocket_websockets_backend", fake_backend)
+    monkeypatch.setattr(websocket_module, "_handle_websocket_core", fake_core)
+
+    async def app(scope, receive, send):
+        return None
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1),
+            server=("127.0.0.1", 2),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+    assert called == ["websockets"]
+    assert core_called == []
+
+
 def test_wsproto_backend_requires_wsproto_dependency(monkeypatch: pytest.MonkeyPatch) -> None:
     config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="wsproto")
     writer = CaptureWriter()

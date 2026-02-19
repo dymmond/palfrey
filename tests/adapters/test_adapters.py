@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import sys
 
 import pytest
@@ -101,7 +102,17 @@ def test_wsgi_adapter_translates_scope_and_streams_response() -> None:
     }
     assert sent_messages[1] == {
         "type": "http.response.body",
-        "body": b"echo:hello world",
+        "body": b"echo:",
+        "more_body": True,
+    }
+    assert sent_messages[2] == {
+        "type": "http.response.body",
+        "body": b"hello world",
+        "more_body": True,
+    }
+    assert sent_messages[3] == {
+        "type": "http.response.body",
+        "body": b"",
         "more_body": False,
     }
     assert captured_environ["REQUEST_METHOD"] == "POST"
@@ -112,7 +123,7 @@ def test_wsgi_adapter_translates_scope_and_streams_response() -> None:
     assert captured_environ["SERVER_NAME"] == "127.0.0.1"
     assert captured_environ["SERVER_PORT"] == 8000
     assert captured_environ["HTTP_X_TOKEN"] == "abc"
-    assert captured_environ["CONTENT_LENGTH"] == "11"
+    assert "CONTENT_LENGTH" not in captured_environ
     assert captured_environ["wsgi.errors"] is sys.stdout
     assert captured_environ["wsgi.multiprocess"] is True
 
@@ -155,3 +166,65 @@ def test_wsgi_adapter_raises_exc_info_after_response() -> None:
 
     with pytest.raises(RuntimeError, match="wsgi-failure"):
         asyncio.run(WSGIAdapter(wsgi_app)(_http_scope(), receive, send))
+
+
+def test_wsgi_adapter_closes_iterable_result() -> None:
+    closed: list[bool] = []
+
+    class Result:
+        def __iter__(self):
+            yield b"chunk"
+
+        def close(self) -> None:
+            closed.append(True)
+
+    def wsgi_app(environ, start_response):
+        start_response("200 OK", [("content-type", "text/plain")])
+        return Result()
+
+    sent: list[dict[str, object]] = []
+
+    async def receive() -> dict[str, object]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: dict[str, object]) -> None:
+        sent.append(message)
+
+    asyncio.run(WSGIAdapter(wsgi_app)(_http_scope(), receive, send))
+    assert closed == [True]
+
+
+def test_wsgi_adapter_propagates_wsgi_exception() -> None:
+    def wsgi_app(environ, start_response):
+        raise RuntimeError("Something went wrong")
+
+    async def receive() -> dict[str, object]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(_message: dict[str, object]) -> None:
+        return None
+
+    with pytest.raises(RuntimeError, match="Something went wrong"):
+        asyncio.run(WSGIAdapter(wsgi_app)(_http_scope(), receive, send))
+
+
+def test_build_wsgi_environ_encoding_parity() -> None:
+    scope: dict[str, object] = {
+        "asgi": {"version": "3.0", "spec_version": "2.0"},
+        "scheme": "http",
+        "raw_path": b"/\xe6\x96\x87%2Fall",
+        "type": "http",
+        "http_version": "1.1",
+        "method": "GET",
+        "path": "/文/all",
+        "root_path": "/文",
+        "client": None,
+        "server": None,
+        "query_string": b"a=123&b=456",
+        "headers": [(b"key", b"value1"), (b"key", b"value2")],
+        "extensions": {},
+    }
+    environ = WSGIAdapter._build_wsgi_environ(scope, io.BytesIO(b"").read())
+    assert environ["SCRIPT_NAME"] == "/文".encode().decode("latin-1")
+    assert environ["PATH_INFO"] == b"/all".decode("latin-1")
+    assert environ["HTTP_KEY"] == "value1,value2"

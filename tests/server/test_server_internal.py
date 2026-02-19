@@ -11,7 +11,7 @@ import palfrey.config as config_module
 import palfrey.server as server_module
 from palfrey.config import PalfreyConfig
 from palfrey.importer import ResolvedApp
-from palfrey.protocols.http import HTTPRequest, HTTPResponse
+from palfrey.protocols.http import HTTPRequest
 from palfrey.server import PalfreyServer
 
 
@@ -98,6 +98,16 @@ def test_request_slot_unlimited_is_always_available() -> None:
     asyncio.run(scenario())
 
 
+def test_is_concurrency_limit_exceeded_matches_uvicorn_semantics() -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", limit_concurrency=2))
+    server.server_state.connections = {object()}  # type: ignore[assignment]
+    server.server_state.tasks = {object()}  # type: ignore[assignment]
+    assert server._is_concurrency_limit_exceeded() is False
+
+    server.server_state.connections = {object(), object()}  # type: ignore[assignment]
+    assert server._is_concurrency_limit_exceeded() is True
+
+
 def test_service_unavailable_response_contains_default_body() -> None:
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
     response = server._service_unavailable_response()
@@ -173,7 +183,7 @@ def test_build_ssl_context_configures_certificate_settings(monkeypatch) -> None:
         def __init__(self, version: int) -> None:
             captured["version"] = version
 
-        def load_cert_chain(self, certfile: str, keyfile: str | None, password: str | None) -> None:
+        def load_cert_chain(self, certfile: str, keyfile: str | None, password) -> None:
             captured["cert"] = certfile
             captured["key"] = keyfile
             captured["password"] = password
@@ -202,7 +212,8 @@ def test_build_ssl_context_configures_certificate_settings(monkeypatch) -> None:
     assert isinstance(context, FakeContext)
     assert captured["cert"] == "cert.pem"
     assert captured["key"] == "key.pem"
-    assert captured["password"] == "secret"
+    assert callable(captured["password"])
+    assert captured["password"]() == "secret"
     assert captured["ca"] == "ca.pem"
     assert captured["ciphers"] == "ECDHE"
     assert context.verify_mode == ssl.CERT_REQUIRED
@@ -276,6 +287,50 @@ def test_handle_connection_switches_to_websocket_upgrade(monkeypatch) -> None:
     assert writer.closed is True
 
 
+def test_handle_connection_uses_custom_ws_protocol_class(monkeypatch) -> None:
+    class DummyWSProtocol(asyncio.Protocol):
+        pass
+
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", ws="websockets"))
+    server._resolved_app = _resolved_app()
+    server.config.ws_protocol_class = DummyWSProtocol
+    writer = DummyWriter()
+    request = HTTPRequest(
+        method="GET",
+        target="/ws",
+        http_version="HTTP/1.1",
+        headers=[("upgrade", "websocket"), ("connection", "Upgrade")],
+        body=b"",
+    )
+    calls = {"count": 0}
+
+    async def fake_read_request(reader, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return request
+        return None
+
+    custom_ws_calls: list[str] = []
+    regular_ws_calls: list[str] = []
+
+    async def fake_run_custom_ws_protocol(self, *, request, reader, writer):
+        custom_ws_calls.append(request.target)
+
+    async def fake_handle_websocket(*args, **kwargs):
+        regular_ws_calls.append("ws")
+
+    monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
+    monkeypatch.setattr(server_module, "is_websocket_upgrade", lambda req: True)
+    monkeypatch.setattr(PalfreyServer, "_run_custom_ws_protocol", fake_run_custom_ws_protocol)
+    monkeypatch.setattr(server_module, "handle_websocket", fake_handle_websocket)
+
+    asyncio.run(server._handle_connection(object(), writer))
+
+    assert custom_ws_calls == ["/ws"]
+    assert regular_ws_calls == []
+    assert writer.closed is True
+
+
 def test_handle_connection_returns_400_for_upgrade_when_ws_backend_disabled(monkeypatch) -> None:
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", ws="none"))
     server._resolved_app = _resolved_app()
@@ -319,7 +374,14 @@ def test_handle_connection_sends_100_continue_and_respects_max_requests(monkeypa
         timeout_keep_alive=1,
     )
     server = PalfreyServer(config)
-    server._resolved_app = _resolved_app()
+
+    async def app(scope, receive, send):
+        message = await receive()
+        assert message == {"type": "http.request", "body": b"hello", "more_body": False}
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+
+    server._resolved_app = ResolvedApp(app=app, interface="asgi3")
     writer = DummyWriter()
     request = HTTPRequest(
         method="POST",
@@ -336,15 +398,7 @@ def test_handle_connection_sends_100_continue_and_respects_max_requests(monkeypa
             return request
         return None
 
-    async def fake_handle_http_request(
-        self: PalfreyServer, request: HTTPRequest, context
-    ) -> HTTPResponse:
-        return HTTPResponse(
-            status=200, headers=[(b"content-type", b"text/plain")], body_chunks=[b"ok"]
-        )
-
     monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
-    monkeypatch.setattr(PalfreyServer, "_handle_http_request", fake_handle_http_request)
     monkeypatch.setattr(server_module, "should_keep_alive", lambda request, response: False)
 
     asyncio.run(server._handle_connection(object(), writer))
@@ -357,6 +411,90 @@ def test_handle_connection_sends_100_continue_and_respects_max_requests(monkeypa
 
 def test_handle_connection_returns_503_when_concurrency_limit_reached(monkeypatch) -> None:
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", limit_concurrency=0))
+    server._resolved_app = _resolved_app()
+    writer = DummyWriter()
+    request = HTTPRequest(
+        method="GET",
+        target="/",
+        http_version="HTTP/1.1",
+        headers=[],
+        body=b"",
+    )
+    calls = {"count": 0}
+
+    async def fake_read_request(reader, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return request
+        return None
+
+    monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
+
+    asyncio.run(server._handle_connection(object(), writer))
+
+    payload = b"".join(writer.writes)
+    assert b"503 Service Unavailable" in payload
+
+
+def test_run_custom_ws_protocol_forwards_handshake_and_stream_bytes() -> None:
+    events: list[tuple[str, bytes | None]] = []
+    transport = object()
+
+    class DummyWSProtocol(asyncio.Protocol):
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+
+        def connection_made(self, received_transport) -> None:
+            assert received_transport is transport
+
+        def data_received(self, data: bytes) -> None:
+            events.append(("data", data))
+
+        def eof_received(self):
+            events.append(("eof", None))
+            return None
+
+        def connection_lost(self, exc: Exception | None) -> None:
+            events.append(("lost", None))
+
+    class DummyProtocolWriter(DummyWriter):
+        def __init__(self) -> None:
+            super().__init__()
+            self.transport = transport
+
+        def is_closing(self) -> bool:
+            return False
+
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", ws="websockets"))
+    server.config.ws_protocol_class = DummyWSProtocol
+    writer = DummyProtocolWriter()
+    request = HTTPRequest(
+        method="GET",
+        target="/ws?x=1",
+        http_version="HTTP/1.1",
+        headers=[("upgrade", "websocket"), ("connection", "Upgrade")],
+        body=b"",
+    )
+
+    async def scenario() -> None:
+        reader = asyncio.StreamReader()
+        reader.feed_data(b"frame-bytes")
+        reader.feed_eof()
+        await server._run_custom_ws_protocol(request=request, reader=reader, writer=writer)
+
+    asyncio.run(scenario())
+
+    assert events[0][0] == "data"
+    assert events[0][1] is not None
+    assert b"GET /ws?x=1 HTTP/1.1\r\n" in events[0][1]
+    assert b"upgrade: websocket\r\n" in events[0][1].lower()
+    assert events[1] == ("data", b"frame-bytes")
+    assert events[2] == ("eof", None)
+    assert events[3] == ("lost", None)
+
+
+def test_handle_connection_returns_503_when_connection_count_reaches_limit(monkeypatch) -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", limit_concurrency=1))
     server._resolved_app = _resolved_app()
     writer = DummyWriter()
     request = HTTPRequest(

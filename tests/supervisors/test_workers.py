@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import socket
 from dataclasses import dataclass
+from typing import cast
 
 import pytest
 
@@ -126,7 +128,35 @@ def test_spawn_worker_creates_process_and_starts_it(monkeypatch: pytest.MonkeyPa
     spawned = supervisor._workers[0]
     assert spawned.pid == 321
     assert spawned.started is True
-    assert spawned.args == (config,)
+    assert spawned.args == (config, None)
+
+
+def test_spawn_worker_passes_parent_sockets_to_worker_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:http_app", workers=1)
+    marker_socket = object()
+    supervisor = WorkerSupervisor(config=config, sockets=[cast(socket.socket, marker_socket)])
+    captured: dict[str, object] = {}
+
+    class FakeWorkerProcess:
+        def __init__(self, config, target, *, sockets=None) -> None:
+            captured["config"] = config
+            captured["target"] = target
+            captured["sockets"] = sockets
+            self.pid = 1
+
+        def start(self) -> None:
+            captured["started"] = True
+
+    monkeypatch.setattr(workers_module, "WorkerProcess", FakeWorkerProcess)
+
+    supervisor._spawn_worker()
+
+    assert captured["config"] is config
+    assert captured["target"] == supervisor._worker_target
+    assert captured["sockets"] == [marker_socket]
+    assert captured["started"] is True
 
 
 def test_worker_entry_bootstraps_server(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -138,13 +168,31 @@ def test_worker_entry_bootstraps_server(monkeypatch: pytest.MonkeyPatch) -> None
             assert server_config is config
             calls.append("init")
 
-        def run(self) -> None:
+        def run(self, sockets=None) -> None:
+            assert sockets is None
             calls.append("run")
 
     monkeypatch.setattr(workers_module, "PalfreyServer", FakeServer)
 
     _worker_entry(config)
     assert calls == ["init", "run"]
+
+
+def test_worker_entry_passes_parent_sockets_to_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:http_app")
+    calls: list[object] = []
+
+    class FakeServer:
+        def __init__(self, server_config: PalfreyConfig) -> None:
+            assert server_config is config
+
+        def run(self, sockets=None) -> None:
+            calls.append(sockets)
+
+    monkeypatch.setattr(workers_module, "PalfreyServer", FakeServer)
+    marker = [object()]
+    _worker_entry(config, marker)
+    assert calls == [marker]
 
 
 def test_handle_signal_sets_stopping_flag() -> None:

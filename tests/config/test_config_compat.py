@@ -1,5 +1,3 @@
-"""Additional config parity tests inspired by Uvicorn config coverage."""
-
 from __future__ import annotations
 
 import ssl
@@ -10,7 +8,9 @@ import pytest
 from palfrey.config import PalfreyConfig
 
 
-def test_config_default_workers_is_one_when_env_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_config_default_workers_is_one_when_env_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("WEB_CONCURRENCY", raising=False)
     config = PalfreyConfig(app="tests.fixtures.apps:http_app")
     assert config.workers == 1
@@ -22,7 +22,9 @@ def test_config_workers_parses_web_concurrency(monkeypatch: pytest.MonkeyPatch) 
     assert config.workers == 4
 
 
-def test_config_forwarded_allow_ips_uses_explicit_value(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_config_forwarded_allow_ips_uses_explicit_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("FORWARDED_ALLOW_IPS", "127.0.0.1")
     config = PalfreyConfig(
         app="tests.fixtures.apps:http_app",

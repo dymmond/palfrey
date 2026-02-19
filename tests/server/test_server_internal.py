@@ -98,6 +98,16 @@ def test_request_slot_unlimited_is_always_available() -> None:
     asyncio.run(scenario())
 
 
+def test_is_concurrency_limit_exceeded_matches_uvicorn_semantics() -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", limit_concurrency=2))
+    server.server_state.connections = {object()}  # type: ignore[assignment]
+    server.server_state.tasks = {object()}  # type: ignore[assignment]
+    assert server._is_concurrency_limit_exceeded() is False
+
+    server.server_state.connections = {object(), object()}  # type: ignore[assignment]
+    assert server._is_concurrency_limit_exceeded() is True
+
+
 def test_service_unavailable_response_contains_default_body() -> None:
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
     response = server._service_unavailable_response()
@@ -357,6 +367,33 @@ def test_handle_connection_sends_100_continue_and_respects_max_requests(monkeypa
 
 def test_handle_connection_returns_503_when_concurrency_limit_reached(monkeypatch) -> None:
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", limit_concurrency=0))
+    server._resolved_app = _resolved_app()
+    writer = DummyWriter()
+    request = HTTPRequest(
+        method="GET",
+        target="/",
+        http_version="HTTP/1.1",
+        headers=[],
+        body=b"",
+    )
+    calls = {"count": 0}
+
+    async def fake_read_request(reader, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return request
+        return None
+
+    monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
+
+    asyncio.run(server._handle_connection(object(), writer))
+
+    payload = b"".join(writer.writes)
+    assert b"503 Service Unavailable" in payload
+
+
+def test_handle_connection_returns_503_when_connection_count_reaches_limit(monkeypatch) -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", limit_concurrency=1))
     server._resolved_app = _resolved_app()
     writer = DummyWriter()
     request = HTTPRequest(

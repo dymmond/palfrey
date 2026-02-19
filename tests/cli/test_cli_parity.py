@@ -35,6 +35,35 @@ def test_cli_reads_app_from_uvicorn_environment(monkeypatch) -> None:
     assert captured[0].app == "tests.fixtures.apps:http_app"
 
 
+def test_cli_reads_uvicorn_prefixed_host_and_port(monkeypatch) -> None:
+    captured, runner = _capture_config(monkeypatch)
+    result = runner.invoke(
+        main,
+        env={
+            "UVICORN_APP": "tests.fixtures.apps:http_app",
+            "UVICORN_HOST": "0.0.0.0",
+            "UVICORN_PORT": "9001",
+        },
+    )
+    assert result.exit_code == 0
+    assert captured[0].host == "0.0.0.0"
+    assert captured[0].port == 9001
+
+
+def test_cli_prefers_palfrey_envvars_over_uvicorn_aliases(monkeypatch) -> None:
+    captured, runner = _capture_config(monkeypatch)
+    result = runner.invoke(
+        main,
+        env={
+            "PALFREY_APP": "tests.fixtures.apps:http_app",
+            "PALFREY_HOST": "127.0.0.9",
+            "UVICORN_HOST": "0.0.0.0",
+        },
+    )
+    assert result.exit_code == 0
+    assert captured[0].host == "127.0.0.9"
+
+
 def test_cli_argument_overrides_environment_app(monkeypatch) -> None:
     captured, runner = _capture_config(monkeypatch)
     result = runner.invoke(

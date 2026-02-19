@@ -10,7 +10,13 @@ import pytest
 
 import palfrey.logging_config as logging_config_module
 from palfrey.config import PalfreyConfig
-from palfrey.logging_config import TRACE_LEVEL, _to_logging_level, configure_logging
+from palfrey.logging_config import (
+    TRACE_LEVEL,
+    AccessFormatter,
+    DefaultFormatter,
+    _to_logging_level,
+    configure_logging,
+)
 
 
 def test_to_logging_level_trace_maps_to_trace_level() -> None:
@@ -122,3 +128,38 @@ def test_configure_logging_basic_config_uses_provided_level(
     configure_logging(PalfreyConfig(app="tests.fixtures.apps:http_app", log_level="debug"))
     assert captured["level"] == logging.DEBUG
     assert captured["force"] is True
+
+
+def test_default_formatter_includes_levelprefix_without_color() -> None:
+    formatter = DefaultFormatter("%(levelprefix)s %(message)s", use_colors=False)
+    record = logging.LogRecord(
+        name="palfrey.error",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="hello",
+        args=(),
+        exc_info=None,
+    )
+    rendered = formatter.format(record)
+    assert rendered.startswith("INFO:")
+    assert rendered.endswith("hello")
+
+
+def test_access_formatter_renders_status_phrase_without_color() -> None:
+    formatter = AccessFormatter(
+        "%(client_addr)s %(request_line)s %(status_code)s", use_colors=False
+    )
+    record = logging.LogRecord(
+        name="palfrey.access",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg='%s - "%s %s HTTP/%s" %s',
+        args=("127.0.0.1", "GET", "/items", "1.1", 200),
+        exc_info=None,
+    )
+    rendered = formatter.format(record)
+    assert "127.0.0.1" in rendered
+    assert "GET /items HTTP/1.1" in rendered
+    assert "200 OK" in rendered

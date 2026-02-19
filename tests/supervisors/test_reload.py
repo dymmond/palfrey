@@ -160,7 +160,7 @@ def test_terminate_kills_process_after_timeout(monkeypatch: pytest.MonkeyPatch) 
     supervisor._process = process  # type: ignore[assignment]
 
     supervisor._terminate()
-    assert process.signals == [signal.SIGINT]
+    assert process.signals == [signal.SIGTERM]
     assert process.killed is True
 
 
@@ -174,6 +174,19 @@ def test_restart_terminates_then_spawns(monkeypatch: pytest.MonkeyPatch) -> None
 
     supervisor._restart()
     assert calls == ["terminate", "spawn"]
+
+
+def test_restart_clears_tracked_mtimes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:http_app", reload=True)
+    supervisor = ReloadSupervisor(config=config, argv=["python", "-m", "palfrey"])
+    tracked = tmp_path / "tracked.py"
+    supervisor._mtimes[tracked] = 1.0
+
+    monkeypatch.setattr(ReloadSupervisor, "_terminate", lambda self: None)
+    monkeypatch.setattr(ReloadSupervisor, "_spawn", lambda self: None)
+
+    supervisor._restart()
+    assert supervisor._mtimes == {}
 
 
 def test_run_restarts_when_changed_paths_detected(monkeypatch: pytest.MonkeyPatch) -> None:

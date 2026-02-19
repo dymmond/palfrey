@@ -59,6 +59,7 @@ class ReloadSupervisor:
         self._process = subprocess.Popen(self.argv, env=env)
 
     def _restart(self) -> None:
+        self._mtimes.clear()
         self._terminate()
         self._spawn()
 
@@ -66,7 +67,7 @@ class ReloadSupervisor:
         if self._process is None:
             return
         if self._process.poll() is None:
-            self._process.send_signal(signal.SIGINT)
+            self._process.send_signal(signal.SIGTERM)
             try:
                 self._process.wait(timeout=10)
             except subprocess.TimeoutExpired:

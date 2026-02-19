@@ -391,11 +391,23 @@ async def run_http_asgi(
 def append_default_response_headers(
     response: HTTPResponse,
     config: PalfreyConfig,
+    *,
+    default_headers: list[tuple[bytes, bytes]] | None = None,
 ) -> None:
     """Add default response headers controlled by runtime configuration."""
 
-    configured_headers = config.normalized_headers
     existing_headers = {name.lower() for name, _ in response.headers}
+
+    if default_headers is not None:
+        for name, value in default_headers:
+            lowered_name = name.lower()
+            if lowered_name in existing_headers:
+                continue
+            response.headers.append((name, value))
+            existing_headers.add(lowered_name)
+        return
+
+    configured_headers = config.normalized_headers
     configured_header_names = {name.lower() for name, _ in configured_headers}
 
     if (

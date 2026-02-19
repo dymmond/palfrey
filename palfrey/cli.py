@@ -6,6 +6,7 @@ users can migrate without relearning flag semantics.
 
 from __future__ import annotations
 
+import os
 import platform
 import ssl
 
@@ -15,6 +16,41 @@ from palfrey import __version__
 from palfrey.config import PalfreyConfig
 from palfrey.importer import AppImportError
 from palfrey.runtime import run
+
+
+def _mirror_uvicorn_envvars() -> list[str]:
+    """Mirror ``UVICORN_*`` values into ``PALFREY_*`` when missing.
+
+    This preserves Palfrey's native env-var prefix while keeping drop-in
+    compatibility with existing Uvicorn-oriented shell environments.
+    """
+
+    mirrored_keys: list[str] = []
+    for key, value in tuple(os.environ.items()):
+        if not key.startswith("UVICORN_"):
+            continue
+        palfrey_key = "PALFREY_" + key[len("UVICORN_") :]
+        if palfrey_key in os.environ:
+            continue
+        os.environ[palfrey_key] = value
+        mirrored_keys.append(palfrey_key)
+    return mirrored_keys
+
+
+def _restore_mirrored_envvars(keys: list[str]) -> None:
+    for key in keys:
+        os.environ.pop(key, None)
+
+
+class _DualPrefixCommand(click.Command):
+    """Click command that refreshes Uvicorn env-var aliases before parsing."""
+
+    def main(self, *args, **kwargs):
+        mirrored_keys = _mirror_uvicorn_envvars()
+        try:
+            return super().main(*args, **kwargs)
+        finally:
+            _restore_mirrored_envvars(mirrored_keys)
 
 
 def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> None:
@@ -33,7 +69,7 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
     ctx.exit()
 
 
-@click.command(context_settings={"auto_envvar_prefix": "PALFREY"})
+@click.command(cls=_DualPrefixCommand, context_settings={"auto_envvar_prefix": "PALFREY"})
 @click.argument("app", required=True, envvar=["PALFREY_APP", "UVICORN_APP"])
 @click.option("--host", default="127.0.0.1", show_default=True, type=str)
 @click.option("--port", default=8000, show_default=True, type=int)

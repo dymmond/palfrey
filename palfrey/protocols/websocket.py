@@ -1623,20 +1623,6 @@ async def handle_websocket(
         )
         return
 
-    if selected_ws == "websockets" and config.ws == "auto":
-        await _handle_websocket_core(
-            app,
-            config,
-            reader=reader,
-            writer=writer,
-            headers=headers,
-            target=target,
-            client=client,
-            server=server,
-            is_tls=is_tls,
-        )
-        return
-
     await _handle_websocket_websockets_backend(
         app,
         config,

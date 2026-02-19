@@ -134,6 +134,63 @@ def test_serve_uses_start_unix_server_when_uds_is_configured(monkeypatch, tmp_pa
     assert calls["path"] == str(uds_path)
 
 
+def test_serve_reapplies_existing_uds_permissions(monkeypatch, tmp_path) -> None:
+    calls: dict[str, object] = {}
+
+    async def fake_start_unix_server(handler, **kwargs):
+        calls.update(kwargs)
+        return FakeAsyncServer([FakeSocket(("unix", 0))])
+
+    class FakeStat:
+        st_mode = 0o640
+
+    chmod_calls: list[tuple[str, int]] = []
+
+    monkeypatch.setattr(server_module, "configure_logging", lambda config: None)
+    monkeypatch.setattr(server_module, "resolve_application", lambda config: _resolved())
+    monkeypatch.setattr(server_module.asyncio, "start_unix_server", fake_start_unix_server)
+    monkeypatch.setattr(server_module.asyncio, "get_running_loop", lambda: FakeLoop())
+    monkeypatch.setattr(server_module.os.path, "exists", lambda path: True)
+    monkeypatch.setattr(server_module.os, "stat", lambda path: FakeStat())
+    monkeypatch.setattr(
+        server_module.os, "chmod", lambda path, mode: chmod_calls.append((path, mode))
+    )
+
+    uds_path = tmp_path / "palfrey.sock"
+    server = PalfreyServer(
+        PalfreyConfig(app="tests.fixtures.apps:http_app", uds=str(uds_path), lifespan="off")
+    )
+    server._shutdown_event.set()
+    asyncio.run(server.serve())
+
+    assert chmod_calls == [(str(uds_path), 0o640)]
+
+
+def test_serve_sets_default_uds_permissions_when_socket_missing(monkeypatch, tmp_path) -> None:
+    async def fake_start_unix_server(handler, **kwargs):
+        return FakeAsyncServer([FakeSocket(("unix", 0))])
+
+    chmod_calls: list[tuple[str, int]] = []
+
+    monkeypatch.setattr(server_module, "configure_logging", lambda config: None)
+    monkeypatch.setattr(server_module, "resolve_application", lambda config: _resolved())
+    monkeypatch.setattr(server_module.asyncio, "start_unix_server", fake_start_unix_server)
+    monkeypatch.setattr(server_module.asyncio, "get_running_loop", lambda: FakeLoop())
+    monkeypatch.setattr(server_module.os.path, "exists", lambda path: False)
+    monkeypatch.setattr(
+        server_module.os, "chmod", lambda path, mode: chmod_calls.append((path, mode))
+    )
+
+    uds_path = tmp_path / "palfrey.sock"
+    server = PalfreyServer(
+        PalfreyConfig(app="tests.fixtures.apps:http_app", uds=str(uds_path), lifespan="off")
+    )
+    server._shutdown_event.set()
+    asyncio.run(server.serve())
+
+    assert chmod_calls == [(str(uds_path), 0o666)]
+
+
 def test_serve_uses_socket_from_fd_when_configured(monkeypatch) -> None:
     calls: dict[str, object] = {}
     fake_socket = FakeSocket(("127.0.0.1", 8888))

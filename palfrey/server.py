@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import random
 import signal
 import socket
 import ssl
+import time
 from dataclasses import dataclass, field
+from email.utils import formatdate
 from importlib.util import find_spec
 from typing import Any, cast
 
@@ -45,6 +48,18 @@ class ConnectionContext:
     is_tls: bool
 
 
+@dataclass(slots=True, eq=False)
+class _TrackedConnection:
+    """Connection wrapper that exposes ``shutdown`` for graceful stop handling."""
+
+    writer: asyncio.StreamWriter
+
+    def shutdown(self) -> None:
+        """Close the underlying writer to stop new request processing."""
+
+        self.writer.close()
+
+
 @dataclass(slots=True)
 class ServerState:
     """Shared server state container, compatible with Uvicorn concepts."""
@@ -60,14 +75,17 @@ class PalfreyServer:
     """Run an ASGI application using Palfrey protocol and supervision layers."""
 
     config: PalfreyConfig
+    server_state: ServerState = field(default_factory=ServerState)
     _resolved_app: ResolvedApp | None = None
     _shutdown_event: asyncio.Event = field(default_factory=asyncio.Event)
-    _requests_processed: int = 0
     _active_requests: int = 0
     _server: asyncio.AbstractServer | None = None
     _lifespan: LifespanManager | None = None
     _request_counter_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _max_requests_before_exit: int | None = None
+    _base_default_headers: list[tuple[bytes, bytes]] = field(default_factory=list)
+    _last_notified: float = 0.0
+    _force_exit: bool = False
     _started: bool = False
 
     @property
@@ -83,6 +101,7 @@ class PalfreyServer:
         self._validate_protocol_backends()
         self._resolved_app = resolve_application(self.config)
         self._max_requests_before_exit = self._compute_max_requests_before_exit()
+        self._base_default_headers = self._build_static_default_headers()
 
         if self.config.lifespan != "off":
             self._lifespan = LifespanManager(self._resolved_app.app)
@@ -95,7 +114,7 @@ class PalfreyServer:
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             with contextlib.suppress(NotImplementedError, RuntimeError):
-                loop.add_signal_handler(sig, self._shutdown_event.set)
+                loop.add_signal_handler(sig, lambda _sig=sig: self._handle_exit_signal(_sig))
 
         ssl_context = self._build_ssl_context()
 
@@ -110,12 +129,17 @@ class PalfreyServer:
                     backlog=self.config.backlog,
                 )
             elif self.config.uds:
+                uds_perms = 0o666
+                if os.path.exists(self.config.uds):
+                    uds_perms = os.stat(self.config.uds).st_mode
                 self._server = await asyncio.start_unix_server(
                     self._handle_connection,
                     path=self.config.uds,
                     backlog=self.config.backlog,
                     ssl=ssl_context,
                 )
+                with contextlib.suppress(OSError):
+                    os.chmod(self.config.uds, uds_perms)
             else:
                 self._server = await asyncio.start_server(
                     self._handle_connection,
@@ -136,13 +160,8 @@ class PalfreyServer:
             logger.info("Listening on %s", sock.getsockname())
         self._started = True
 
-        await self._shutdown_event.wait()
-
-        self._server.close()
-        await self._server.wait_closed()
-
-        if self._lifespan is not None:
-            await self._lifespan.shutdown()
+        await self._main_loop()
+        await self._shutdown()
 
     def run(self) -> None:
         """Run server inside a fresh asyncio event loop."""
@@ -152,6 +171,105 @@ class PalfreyServer:
         """Trigger server shutdown from external coordinator code."""
 
         self._shutdown_event.set()
+
+    def _handle_exit_signal(self, sig: signal.Signals) -> None:
+        """Handle process signal semantics for graceful and forced exits."""
+
+        if self._shutdown_event.is_set() and sig == signal.SIGINT:
+            self._force_exit = True
+            return
+        self.request_shutdown()
+
+    async def _main_loop(self) -> None:
+        """Run periodic server maintenance ticks until shutdown criteria are met."""
+
+        counter = 0
+        should_exit = await self._on_tick(counter)
+        while not should_exit:
+            counter = (counter + 1) % 864000
+            await asyncio.sleep(0.1)
+            should_exit = await self._on_tick(counter)
+
+    async def _on_tick(self, counter: int) -> bool:
+        """Run one server tick, mirroring Uvicorn's maintenance cadence."""
+
+        if counter % 10 == 0:
+            if not self._base_default_headers:
+                self._base_default_headers = self._build_static_default_headers()
+            current_time = time.time()
+            current_date = formatdate(current_time, usegmt=True).encode("ascii")
+            current_headers = list(self._base_default_headers)
+            header_names = {name for name, _ in current_headers}
+            if self.config.date_header and b"date" not in header_names:
+                current_headers.insert(0, (b"date", current_date))
+            self.server_state.default_headers = current_headers
+
+            if (
+                self.config.callback_notify is not None
+                and current_time - self._last_notified > self.config.timeout_notify
+            ):
+                self._last_notified = current_time
+                await self.config.callback_notify()
+
+        if self._shutdown_event.is_set():
+            return True
+
+        if self._max_requests_before_exit is None:
+            self._max_requests_before_exit = self._compute_max_requests_before_exit()
+        if (
+            self._max_requests_before_exit is not None
+            and self.server_state.total_requests >= self._max_requests_before_exit
+        ):
+            logger.info(
+                "Maximum request limit of %d exceeded. Terminating process.",
+                self._max_requests_before_exit,
+            )
+            self.request_shutdown()
+            return True
+
+        return False
+
+    async def _shutdown(self) -> None:
+        """Perform graceful server shutdown with connection/task draining."""
+
+        logger.info("Shutting down")
+
+        if self._server is not None:
+            self._server.close()
+            await self._server.wait_closed()
+
+        for connection in list(self.server_state.connections):
+            connection.shutdown()
+        await asyncio.sleep(0.1)
+
+        try:
+            await asyncio.wait_for(
+                self._wait_tasks_to_complete(),
+                timeout=self.config.timeout_graceful_shutdown,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "Cancel %s running task(s), timeout graceful shutdown exceeded",
+                len(self.server_state.tasks),
+            )
+            for task in list(self.server_state.tasks):
+                task.cancel(msg="Task cancelled, timeout graceful shutdown exceeded")
+
+        if self._lifespan is not None and not self._force_exit:
+            await self._lifespan.shutdown()
+
+    async def _wait_tasks_to_complete(self) -> None:
+        """Wait for active connections and in-flight tasks to drain."""
+
+        if self.server_state.connections and not self._force_exit:
+            logger.info("Waiting for connections to close. (CTRL+C to force quit)")
+            while self.server_state.connections and not self._force_exit:
+                await asyncio.sleep(0.1)
+
+        if self.server_state.tasks and not self._force_exit:
+            logger.info("Waiting for background tasks to complete. (CTRL+C to force quit)")
+            while self.server_state.tasks and not self._force_exit:
+                await asyncio.sleep(0.1)
 
     async def _handle_connection(
         self,
@@ -177,6 +295,11 @@ class PalfreyServer:
         )
 
         context = ConnectionContext(client=client, server=server, is_tls=ssl_object is not None)
+        tracked_connection = _TrackedConnection(writer=writer)
+        self.server_state.connections.add(tracked_connection)
+        current_task = asyncio.current_task()
+        if current_task is not None:
+            self.server_state.tasks.add(current_task)
 
         keep_processing = True
         first_request = True
@@ -231,6 +354,14 @@ class PalfreyServer:
                     writer.write(b"HTTP/1.1 100 Continue\r\n\r\n")
                     await writer.drain()
 
+                if self._is_concurrency_limit_exceeded():
+                    await self._write_response(
+                        writer,
+                        self._service_unavailable_response(),
+                        keep_alive=False,
+                    )
+                    break
+
                 acquired = await self._enter_request_slot()
                 if not acquired:
                     await self._write_response(
@@ -248,12 +379,12 @@ class PalfreyServer:
 
                 await self._write_response(writer, response, keep_alive=keep_processing)
 
-                self._requests_processed += 1
+                self.server_state.total_requests += 1
                 if self._max_requests_before_exit is None:
                     self._max_requests_before_exit = self._compute_max_requests_before_exit()
                 if (
                     self._max_requests_before_exit is not None
-                    and self._requests_processed >= self._max_requests_before_exit
+                    and self.server_state.total_requests >= self._max_requests_before_exit
                 ):
                     self.request_shutdown()
         except ValueError as exc:
@@ -267,6 +398,9 @@ class PalfreyServer:
             error_response.body_chunks = [b"Internal Server Error"]
             await self._write_response(writer, error_response, keep_alive=False)
         finally:
+            self.server_state.connections.discard(tracked_connection)
+            if current_task is not None:
+                self.server_state.tasks.discard(current_task)
             writer.close()
             with contextlib.suppress(Exception):
                 await writer.wait_closed()
@@ -288,7 +422,12 @@ class PalfreyServer:
         )
 
         response = await run_http_asgi(self._resolved_app.app, scope, request.body)
-        append_default_response_headers(response, self.config)
+        default_headers = self.server_state.default_headers or None
+        append_default_response_headers(
+            response,
+            self.config,
+            default_headers=default_headers,
+        )
 
         if self.config.access_log:
             request_path = get_path_with_query_string(scope)
@@ -332,6 +471,14 @@ class PalfreyServer:
                 return False
             self._active_requests += 1
             return True
+
+    def _is_concurrency_limit_exceeded(self) -> bool:
+        """Return whether current connection/task counts exceed configured limit."""
+
+        limit = self.config.limit_concurrency
+        if limit is None:
+            return False
+        return len(self.server_state.connections) >= limit or len(self.server_state.tasks) >= limit
 
     async def _leave_request_slot(self) -> None:
         """Release request-processing capacity token."""
@@ -393,6 +540,20 @@ class PalfreyServer:
             0,
             self.config.limit_max_requests_jitter,
         )
+
+    def _build_static_default_headers(self) -> list[tuple[bytes, bytes]]:
+        """Build configured default response headers excluding dynamic date."""
+
+        configured_headers = [
+            (name.lower().encode("latin-1"), value.encode("latin-1"))
+            for name, value in self.config.normalized_headers
+        ]
+        configured_names = {name for name, _ in configured_headers}
+        default_headers: list[tuple[bytes, bytes]] = []
+        if self.config.server_header and b"server" not in configured_names:
+            default_headers.append((b"server", b"palfrey"))
+        default_headers.extend(configured_headers)
+        return default_headers
 
     def _validate_protocol_backends(self) -> None:
         """Validate that selected protocol backend dependencies are importable.

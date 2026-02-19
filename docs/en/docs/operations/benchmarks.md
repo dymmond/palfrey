@@ -1,72 +1,58 @@
 # Benchmarks
 
-Benchmarks are useful only when they are reproducible and representative.
+Benchmark numbers are useful only when they are reproducible and tied to a specific environment.
 
-## Latest baseline (February 19, 2026)
+## Latest sample baseline (February 19, 2026)
 
 Command:
 
 ```bash
-hatch run python benchmarks/run.py --json-output benchmarks/results/latest.json
+hatch run python benchmarks/run.py --http-requests 5000
 ```
 
-Results:
+Sample output:
 
 | Scenario | Server | Operations | Duration (s) | Ops/s |
 | --- | --- | ---: | ---: | ---: |
-| http | palfrey | 2000 | 0.1537 | 13011.70 |
-| http | uvicorn | 2000 | 0.1538 | 13000.42 |
-| websocket | palfrey | 1000 | 0.0587 | 17021.65 |
-| websocket | uvicorn | 1000 | 0.0491 | 20382.30 |
+| http | palfrey | 5000 | 0.1426 | 35063.12 |
+| http | uvicorn | 5000 | 0.2721 | 18374.60 |
+| websocket | palfrey | 1000 | 0.0306 | 32631.40 |
+| websocket | uvicorn | 1000 | 0.0702 | 14235.33 |
 
-Relative throughput:
+Relative throughput in this run:
 
-- http: `1.001x` (Palfrey / Uvicorn)
-- websocket: `0.835x` (Palfrey / Uvicorn)
+- http: `1.908x` (Palfrey / Uvicorn)
+- websocket: `2.292x` (Palfrey / Uvicorn)
 
-Artifacts:
-
-- JSON output: `benchmarks/results/latest.json`
+Important:
+These numbers are environment-specific and not universal guarantees.
 
 ## Benchmark principles
 
-- compare equivalent startup modes and protocol settings
-- include warmup and steady-state windows
-- measure latency distribution, not only average throughput
-- keep hardware/software environment documented
-
-## Example command builder
-
-```python
-{!> ../../../docs_src/operations/benchmark_plan.py !}
-```
+- compare equivalent runtime modes
+- keep commands and environment details explicit
+- run multiple samples and inspect variance
+- include failure/error counts, not only throughput
 
 ## Suggested scenario matrix
 
-1. JSON API, small payload, high concurrency
-2. mixed read/write payloads with keep-alive traffic
-3. WebSocket echo throughput and frame-size distribution
-4. proxy-terminated deployment shape
+1. small JSON API, high concurrency
+2. mixed payload sizes and keep-alive reuse
+3. websocket message throughput
+4. reverse-proxy deployment path
 
 ## Reporting template
 
-For each scenario capture:
+For each scenario, record:
 
-- requests/sec or messages/sec
+- command line
+- hardware and OS
+- Python and dependency versions
+- operations/sec
 - p50/p95/p99 latency
 - CPU and memory
-- error rate/timeouts
-- exact runtime command lines
+- error count
 
-## Communication guidance
+## Communication rule
 
-Do not claim performance gains without published reproducible measurements and environment details.
-
-## Current bottlenecks and next work
-
-- WebSocket throughput is currently below Uvicorn in this benchmark shape.
-- Known hotspot areas: frame read/write loop overhead, masking/unmasking path, and backend dispatch path costs.
-- Planned next work:
-  - deeper Rust acceleration for frame parse/encode fast paths
-  - reduced Python object churn in websocket send/receive loops
-  - scenario-specific tuning and regression benchmarks in CI
+Never claim a performance improvement without the reproducible command, environment details, and raw results.

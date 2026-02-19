@@ -1,61 +1,96 @@
 # Guide: Troubleshooting
 
-This cookbook focuses on high-frequency production and migration issues.
+Use this page as a fast diagnosis flow.
 
-## 1. Import errors (`Unable to import module ...`)
+## Step 1: Capture context first
+
+Always capture:
+
+- exact startup command
+- Palfrey and Python version (`palfrey --version`)
+- platform
+- error logs with timestamps
+
+## Step 2: Identify failure class
+
+## Startup/import failures
 
 Symptoms:
 
-- startup fails with import-module error
+- process exits immediately
+- import/module/factory errors
 
-Checks:
+Actions:
 
-1. Confirm working directory and Python path.
-2. Ensure `module:attribute` target is correct.
-3. Use `--app-dir` when source tree root is not current working directory.
-4. Validate virtual environment activation and installed dependencies.
+- verify `APP` target
+- verify working directory or use `--app-dir`
+- verify virtual environment dependencies
 
-## 2. Reload not picking up changes
+## Bind/socket failures
 
-Checks:
+Symptoms:
 
-- `--reload` enabled
-- correct `--reload-dir`
-- include/exclude patterns are not over-filtering
+- address in use
+- socket path errors
 
-## 3. Worker mode boot failures
+Actions:
 
-Checks:
+- free conflicting process/port
+- verify socket permissions/path
 
-- ensure app target is import string
-- verify environment variables available to child processes
-- verify file permissions for runtime artifacts (sockets, certs, etc.)
+## Request/runtime failures
 
-## 4. Proxy client IP/scheme incorrect
+Symptoms:
 
-Checks:
+- 4xx/5xx responses
+- slow responses under load
 
-- `--proxy-headers` enabled
-- `--forwarded-allow-ips` includes actual proxy source
-- edge proxy forwards expected headers
+Actions:
 
-## 5. WebSocket handshake failures
+- inspect app exception logs
+- check concurrency/timeout settings
+- verify dependency health (DB/cache/API)
 
-Checks:
+## WebSocket failures
 
-- required upgrade headers present
-- reverse proxy supports upgrade forwarding
-- app accepts connection and does not close immediately
+Symptoms:
 
-## 6. Healthcheck reference app
+- handshake rejection
+- connection closes immediately
+
+Actions:
+
+- verify upgrade headers end-to-end
+- verify proxy websocket forwarding
+- test direct server connection
+
+## Reload/worker behavior surprises
+
+Symptoms:
+
+- reload not triggered
+- unexpected worker exits
+
+Actions:
+
+- validate include/exclude patterns
+- verify process model (`reload` vs `workers`)
+- inspect healthcheck and recycle settings
+
+## Reference probe app
 
 ```python
 {!> ../../../docs_src/guides/troubleshooting_healthcheck.py !}
 ```
 
-## Incident capture checklist
+## Incident handoff template
 
-- Startup command used.
-- Palfrey version and Python version.
-- Relevant logs around failure timestamp.
-- Reproduction command with exact endpoint and payload.
+- what happened
+- when it started
+- impact scope
+- current mitigation
+- next investigation step
+
+## Plain-language summary
+
+Troubleshooting speed improves when teams classify the problem first, then debug inside the correct category.

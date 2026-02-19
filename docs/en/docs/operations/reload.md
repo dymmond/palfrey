@@ -1,6 +1,6 @@
-# Reload / Development Mode
+# Reload
 
-Reload mode watches files and restarts the serving child process when matching files change.
+Reload mode is a development-only process supervisor that restarts the server on file changes.
 
 ## Typical command
 
@@ -8,26 +8,45 @@ Reload mode watches files and restarts the serving child process when matching f
 {!> ../../../docs_src/operations/reload_dev.py !}
 ```
 
-Equivalent direct CLI:
+Equivalent CLI:
 
 ```bash
-palfrey myapp.main:app --reload --reload-dir src --reload-include '*.py'
+palfrey main:app --reload --reload-dir src --reload-include '*.py'
 ```
 
-## Pattern controls
+## Controls
 
-- include patterns: `--reload-include`
-- exclude patterns: `--reload-exclude`
-- scan interval: `--reload-delay`
+- `--reload`
+- `--reload-dir` (repeatable)
+- `--reload-include` (repeatable)
+- `--reload-exclude` (repeatable)
+- `--reload-delay`
 
-## Operational boundaries
+## Common pattern examples
 
-- Reload mode is for development workflows.
-- Worker mode and reload mode are different operational modes.
-- Keep production startup scripts free of `--reload`.
+## Monorepo service folder only
 
-## Troubleshooting reload
+```bash
+palfrey main:app --reload --reload-dir services/api
+```
 
-- verify watched directory is correct
-- verify glob patterns match changed files
-- verify process has permission to scan watched paths
+## Include templates and Python, exclude generated files
+
+```bash
+palfrey main:app \
+  --reload \
+  --reload-include '*.py' \
+  --reload-include '*.jinja2' \
+  --reload-exclude '.venv/*' \
+  --reload-exclude 'dist/*'
+```
+
+## Troubleshooting
+
+- no reload events: check watched path and file patterns
+- too many restarts: tune include/exclude and delay
+- CPU overhead: narrow watch scope
+
+## Non-technical summary
+
+Reload mode is a productivity feature for development, not a production reliability feature.

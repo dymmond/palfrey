@@ -1,35 +1,36 @@
 # Middleware
 
-Middleware wraps an ASGI app to add cross-cutting behavior without changing business handlers.
+Middleware wraps an ASGI app to apply shared behavior.
 
-## Common middleware concerns
+## Typical middleware responsibilities
 
-- request logging
+- auth and access policies
 - proxy header normalization
-- authentication gates
+- request/response logging
 - timing and tracing
+- request IDs or correlation IDs
 
-Proxy header wrapper example:
+Proxy header middleware example:
 
 ```python
 {!> ../../../docs_src/concepts/proxy_headers_middleware.py !}
 ```
 
-## Ordering guidance
+## Ordering matters
 
-Order matters because each middleware sees transformed scope/messages from previous layers.
+A practical order is:
 
-Typical pattern:
+1. trust-boundary middleware (proxy/IP normalization)
+2. security middleware (auth/authorization)
+3. observability middleware (logging/tracing)
+4. application routing/handlers
 
-1. trusted-proxy normalization
-2. security/auth controls
-3. observability/logging
-4. application routing layer
+## Risks to avoid
 
-## Non-Technical explanation
+- trusting forwarded headers from untrusted peers
+- logging sensitive payloads by default
+- putting expensive work in always-on middleware paths
 
-If the app is the core service desk, middleware are specialist staff that pre-check IDs, stamp tickets, and log each interaction.
+## Plain-language explanation
 
-## Practical caution
-
-Do not trust proxy headers from untrusted sources. Always combine middleware usage with explicit trusted IP policy.
+If the app is the main service desk, middleware are specialist desks that perform checks before and after each request.

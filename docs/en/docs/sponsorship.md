@@ -1,36 +1,28 @@
-# Help Palfrey
+# Support Palfrey
 
-Do you like **Palfrey** and would like to help Palfrey, other user and the author?
+If Palfrey helps your team, there are simple ways to support the project.
 
-## ⭐ Star **Palfrey** on GitHub
+## Star the repository
 
-Giving a star to Palfrey is very simple and helps promoting the work across the developers around the world.
+A GitHub star increases visibility and helps more users find the project.
 
-The button is located at the top right.
+- [https://github.com/dymmond/palfrey](https://github.com/dymmond/palfrey)
 
-[https://github.com/dymmond/palfrey](https://github.com/dymmond/palfrey).
+## Follow releases
 
-This will help spreading the word about the tool and how helpful has been.
+Use GitHub watch settings to be notified of new releases and important updates.
 
-## 👀 Follow the GitHub repo
+## Join the community
 
-Following the GitHub repo will allow you to "watch" for any new release of Palfrey and be always up to date.
+- [Palfrey Discord](https://discord.gg/eMrM9sWWvu)
 
-You can click on "***watch***" and select "***custom***" -> "***Releases***"or any other you may find particular
-interesting to you.
+## Sponsor development
 
-## 💬 Join the official Palfrey discord channel
+Financial sponsorship helps sustain maintenance, issue response, and long-term feature work.
 
-Our official chat is on discord, we find it very useful and free for people to discuss issues, helping and contributing
-in a more organised manner.
+- [GitHub Sponsors](https://github.com/sponsors/tarsil)
 
-<a href="https://discord.gg/eMrM9sWWvu" target="_blank">Palfrey discord channel</a>. Join us! 🗸
+## Non-technical summary
 
-## 🔥 Sponsor the author
-
-The author built this framework with all of his heart and dedication and will continue to do it so but that also
-requires time and resources and when they are limited, the process still gets there but takes a bit longer.
-
-You can financially help and support the author though [GitHub sponsors](https://github.com/sponsors/tarsil)
-
-He can afterwards go for a coffee☕, on him, to say thanks🙏.
+Open-source quality depends on sustained maintenance.
+Community support directly improves reliability and delivery speed.

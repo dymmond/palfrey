@@ -1,31 +1,36 @@
-# Protocols Reference
+# Protocols
 
-Palfrey operates on ASGI protocol scopes: HTTP, WebSocket, and Lifespan.
+Palfrey supports ASGI protocol scopes for HTTP, WebSocket, and lifespan.
 
-## HTTP
+## HTTP protocol behavior
 
-Expected app message sequence:
+App message contract:
 
-1. receive `http.request`
-2. send `http.response.start`
+1. receive `http.request` events
+2. send one `http.response.start`
 3. send one or more `http.response.body`
 
-Operational controls:
+Operationally relevant controls:
 
+- `--http`
+- `--h11-max-incomplete-event-size`
 - `--timeout-keep-alive`
 - `--limit-concurrency`
-- `--h11-max-incomplete-event-size`
-- `--server-header` and `--date-header`
 
-## WebSocket
+## WebSocket protocol behavior
 
-Handshake requirements include valid `Sec-WebSocket-Key` and supported version.
-App flow:
+Handshake requirements:
 
-1. app receives `websocket.connect`
-2. app sends `websocket.accept` or `websocket.close`
-3. message exchange with `websocket.receive` / `websocket.send`
-4. disconnect handled with close semantics
+- valid websocket upgrade headers
+- valid `Sec-WebSocket-Version: 13`
+- valid `Sec-WebSocket-Key`
+
+App message contract:
+
+1. receive `websocket.connect`
+2. send `websocket.accept`/`websocket.close`/HTTP rejection extension events
+3. exchange `websocket.receive` and `websocket.send`
+4. process disconnect/close
 
 Example:
 
@@ -42,22 +47,30 @@ Controls:
 - `--ws-ping-timeout`
 - `--ws-per-message-deflate`
 
-## Lifespan
+## Lifespan protocol behavior
 
-Lifespan is used for startup/shutdown orchestration.
-See [Lifespan Concepts](../concepts/lifespan.md) for lifecycle details.
+Used for startup/shutdown resource management.
+See [Lifespan](../concepts/lifespan.md) for lifecycle detail.
 
 ## Interface modes
-
-Palfrey exposes interface compatibility modes:
 
 - `auto`
 - `asgi3`
 - `asgi2`
 - `wsgi`
 
-WSGI mode does not support WebSocket semantics.
+Note:
+WSGI mode is HTTP-only and does not provide websocket semantics.
 
-## Operator advice
+## Protocol testing checklist
 
-When introducing a protocol feature, add a targeted smoke check in CI for that exact protocol path.
+- valid and malformed HTTP requests
+- keep-alive behavior under load
+- websocket handshake accept/reject cases
+- websocket text/binary/fragment/control frames
+- startup and shutdown lifespan behavior
+
+## Plain-language summary
+
+Protocols define the rules of conversation between clients, server, and app.
+When these rules are explicit, behavior becomes predictable.

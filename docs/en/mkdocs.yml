@@ -50,7 +50,7 @@ plugins:
     max_length: 160
     trim: false
 nav:
-- Welcome: index.md
+- Introduction: index.md
 - Getting Started:
   - Installation: getting-started/installation.md
   - Quickstart: getting-started/quickstart.md
@@ -66,18 +66,25 @@ nav:
 - Reference:
   - CLI: reference/cli.md
   - Configuration: reference/configuration.md
+  - Environment Variables: reference/environment-variables.md
   - Protocols: reference/protocols.md
   - Logging: reference/logging.md
+  - Error Catalog: reference/error-catalog.md
 - Guides:
   - Zero to Production: guides/from-zero-to-production.md
   - Reverse Proxy (Nginx): guides/reverse-proxy-nginx.md
-  - HTTPS / TLS: guides/https-tls.md
+  - HTTPS and TLS: guides/https-tls.md
+  - Security Hardening: guides/security-hardening.md
   - Troubleshooting: guides/troubleshooting.md
+  - FAQ: guides/faq.md
 - Operations:
   - Deployment: operations/deployment.md
   - Docker: operations/docker.md
   - Reload: operations/reload.md
   - Workers: operations/workers.md
+  - Observability: operations/observability.md
+  - Capacity Planning: operations/capacity-planning.md
+  - Platform Notes: operations/platform-notes.md
   - Benchmarks: operations/benchmarks.md
   - Release Process: operations/release-process.md
 - Project:

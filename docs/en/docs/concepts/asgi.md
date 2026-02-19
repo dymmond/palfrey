@@ -1,58 +1,86 @@
 # ASGI Fundamentals
 
-ASGI is the interface between Palfrey and your application.
+ASGI is the contract between Palfrey and your application.
 
-## The Callable Contract
+## The Three Inputs Every ASGI App Receives
 
-An ASGI app is an async callable receiving:
+- `scope`: metadata about protocol and connection context
+- `receive`: async callable yielding inbound messages
+- `send`: async callable accepting outbound messages
 
-- `scope`: connection metadata
-- `receive`: async function for inbound messages
-- `send`: async function for outbound messages
-
-Minimal example:
+Minimal app example:
 
 ```python
 {!> ../../../docs_src/concepts/asgi_minimal.py !}
 ```
 
-## Scope Fields You Use Most
-
-- `scope["type"]`: protocol (`http`, `websocket`, `lifespan`)
-- `scope["path"]`: request path
-- `scope["query_string"]`: raw query bytes
-- `scope["headers"]`: byte header pairs
-- `scope["client"]` / `scope["server"]`: endpoint tuples
-- `scope["root_path"]`: submount prefix set by server config
-
-Inspect scope example:
+Scope inspector example:
 
 ```python
 {!> ../../../docs_src/concepts/asgi_scope_inspector.py !}
 ```
 
-## HTTP Message Flow (Conceptual)
+## Scope by Protocol
 
-1. Palfrey sends `http.request` (possibly in chunks).
-2. App sends `http.response.start` once.
-3. App sends one or more `http.response.body` messages.
+## HTTP scope
 
-## WebSocket Message Flow (Conceptual)
+Typical fields:
 
-1. Palfrey raises `websocket.connect` to app.
-2. App accepts or closes.
-3. Bidirectional `websocket.receive` / `websocket.send` flow.
-4. Close handshake ends session.
+- `type = "http"`
+- `method`
+- `path`, `raw_path`, `query_string`
+- `headers`
+- `client`, `server`
 
-## Lifespan Message Flow
+## WebSocket scope
 
-1. `lifespan.startup`
-2. app initialization
-3. `lifespan.shutdown`
-4. cleanup completion
+Typical fields:
 
-## Non-Technical Translation
+- `type = "websocket"`
+- `subprotocols`
+- `extensions`
+- shared network/path/header fields
 
-ASGI is like a standard plug shape.
-Any compliant server can host any compliant app with the same plug.
-That decoupling is what gives teams framework and server flexibility.
+## Lifespan scope
+
+Typical fields:
+
+- `type = "lifespan"`
+- app startup/shutdown channel
+
+## Message Sequences
+
+## HTTP
+
+1. app receives one or more `http.request`
+2. app sends `http.response.start`
+3. app sends one or more `http.response.body`
+
+## WebSocket
+
+1. app receives `websocket.connect`
+2. app sends `websocket.accept` or `websocket.close`
+3. app and client exchange messages
+4. disconnect/close completes session
+
+## Lifespan
+
+1. app receives startup event
+2. app initializes shared resources
+3. app receives shutdown event
+4. app releases resources
+
+## Common ASGI Mistakes
+
+- not sending `http.response.start` before body
+- returning non-`None` from ASGI app
+- sending websocket messages before `websocket.accept`
+- assuming headers are strings instead of bytes
+
+## Why engineers care
+
+ASGI correctness directly affects interoperability and reliability.
+
+## Why non-technical stakeholders should care
+
+A standard contract reduces integration risk and speeds migration between frameworks and runtimes.

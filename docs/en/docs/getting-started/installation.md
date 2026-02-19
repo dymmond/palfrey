@@ -1,11 +1,23 @@
 # Installation
 
-This page covers installation for local development, CI, and production-like environments.
+This page covers local setup, CI setup, and production installation profiles.
 
-## 1. Python Version
+## Prerequisites
 
-Palfrey targets modern Python.
-Use a dedicated virtual environment per project.
+- Python 3.10+
+- `pip` available
+- shell access to run `palfrey --version`
+
+Optional but common:
+
+- `uvloop` for high-performance loop mode on supported platforms
+- `httptools` for HTTP parser backend
+- `websockets` for websocket backend options
+- `watchfiles` for reload mode
+
+## Step 1: Create an Isolated Environment
+
+## macOS/Linux
 
 ```bash
 python -m venv .venv
@@ -13,35 +25,53 @@ source .venv/bin/activate
 python -m pip install --upgrade pip
 ```
 
-## 2. Install Palfrey
+## Windows PowerShell
 
-## Minimal install
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+```
+
+## Step 2: Choose an Install Profile
+
+## Minimal runtime
 
 ```bash
 pip install palfrey
 ```
 
-## Install with common performance extras
+Use this when you want the leanest dependency footprint.
+
+## Standard runtime extras
 
 ```bash
 pip install "palfrey[standard]"
 ```
 
-## Local editable install for contributors
+Use this when you want common performance and feature extras.
+
+## Contributor/developer setup
 
 ```bash
 pip install -e ".[dev,testing,docs,benchmark,standard]"
 ```
 
-## 3. Verify Installation
+Use this if you run tests, docs, lint, and benchmarks locally.
+
+## Step 3: Verify Installation
 
 ```bash
 palfrey --version
 ```
 
-You should see Palfrey version, Python implementation/version, and OS.
+Expected output includes:
 
-## 4. First App Verification
+- Palfrey version
+- Python implementation and version
+- OS name
+
+## Step 4: Smoke Test with a Minimal App
 
 Create `main.py`:
 
@@ -49,28 +79,40 @@ Create `main.py`:
 {!> ../../../docs_src/getting_started/hello_world.py !}
 ```
 
-Run it:
+Run:
 
 ```bash
-palfrey main:app
+palfrey main:app --host 127.0.0.1 --port 8000
 ```
 
-Smoke test:
+Verify:
 
 ```bash
 curl http://127.0.0.1:8000
 ```
 
-## 5. Operator Notes (Non-Technical)
+## Troubleshooting Installation
 
-- Keep runtime dependencies pinned for repeatable deployments.
-- Use the same install profile in CI and production build images when possible.
-- Treat `--version` output as part of incident context capture.
+## Command not found: `palfrey`
 
-## 6. Engineer Notes
+- confirm virtual environment is activated
+- run `python -m pip show palfrey`
+- if needed, run with module form: `python -m palfrey main:app`
 
-- If `uvloop` is present and `--loop auto` is used, Palfrey can select it automatically.
-- For structured logging configs (`.yaml`), install `PyYAML`.
-- Keep base images lean and avoid adding dev extras to production images.
+## Optional backend package not installed
 
-Continue to [Quickstart](quickstart.md).
+If you select an explicit backend (`--http httptools`, `--ws websockets`, etc.), ensure the package is installed.
+
+## YAML log config fails to load
+
+Install `PyYAML` (included in `standard` extras).
+
+## For Non-Technical Readers
+
+Installation profiles are simply bundles.
+
+- minimal: least software installed
+- standard: common extras included
+- contributor: everything needed to build, test, and document
+
+Next step: [Quickstart](quickstart.md)

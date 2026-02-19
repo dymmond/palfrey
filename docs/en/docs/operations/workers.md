@@ -1,38 +1,76 @@
-# Workers and Process Model
+# Workers
 
-Workers increase parallelism by running multiple server processes.
+Workers run multiple server processes for parallelism and isolation.
 
-## Why workers
+## Why workers matter
 
-- better CPU utilization for concurrent workloads
-- isolation from single-process crashes
-- rolling worker replacement strategies
+- use multiple CPU cores
+- isolate crashes to one process
+- support rolling process replacement patterns
 
-## Starter example
+Reference app:
 
 ```python
 {!> ../../../docs_src/operations/workers_cpu_bound.py !}
 ```
 
-CLI equivalent:
+CLI example:
 
 ```bash
-palfrey myapp.main:app --workers 4 --host 0.0.0.0 --port 8000
+palfrey main:app --workers 4 --host 0.0.0.0 --port 8000
 ```
 
-## Health and restart controls
+## Gunicorn integration with PalfreyWorker
+
+Palfrey includes Gunicorn worker classes:
+
+- `palfrey.workers.PalfreyWorker`
+- `palfrey.workers.PalfreyH11Worker`
+
+Direct command example:
+
+```bash
+gunicorn main:app -k palfrey.workers.PalfreyWorker -w 4 -b 0.0.0.0:8000
+```
+
+H11-specific worker example:
+
+```bash
+gunicorn main:app -k palfrey.workers.PalfreyH11Worker -w 4 -b 0.0.0.0:8000
+```
+
+Gunicorn config file example:
+
+```python
+{!> ../../../docs_src/operations/gunicorn_conf.py !}
+```
+
+Run using config:
+
+```bash
+gunicorn main:app -c docs_src/operations/gunicorn_conf.py
+```
+
+## Worker health and recycle controls
 
 - `--timeout-worker-healthcheck`
 - `--limit-max-requests`
 - `--limit-max-requests-jitter`
 
-## Capacity planning guidance
+## Sizing guidance
 
-- start with worker count near available CPU cores
-- benchmark with realistic concurrency and payload patterns
-- adjust for memory constraints and external dependency bottlenecks
+1. start near core count
+2. benchmark realistic workload
+3. observe CPU, memory, tail latency
+4. adjust incrementally
 
-## Non-Technical translation
+## Important behavior notes
 
-More workers are like more checkout counters.
-They increase throughput, but each counter consumes staff/resources.
+- each worker has independent memory/process state
+- each worker runs its own lifespan startup/shutdown
+- worker count can affect external dependency load (DB pool pressure)
+
+## Non-technical summary
+
+Workers are additional runtime lanes.
+More lanes can increase throughput, but each lane consumes resources.

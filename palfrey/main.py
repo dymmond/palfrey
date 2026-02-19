@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 from palfrey.cli import main
@@ -26,6 +27,11 @@ def __getattr__(name: str) -> Any:
     """
 
     if name == "ServerState":
+        warnings.warn(
+            "palfrey.main.ServerState is deprecated, use palfrey.server.ServerState instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         from palfrey.server import ServerState
 
         return ServerState

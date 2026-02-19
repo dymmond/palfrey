@@ -52,7 +52,6 @@ def test_run_http_asgi_collects_response_body_chunks() -> None:
         await send({"type": "http.response.start", "status": 201, "headers": [(b"x", b"1")]})
         await send({"type": "http.response.body", "body": b"hello ", "more_body": True})
         await send({"type": "http.response.body", "body": b"world", "more_body": False})
-        await send({"type": "http.response.body", "body": b"ignored", "more_body": False})
 
     response = asyncio.run(
         run_http_asgi(
@@ -63,15 +62,52 @@ def test_run_http_asgi_collects_response_body_chunks() -> None:
     )
 
     assert response.status == 201
-    assert response.headers == [(b"x", b"1")]
+    assert response.headers == [(b"x", b"1"), (b"transfer-encoding", b"chunked")]
     assert response.body_chunks == [b"hello ", b"world"]
 
 
-def test_run_http_asgi_rejects_unknown_message_types() -> None:
+def test_run_http_asgi_uses_chunked_default_for_single_body_without_headers() -> None:
+    async def app(scope, receive, send):
+        await receive()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+
+    response = asyncio.run(
+        run_http_asgi(
+            app,
+            {"type": "http", "headers": [], "path": "/", "method": "GET", "state": {}},
+            b"",
+        )
+    )
+
+    assert response.chunked_encoding is True
+    assert (b"transfer-encoding", b"chunked") in response.headers
+    assert response.body_chunks == [b"ok"]
+
+
+def test_run_http_asgi_converts_invalid_initial_message_to_500_response() -> None:
     async def app(scope, receive, send):
         await send({"type": "http.response.wat"})
 
-    with pytest.raises(RuntimeError, match="Unsupported HTTP ASGI message type"):
+    response = asyncio.run(
+        run_http_asgi(
+            app,
+            {"type": "http", "headers": [], "path": "/", "method": "GET", "state": {}},
+            b"",
+        )
+    )
+    assert response.status == 500
+    assert response.body_chunks == [b"Internal Server Error"]
+
+
+def test_run_http_asgi_rejects_messages_after_response_completion() -> None:
+    async def app(scope, receive, send):
+        await receive()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+        await send({"type": "http.response.body", "body": b"ignored", "more_body": False})
+
+    with pytest.raises(RuntimeError, match="after response already completed"):
         asyncio.run(
             run_http_asgi(
                 app,
@@ -79,6 +115,56 @@ def test_run_http_asgi_rejects_unknown_message_types() -> None:
                 b"",
             )
         )
+
+
+def test_run_http_asgi_streams_request_body_chunks() -> None:
+    observed: list[bytes] = []
+    observed_more_body: list[bool] = []
+
+    async def app(scope, receive, send):
+        first = await receive()
+        second = await receive()
+        observed.append(first["body"])
+        observed.append(second["body"])
+        observed_more_body.append(first["more_body"])
+        observed_more_body.append(second["more_body"])
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+    asyncio.run(
+        run_http_asgi(
+            app,
+            {"type": "http", "headers": [], "path": "/", "method": "POST", "state": {}},
+            [b"hello", b" world"],
+        )
+    )
+
+    assert observed == [b"hello", b" world"]
+    assert observed_more_body == [True, False]
+
+
+def test_run_http_asgi_sends_100_continue_on_first_receive() -> None:
+    sent_continue = {"count": 0}
+
+    async def on_continue() -> None:
+        sent_continue["count"] += 1
+
+    async def app(scope, receive, send):
+        await receive()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+
+    asyncio.run(
+        run_http_asgi(
+            app,
+            {"type": "http", "headers": [], "path": "/", "method": "POST", "state": {}},
+            b"payload",
+            expect_100_continue=True,
+            on_100_continue=on_continue,
+        )
+    )
+
+    assert sent_continue["count"] == 1
 
 
 def test_should_keep_alive_false_when_response_requests_close() -> None:
@@ -141,3 +227,22 @@ def test_read_http_request_rejects_chunked_body_over_limit() -> None:
 
     with pytest.raises(ValueError, match="HTTP body exceeds configured limit"):
         asyncio.run(scenario())
+
+
+def test_read_http_request_tracks_chunk_boundaries() -> None:
+    payload = (
+        b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+        b"5\r\nhello\r\n"
+        b"1\r\n \r\n"
+        b"5\r\nworld\r\n"
+        b"0\r\n\r\n"
+    )
+
+    async def scenario() -> HTTPRequest | None:
+        reader = await make_stream_reader(payload)
+        return await read_http_request(reader)
+
+    request = asyncio.run(scenario())
+    assert request is not None
+    assert request.body == b"hello world"
+    assert request.body_chunks == [b"hello", b" ", b"world"]

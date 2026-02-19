@@ -73,3 +73,31 @@ def test_cli_accepts_websockets_sansio_and_jitter(monkeypatch) -> None:
     assert len(captured) == 1
     assert captured[0].ws == "websockets-sansio"
     assert captured[0].limit_max_requests_jitter == 11
+
+
+def test_cli_rejects_invalid_lifespan_choice() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "tests.fixtures.apps:http_app",
+            "--lifespan",
+            "sometimes",
+        ],
+    )
+    assert result.exit_code == 2
+    assert "Invalid value for '--lifespan'" in result.output
+
+
+def test_cli_rejects_invalid_log_level_choice() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "tests.fixtures.apps:http_app",
+            "--log-level",
+            "verbose",
+        ],
+    )
+    assert result.exit_code == 2
+    assert "Invalid value for '--log-level'" in result.output

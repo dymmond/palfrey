@@ -51,15 +51,15 @@ def test_configure_logging_from_json_file(tmp_path: Path) -> None:
 def test_configure_logging_supports_trace_level() -> None:
     config = PalfreyConfig(app="tests.fixtures.apps:http_app", log_level="trace")
     configure_logging(config)
-    root = logging.getLogger()
-    assert root.level == TRACE_LEVEL
+    error_logger = logging.getLogger("palfrey.error")
+    assert error_logger.level == TRACE_LEVEL
 
 
 def test_configure_logging_defaults_to_info_when_level_missing() -> None:
     config = PalfreyConfig(app="tests.fixtures.apps:http_app", log_level=None)
     configure_logging(config)
-    root = logging.getLogger()
-    assert root.level == logging.INFO
+    error_logger = logging.getLogger("palfrey.error")
+    assert error_logger.level == logging.INFO
 
 
 def test_configure_logging_from_ini_file(tmp_path: Path) -> None:

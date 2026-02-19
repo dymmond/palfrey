@@ -10,6 +10,7 @@ import asyncio
 import io
 import sys
 from collections.abc import Iterable
+from types import TracebackType
 from typing import Any
 
 from palfrey.types import ASGI2Application, ReceiveCallable, Scope, SendCallable
@@ -64,42 +65,67 @@ class WSGIAdapter:
                 break
 
         environ = self._build_wsgi_environ(scope, body)
-        start_response_state: dict[str, Any] = {}
+        loop = asyncio.get_running_loop()
+        send_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+        response_started = False
+        captured_exc_info: (
+            tuple[type[BaseException], BaseException, TracebackType | None] | None
+        ) = None
 
-        def start_response(status: str, headers: list[tuple[str, str]], exc_info=None):
-            start_response_state["status"] = status
-            start_response_state["headers"] = headers
-            start_response_state["exc_info"] = exc_info
-            return None
+        def enqueue(message: dict[str, Any] | None) -> None:
+            loop.call_soon_threadsafe(send_queue.put_nowait, message)
 
-        def run_wsgi() -> tuple[str, list[tuple[str, str]], bytes, Any]:
+        def start_response(
+            status: str,
+            headers: list[tuple[str, str]],
+            exc_info: tuple[type[BaseException], BaseException, TracebackType | None] | None = None,
+        ) -> None:
+            nonlocal response_started, captured_exc_info
+            captured_exc_info = exc_info
+            if response_started:
+                return
+
+            response_started = True
+            status_code = int(status.split(" ", 1)[0])
+            encoded_headers = [
+                (name.encode("latin-1"), value.encode("latin-1")) for name, value in headers
+            ]
+            enqueue(
+                {
+                    "type": "http.response.start",
+                    "status": status_code,
+                    "headers": encoded_headers,
+                }
+            )
+
+        def run_wsgi() -> None:
             result = self._app(environ, start_response)
-            payload = b"".join(result if isinstance(result, Iterable) else [result])
-            status = start_response_state.get("status", "500 Internal Server Error")
-            headers = start_response_state.get("headers", [])
-            exc_info = start_response_state.get("exc_info")
-            return status, headers, payload, exc_info
+            close_result = getattr(result, "close", None)
+            try:
+                for chunk in result if isinstance(result, Iterable) else [result]:
+                    enqueue({"type": "http.response.body", "body": chunk, "more_body": True})
+            finally:
+                if callable(close_result):
+                    close_result()
+            enqueue({"type": "http.response.body", "body": b"", "more_body": False})
 
-        status_line, headers, payload, exc_info = await asyncio.to_thread(run_wsgi)
-        status_code = int(status_line.split(" ", 1)[0])
+        def run_wsgi_with_signal() -> None:
+            try:
+                run_wsgi()
+            finally:
+                enqueue(None)
 
-        encoded_headers = [
-            (name.encode("latin-1"), value.encode("latin-1")) for name, value in headers
-        ]
+        wsgi_task = asyncio.create_task(asyncio.to_thread(run_wsgi_with_signal))
+        while True:
+            message = await send_queue.get()
+            if message is None:
+                break
+            await send(message)
+        await wsgi_task
 
-        await send(
-            {
-                "type": "http.response.start",
-                "status": status_code,
-                "headers": encoded_headers,
-            }
-        )
-        await send({"type": "http.response.body", "body": payload, "more_body": False})
-
-        if exc_info is not None:
-            exc_type, exc_value, traceback = exc_info
-            if exc_type is not None and exc_value is not None:
-                raise exc_value.with_traceback(traceback)
+        if captured_exc_info is not None:
+            _, exc_value, traceback = captured_exc_info
+            raise exc_value.with_traceback(traceback)
 
     @staticmethod
     def _build_wsgi_environ(scope: Scope, body: bytes) -> dict[str, Any]:
@@ -151,6 +177,4 @@ class WSGIAdapter:
                     value_str = existing + "," + value_str
             environ[key] = value_str
 
-        environ.setdefault("CONTENT_LENGTH", str(len(body)))
-        environ.setdefault("CONTENT_TYPE", "")
         return environ

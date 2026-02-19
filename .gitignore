@@ -19,6 +19,7 @@ site_lang/
 target/
 
 # files
+par.md
 **/*.so
 **/*.sqlite
 *.iml

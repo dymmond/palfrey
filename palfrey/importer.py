@@ -17,10 +17,19 @@ from palfrey.middleware.proxy_headers import ProxyHeadersMiddleware
 from palfrey.types import AppType, ASGI2Application, ASGIApplication
 
 logger = get_logger("palfrey.error")
+TRACE_LOG_LEVEL = 5
 
 
 class AppImportError(RuntimeError):
     """Raised when an ASGI/WSGI application cannot be imported."""
+
+
+class ImportFromStringError(AppImportError):
+    """Raised when a ``module:attribute`` target cannot be resolved."""
+
+
+class AppFactoryError(AppImportError):
+    """Raised when an app factory invocation fails with a TypeError."""
 
 
 @dataclass(slots=True)
@@ -32,31 +41,29 @@ class ResolvedApp:
 
 
 def _import_from_string(target: str) -> object:
-    """Import an object from a ``module:attribute`` target string.
-
-    This follows Uvicorn's importer behavior:
-    - validates ``<module>:<attribute>``
-    - supports dotted attribute traversal (``module:obj.attr``)
-    - re-raises nested import errors so internal module failures are not masked
-    """
+    """Import an object from a ``module:attribute`` target string."""
 
     module_name, separator, attrs = target.partition(":")
     if not separator or not module_name or not attrs:
-        raise AppImportError(f'Import string "{target}" must be in format "<module>:<attribute>".')
+        raise ImportFromStringError(
+            f'Import string "{target}" must be in format "<module>:<attribute>".'
+        )
 
     try:
         module = importlib.import_module(module_name)
     except ModuleNotFoundError as exc:
         if exc.name != module_name:
             raise
-        raise AppImportError(f'Could not import module "{module_name}".') from exc
+        raise ImportFromStringError(f'Could not import module "{module_name}".') from exc
 
     instance: object = module
     try:
         for attr in attrs.split("."):
             instance = getattr(instance, attr)
     except AttributeError as exc:
-        raise AppImportError(f'Attribute "{attrs}" not found in module "{module_name}".') from exc
+        raise ImportFromStringError(
+            f'Attribute "{attrs}" not found in module "{module_name}".'
+        ) from exc
 
     return instance
 
@@ -95,13 +102,11 @@ def resolve_application(config: PalfreyConfig) -> ResolvedApp:
         app_object = _import_from_string(app_object)
 
     if config.factory:
-        if not callable(app_object):
-            raise AppImportError("`--factory` requires the target to be callable.")
         factory = cast(Callable[[], object], app_object)
         try:
             app_object = factory()
         except TypeError as exc:
-            raise AppImportError(f"Error loading ASGI app factory: {exc}") from exc
+            raise AppFactoryError(str(exc)) from exc
     elif callable(app_object):
         try:
             candidate = cast(Callable[[], object], app_object)()
@@ -136,10 +141,16 @@ def resolve_application(config: PalfreyConfig) -> ResolvedApp:
     else:
         raise AppImportError(f"Unsupported interface mode '{interface}'.")
 
+    trace_enabled = False
+    if isinstance(config.log_level, str):
+        trace_enabled = config.log_level.lower() == "trace"
+    elif isinstance(config.log_level, int):
+        trace_enabled = config.log_level <= TRACE_LOG_LEVEL
+
+    if trace_enabled:
+        wrapped_app = MessageLoggerMiddleware(wrapped_app)
+
     if config.proxy_headers:
         wrapped_app = ProxyHeadersMiddleware(wrapped_app, config.forwarded_allow_ips or "127.0.0.1")
-
-    if config.log_level == "trace":
-        wrapped_app = MessageLoggerMiddleware(wrapped_app)
 
     return ResolvedApp(app=wrapped_app, interface=interface)

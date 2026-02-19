@@ -1,5 +1,3 @@
-"""HTTP behavior parity tests adapted from Uvicorn HTTP expectations."""
-
 from __future__ import annotations
 
 import asyncio

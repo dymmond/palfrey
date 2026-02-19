@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from palfrey.config import PalfreyConfig
-from palfrey.importer import AppImportError, resolve_application
+from palfrey.importer import AppFactoryError, AppImportError, resolve_application
 from palfrey.middleware.message_logger import MessageLoggerMiddleware
 from palfrey.middleware.proxy_headers import ProxyHeadersMiddleware
 
@@ -88,7 +88,7 @@ def test_invalid_import_string_raises() -> None:
 
 def test_factory_requires_callable() -> None:
     config = PalfreyConfig(app=42, factory=True)
-    with pytest.raises(AppImportError):
+    with pytest.raises(AppFactoryError, match="object is not callable"):
         resolve_application(config)
 
 
@@ -130,7 +130,20 @@ def test_invalid_interface_mode_is_rejected() -> None:
 
 
 def test_trace_log_level_wraps_message_logger_middleware() -> None:
-    config = PalfreyConfig(app=asgi3_app, log_level="trace")
+    config = PalfreyConfig(app=asgi3_app, log_level="trace", proxy_headers=False)
+    resolved = resolve_application(config)
+    assert isinstance(resolved.app, MessageLoggerMiddleware)
+
+
+def test_proxy_headers_wraps_message_logger_when_both_are_enabled() -> None:
+    config = PalfreyConfig(app=asgi3_app, log_level="trace", proxy_headers=True)
+    resolved = resolve_application(config)
+    assert isinstance(resolved.app, ProxyHeadersMiddleware)
+    assert isinstance(resolved.app.app, MessageLoggerMiddleware)
+
+
+def test_numeric_trace_log_level_wraps_message_logger_middleware() -> None:
+    config = PalfreyConfig(app=asgi3_app, log_level=5, proxy_headers=False)
     resolved = resolve_application(config)
     assert isinstance(resolved.app, MessageLoggerMiddleware)
 

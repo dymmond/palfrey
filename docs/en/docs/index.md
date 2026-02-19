@@ -24,7 +24,7 @@
 
 ---
 
-**Documentation**: [https://palfrey.dev](https://palfrey.dev) 📚
+**Documentation**: [https://palfrey.dymmond.com](https://palfrey.dymmond.com) 📚
 
 **Source Code**: [https://github.com/dymmond/palfrey](https://github.com/dymmond/palfrey)
 

@@ -1,68 +1,80 @@
 # Deployment
 
-This page describes deployment patterns from simple to production-grade.
+This page describes deployment models from simple to production-grade.
 
-## Level 1: Single process
-
-```bash
-palfrey myapp.main:app --host 0.0.0.0 --port 8000
-```
-
-Use for prototypes, internal tools, and low-concurrency services.
-
-## Level 2: Multi-worker process model
+## Model 1: Single process
 
 ```bash
-palfrey myapp.main:app --host 0.0.0.0 --port 8000 --workers 4
+palfrey main:app --host 0.0.0.0 --port 8000
 ```
 
-Use when one process cannot safely saturate available CPU.
+Best for:
 
-## Level 3: Reverse proxy in front
+- internal tools
+- low-traffic services
+- early-stage prototypes
 
-- Edge proxy handles ingress policy and TLS.
-- Palfrey handles app runtime and protocol behavior.
-- Trust forwarded headers only from explicit proxy IP ranges.
+## Model 2: Multi-worker process
 
-Example app used for proxy diagnostics:
-
-```python
-{!> ../../../docs_src/guides/nginx_reverse_proxy_app.py !}
+```bash
+palfrey main:app --host 0.0.0.0 --port 8000 --workers 4
 ```
 
-## Level 4: Service manager supervision
+Best for:
 
-Use `systemd`/equivalent for restart policy, log routing, and boot ordering.
+- CPU scaling across cores
+- process isolation for resilience
 
-Service app reference:
+## Model 3: Reverse proxy + Palfrey
+
+- edge proxy handles ingress policy and TLS
+- Palfrey handles ASGI runtime and protocol behavior
+- trusted proxy boundaries configured explicitly
+
+## Model 4: Service manager supervised
+
+Use `systemd` (or equivalent) for:
+
+- restart policy
+- startup ordering
+- log routing
+- boot integration
+
+Reference app:
 
 ```python
 {!> ../../../docs_src/operations/systemd_app.py !}
 ```
 
-## Level 5: Controlled restarts under load
+## Model 5: Gunicorn supervisor with Palfrey workers
 
-Consider:
+Use Gunicorn when your platform standardizes around Gunicorn process supervision.
 
-- `--limit-max-requests`
-- `--limit-max-requests-jitter`
-- `--timeout-graceful-shutdown`
+Direct command:
 
-These settings help long-running services avoid synchronized worker churn.
+```bash
+gunicorn main:app -k palfrey.workers.PalfreyWorker -w 4 -b 0.0.0.0:8000
+```
 
-## Production readiness checklist
+Config-driven startup:
 
-- health endpoints and alarms configured
-- proxy trust boundaries explicit
-- graceful shutdown tested with in-flight requests
+```python
+{!> ../../../docs_src/operations/gunicorn_conf.py !}
+```
+
+```bash
+gunicorn main:app -c docs_src/operations/gunicorn_conf.py
+```
+
+## Production checklist
+
+- startup command is explicit and versioned
+- health checks (`/healthz`) are in place
+- proxy trust config reviewed
+- graceful shutdown tested
 - rollback command documented
-- capacity test results captured
 
-## Non-Technical decision aid
+## Non-technical summary
 
-Scale deployment maturity when one of these becomes true:
-
-- response latency degrades at peak load
-- uptime requirements increase
-- compliance/security requires stricter ingress controls
-- incident handling needs deterministic restart behavior
+Deployment maturity should match business risk.
+As reliability requirements grow, move from simple process startup to managed process supervision and controlled ingress.

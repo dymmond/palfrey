@@ -1,14 +1,14 @@
 # Guide: Reverse Proxy with Nginx
 
-Use a reverse proxy when you need edge controls, TLS termination, rate limiting, and unified ingress management.
+Nginx is commonly used for ingress policy, TLS termination, and routing before Palfrey.
 
-## App used in this guide
+## Reference app
 
 ```python
 {!> ../../../docs_src/guides/nginx_reverse_proxy_app.py !}
 ```
 
-## Minimal Nginx upstream shape
+## Minimal HTTP proxy config
 
 ```nginx
 upstream palfrey_upstream {
@@ -17,6 +17,7 @@ upstream palfrey_upstream {
 
 server {
     listen 80;
+
     location / {
         proxy_pass http://palfrey_upstream;
         proxy_set_header Host $host;
@@ -28,22 +29,38 @@ server {
 }
 ```
 
-## Palfrey startup for trusted proxy headers
+## WebSocket upgrade forwarding
 
-```bash
-palfrey myapp.main:app --proxy-headers --forwarded-allow-ips 127.0.0.1
+If your app uses websocket endpoints, ensure upgrade headers are forwarded:
+
+```nginx
+location /ws {
+    proxy_pass http://palfrey_upstream;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
 ```
 
-For containerized internal networks, set trusted ranges explicitly.
+## Palfrey trust configuration
 
-## Validation steps
+```bash
+palfrey main:app --proxy-headers --forwarded-allow-ips 127.0.0.1
+```
 
-1. Send request through Nginx.
-2. Confirm app sees expected `scheme` and client IP behavior.
-3. Confirm direct untrusted requests do not bypass trust boundaries.
+Use explicit proxy IP ranges in real deployments.
 
-## Non-Technical explanation
+## Verification checklist
 
-Nginx is the building entrance.
-Palfrey is the application floor behind it.
-The proxy decides who gets in and what metadata gets forwarded.
+- request scheme seen by app is correct (`http` vs `https`)
+- client IP seen by app is expected
+- websocket upgrade requests succeed end-to-end
+
+## Non-technical summary
+
+Nginx is your front door.
+Palfrey is the application runtime behind that door.
+Correct trust settings are what keep address/scheme data reliable.

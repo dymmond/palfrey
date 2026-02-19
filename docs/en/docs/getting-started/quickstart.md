@@ -1,8 +1,8 @@
 # Quickstart
 
-This guide starts from minimal HTTP and progressively adds real-world patterns.
+This quickstart moves from easy to advanced in one page.
 
-## Step 1: Minimal HTTP App
+## Stage 1: Hello World (Easy)
 
 ```python
 {!> ../../../docs_src/getting_started/hello_world.py !}
@@ -14,59 +14,109 @@ Run:
 palfrey main:app --host 127.0.0.1 --port 8000
 ```
 
-## Step 2: JSON API Response
+Check:
+
+```bash
+curl http://127.0.0.1:8000
+```
+
+## Stage 2: JSON Response (Easy)
 
 ```python
 {!> ../../../docs_src/getting_started/json_api.py !}
 ```
 
-Run with live reload while developing:
+Start with reload in development:
 
 ```bash
 palfrey main:app --reload --reload-dir .
 ```
 
-## Step 3: Application Factory
+## Stage 3: Read Request Body (Intermediate)
 
-Use a factory when object construction is non-trivial.
+```python
+{!> ../../../docs_src/concepts/http_read_body.py !}
+```
+
+This pattern is useful for webhooks and JSON APIs that process request payloads.
+
+## Stage 4: WebSocket Echo (Intermediate)
+
+```python
+{!> ../../../docs_src/concepts/websocket_echo.py !}
+```
+
+Run with explicit websocket mode:
+
+```bash
+palfrey main:app --ws websockets
+```
+
+## Stage 5: App Factory (Intermediate)
 
 ```python
 {!> ../../../docs_src/getting_started/factory_app.py !}
 ```
 
-Start with factory mode:
+Run with `--factory`:
 
 ```bash
 palfrey --factory main:create_app
 ```
 
-## Step 4: Programmatic Startup
-
-Use Python startup when embedding server launch in your own process flow.
+## Stage 6: Programmatic Startup (Advanced)
 
 ```python
 {!> ../../../docs_src/reference/programmatic_run.py !}
 ```
 
-## Step 5: Environment-Driven Runtime
+Use this when Palfrey startup is coordinated by another Python process.
 
-Palfrey CLI supports `PALFREY_*` env vars via Click `auto_envvar_prefix`.
+## Stage 7: Environment-Driven Configuration (Advanced)
 
 ```python
 {!> ../../../docs_src/reference/env_runtime.py !}
 ```
 
-## Step 6: Next Learning Path
+Typical shell usage:
 
-- Request/response mechanics: [HTTP Concepts](../concepts/http.md)
-- Real-time connections: [WebSockets](../concepts/websockets.md)
-- Startup/shutdown orchestration: [Lifespan](../concepts/lifespan.md)
-- Production planning: [Zero to Production](../guides/from-zero-to-production.md)
+```bash
+export PALFREY_HOST=0.0.0.0
+export PALFREY_PORT=9000
+palfrey main:app
+```
 
-## Plain-Language Summary
+## Stage 8: Pick a Production Direction
 
-At this point you have learned:
+- reverse proxy setup: [Reverse Proxy (Nginx)](../guides/reverse-proxy-nginx.md)
+- TLS strategy: [HTTPS and TLS](../guides/https-tls.md)
+- process model: [Workers](../operations/workers.md)
+- reliability behavior: [Server Behavior](../concepts/server-behavior.md)
 
-- How to start an app quickly.
-- How to use auto-reload during development.
-- How to move from toy examples to controlled startup patterns.
+## Stage 9: Gunicorn + PalfreyWorker (Advanced)
+
+Use this when you want Gunicorn process supervision with Palfrey protocol/runtime handling.
+
+```bash
+gunicorn main:app -k palfrey.workers.PalfreyWorker -w 4 -b 0.0.0.0:8000
+```
+
+Alternate worker class (h11-specific):
+
+```bash
+gunicorn main:app -k palfrey.workers.PalfreyH11Worker -w 4 -b 0.0.0.0:8000
+```
+
+Example Gunicorn config file:
+
+```python
+{!> ../../../docs_src/operations/gunicorn_conf.py !}
+```
+
+## Non-Technical Summary
+
+You just learned three maturity levels:
+
+- basic app startup
+- practical development workflow
+- production-oriented runtime control

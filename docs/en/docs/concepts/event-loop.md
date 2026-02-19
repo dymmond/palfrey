@@ -1,43 +1,43 @@
 # Event Loop
 
-The event loop decides how asynchronous work is scheduled.
+The event loop drives all asynchronous behavior.
 
-## Why it matters
+## Loop Modes in Palfrey
 
-- Throughput under concurrent load.
-- Latency stability.
-- Compatibility with target platform/runtime.
+- `auto`: uses `uvloop` if available, else asyncio default
+- `asyncio`: explicit default asyncio behavior
+- `uvloop`: explicit uvloop behavior
+- `none`: do not alter loop configuration
 
-## Loop Modes
+## How to choose
 
-Palfrey exposes these loop modes:
+## For most teams
 
-- `auto`: prefer `uvloop` when available, otherwise use default asyncio.
-- `asyncio`: always use default asyncio policy.
-- `uvloop`: require uvloop and install uvloop policy.
-- `none`: do not modify loop policy.
+Use `--loop auto`.
 
-CLI examples:
+## For strict reproducibility
 
-```bash
-palfrey myapp.main:app --loop auto
-palfrey myapp.main:app --loop uvloop
-palfrey myapp.main:app --loop asyncio
-```
+Use explicit loop mode in production runbooks (`asyncio` or `uvloop`).
 
-## Choosing For Teams
+## For debugging platform issues
 
-- Start with `auto` unless policy/compliance says otherwise.
-- Use explicit `asyncio` when debugging environment-specific loop behavior.
-- Use explicit `uvloop` when you require deterministic uvloop usage.
+Use `--loop asyncio` to eliminate loop implementation variability.
 
-## Non-Technical explanation
+## Verification checklist
 
-Think of the loop as the dispatcher deciding which conversation proceeds next.
-A better dispatcher can handle more conversations smoothly with the same hardware.
+- benchmark your own payloads and concurrency
+- validate behavior on each target OS
+- capture loop mode in incident reports
 
-## Engineering caution
+## Performance considerations
 
-- Benchmark on your own workload before freezing loop choice.
-- Validate behavior on each deployment target OS and Python version.
-- Keep loop configuration explicit in production startup scripts.
+Loop choice can change:
+
+- tail latency behavior
+- CPU efficiency under concurrent I/O
+- behavior of some third-party async libraries
+
+## Plain-language explanation
+
+Think of the loop as an air traffic controller for async operations.
+Different controllers can improve throughput and smoothness under load.

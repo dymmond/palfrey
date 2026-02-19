@@ -1,10 +1,8 @@
 # Logging
 
-Palfrey supports default logging and external logging config files.
+Palfrey supports built-in logging and external logging configuration files.
 
-## Log levels
-
-Supported runtime levels:
+## Supported levels
 
 - `critical`
 - `error`
@@ -13,40 +11,50 @@ Supported runtime levels:
 - `debug`
 - `trace`
 
-## Quick examples
+CLI examples:
 
 ```bash
 palfrey myapp.main:app --log-level info
-palfrey myapp.main:app --log-level trace --access-log
+palfrey myapp.main:app --log-level debug --access-log
 ```
 
-## JSON/dictConfig setup
+## Configuration inputs
+
+- JSON/YAML file for `logging.config.dictConfig`
+- INI-style file for `logging.config.fileConfig`
+
+Programmatic JSON config example:
 
 ```python
 {!> ../../../docs_src/reference/logging_json.py !}
 ```
 
-Then run:
+Equivalent CLI:
 
 ```bash
 palfrey myapp.main:app --log-config logging.json
 ```
 
-## File formats
-
-- `.json` and `.yaml/.yml` are loaded as dictionary configs.
-- Other files are treated as `logging.fileConfig` inputs.
-
-## Access logs
-
-Access logs can be toggled independently:
+## Access log control
 
 ```bash
 palfrey myapp.main:app --no-access-log
 ```
 
-## Operator notes
+## Practical production guidance
 
-- Keep application logs structured in production for searchability.
-- Ensure request IDs/trace IDs are included by your application or middleware.
-- Treat log format changes as deployment-impacting changes and validate with downstream collectors.
+- include request IDs/trace IDs in app or middleware logs
+- use structured logs for machine processing
+- keep access and error logs distinct
+- validate log ingestion after each release
+
+## Common logging issues
+
+- wrong path passed to `--log-config`
+- YAML config without `PyYAML`
+- level mismatch between root logger and named loggers
+
+## Plain-language summary
+
+Good logs are how teams reconstruct what happened during incidents.
+Treat logging configuration as production-critical code.

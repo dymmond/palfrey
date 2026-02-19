@@ -1,56 +1,60 @@
-# HTTP Concepts
+# HTTP
 
-This page explains how Palfrey handles incoming HTTP requests and outgoing responses.
+This page explains how Palfrey handles HTTP requests and responses.
 
-## Request Parsing
+## Request lifecycle
 
-Palfrey reads request head, parses method/target/version/headers, then reads body by:
+1. read and parse request head (`method`, `target`, `version`, headers)
+2. read body via `Content-Length` or chunked transfer
+3. build HTTP ASGI scope
+4. run app receive/send flow
+5. serialize and write response
 
-- `Content-Length` when present
-- chunked decoding when `Transfer-Encoding: chunked`
-
-Example app that reads request body:
+Body-reading example:
 
 ```python
 {!> ../../../docs_src/concepts/http_read_body.py !}
 ```
 
-## Streaming Responses
-
-ASGI lets apps send response chunks incrementally.
+Streaming response example:
 
 ```python
 {!> ../../../docs_src/concepts/http_streaming.py !}
 ```
 
-## Keep-Alive behavior
+## Response behavior highlights
 
-Connections may stay open for additional requests when protocol/headers allow.
-Keep-alive idle timeout is controlled with:
+- `Content-Length` is respected and validated
+- chunked responses are supported
+- keep-alive is decided from request/response semantics
+- configurable default headers (`server`, `date`)
 
-```bash
-palfrey myapp.main:app --timeout-keep-alive 5
-```
+## Request safety controls
 
-## Default headers
+- head/body size limits
+- optional concurrency limits
+- keep-alive timeout
+- backlog and graceful shutdown controls
 
-Palfrey can add default `server` and `date` response headers unless disabled:
+## Important edge cases
 
-```bash
-palfrey myapp.main:app --no-server-header --no-date-header
-```
+## `Expect: 100-continue`
 
-## Error paths
+Palfrey supports the `100 Continue` flow before body consumption.
 
-- Malformed requests can yield `400 Bad Request`.
-- Application exceptions can yield `500 Internal Server Error` if no response is finalized.
-- Concurrency limit breaches yield `503 Service Unavailable`.
+## HEAD requests
 
-## Non-Technical explanation
+Headers are returned while body payload is suppressed.
 
-HTTP handling is the front desk workflow:
+## Malformed requests
+
+Palfrey returns protocol-appropriate error responses (for example `400`).
+
+## Non-technical explanation
+
+HTTP handling is a disciplined workflow:
 
 - read request clearly
-- route to application logic
-- send a complete and standards-compliant response
-- close or reuse connection safely
+- process with app logic
+- send a standards-compliant reply
+- keep or close the connection safely

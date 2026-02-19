@@ -1,8 +1,10 @@
 # Release Process
 
-This process is designed for predictable and auditable open-source releases.
+This process keeps releases auditable and predictable.
 
-## 1. Pre-release checks
+## 1. Validate locally
+
+Run all quality gates:
 
 ```bash
 task lint
@@ -12,28 +14,31 @@ task test
 hatch run docs-build
 ```
 
-## 2. Version and changelog
+## 2. Prepare version and changelog
 
-- Update version in `pyproject.toml` using semantic versioning.
-- Add release entries to `CHANGELOG.md`.
-- Ensure notable behavior changes are documented.
+- bump version with semantic versioning rules
+- update `CHANGELOG.md`
+- verify docs mention new user-visible behavior
 
-## 3. Tag and publish
+## 3. Cut release
 
-1. Create signed tag `vX.Y.Z`.
-2. Push tag to origin.
-3. Publish package artifacts from CI/release workflow.
+1. create tag `vX.Y.Z`
+2. push tag
+3. run publish workflow
 
-## 4. Post-release validation
+## 4. Post-release verification
 
-- install published artifact in a clean environment
-- run basic startup and protocol smoke checks
-- verify docs and release notes links
+- install released artifact in clean environment
+- run startup smoke tests
+- verify docs links and release note references
 
-## 5. Roll-forward policy
+## 5. If issues are found
 
-If release issues are found:
-
-- patch forward with `X.Y.(Z+1)`
+- patch forward with next patch release
 - document root cause and mitigation in changelog
-- avoid force-changing published artifacts
+- avoid rewriting published artifacts
+
+## Non-technical summary
+
+A release process is a safety system.
+It reduces the chance that urgent fixes introduce new outages.

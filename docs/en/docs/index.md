@@ -32,43 +32,43 @@
 
 ---
 
-Palfrey is an ASGI server for Python applications.
-This documentation is intentionally written for two audiences:
+Palfrey is a clean-room ASGI server focused on three things:
 
-- Platform and product teams who need plain-language operational guidance.
-- Backend engineers who need protocol-level detail and reproducible behavior.
+- behavior you can reason about
+- deployment controls you can operate safely
+- performance you can reproduce and verify
 
-## What Palfrey Is
+This documentation is written for both technical and non-technical readers.
 
-Palfrey is the runtime process that sits between the network and your ASGI app.
-It accepts connections, parses requests, runs your app callable, and writes responses back to clients.
+- Engineers can use the protocol details, option tables, and runbooks.
+- Product, support, and operations teams can use the plain-language summaries and checklists.
 
-In short:
+## What Palfrey Does
 
-- Your app decides business behavior.
-- Palfrey decides network/process behavior.
+At runtime, Palfrey sits between clients and your ASGI application.
 
-## Who Should Read What
+1. accepts TCP or UNIX socket connections
+2. parses protocol bytes into ASGI events
+3. calls your app with `scope`, `receive`, `send`
+4. writes responses back to clients
+5. manages process behavior (reload, workers, graceful shutdown)
 
-If you are new to ASGI:
+## Who Should Start Where
+
+## If you are new to ASGI
 
 1. [Installation](getting-started/installation.md)
 2. [Quickstart](getting-started/quickstart.md)
 3. [Terms and Mental Models](concepts/terms-and-mental-models.md)
-4. [Deployment](operations/deployment.md)
+4. [Server Behavior](concepts/server-behavior.md)
 
-If you run Uvicorn today and want to move safely:
+## If you operate production services
 
-1. [CLI Reference](reference/cli.md)
-2. [Configuration Reference](reference/configuration.md)
-3. [Server Behavior](concepts/server-behavior.md)
-
-If your priority is reliability/performance:
-
-1. [Event Loop](concepts/event-loop.md)
-2. [Protocols](reference/protocols.md)
-3. [Workers](operations/workers.md)
-4. [Benchmarks](operations/benchmarks.md)
+1. [Deployment](operations/deployment.md)
+2. [Workers](operations/workers.md)
+3. [Observability](operations/observability.md)
+4. [Troubleshooting](guides/troubleshooting.md)
+5. [Release Process](operations/release-process.md)
 
 ## First 60 Seconds
 
@@ -78,61 +78,60 @@ Create `main.py`:
 {!> ../../../docs_src/getting_started/hello_world.py !}
 ```
 
-Start Palfrey:
+Run Palfrey:
 
 ```bash
 palfrey main:app --host 127.0.0.1 --port 8000
 ```
 
-Verify:
+Check it:
 
 ```bash
 curl http://127.0.0.1:8000
 ```
 
-## Documentation Map
+Gunicorn + Palfrey worker:
+
+```bash
+gunicorn main:app -k palfrey.workers.PalfreyWorker -w 4 -b 0.0.0.0:8000
+```
+
+## Documentation Structure
 
 ## Getting Started
 
-- Install dependencies and optional extras.
-- Run first HTTP app.
-- Migrate baseline Uvicorn commands.
+- install, verify, and run your first app
+- move from a minimal app to real startup patterns
 
 ## Concepts
 
-- ASGI callable and message model.
-- Event loop selection.
-- HTTP/WebSocket/lifespan lifecycle.
-- Middleware and trust boundaries.
-- Server behavior under load, errors, and shutdown.
+- what ASGI is, and how Palfrey applies it
+- how HTTP, WebSocket, and lifespan flows behave
+- how server internals affect user-visible outcomes
 
 ## Reference
 
-- Full CLI behavior and precedence.
-- Configuration fields, defaults, interactions.
-- Protocol surface and limits.
-- Logging setup and structured config.
+- full CLI and config surface
+- protocol and logging behavior
+- env var model and common errors
 
 ## Guides
 
-- End-to-end production rollout.
-- Reverse proxy integration.
-- TLS setup.
-- Troubleshooting cookbook.
+- migration, security hardening, production rollout
+- practical troubleshooting and FAQ
 
 ## Operations
 
-- Process model decisions.
-- Reload and worker supervision.
-- Docker pattern.
-- Benchmark method and interpretation.
-- Release process.
+- deployment shapes, workers, reload model
+- capacity planning, observability, benchmark method
+- platform-specific notes and release process
 
-## Design Notes For Non-Technical Stakeholders
+## Plain-Language Summary
 
-When someone asks, "what does this server buy us?", the answer is:
+If your application is the business logic, Palfrey is the runtime control layer around it.
+A good runtime control layer gives teams:
 
-- Predictable startup and shutdown behavior.
-- Clear process controls (single process, reload, workers).
-- Explicit runtime configuration for repeatable deploys.
-- Standard ASGI compatibility with modern Python frameworks.
+- predictable startup and shutdown
+- fewer surprises under traffic spikes
+- clearer incident response paths
+- safer, repeatable deployments

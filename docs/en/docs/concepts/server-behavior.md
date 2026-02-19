@@ -1,44 +1,49 @@
 # Server Behavior
 
-This page documents runtime behavior that matters for reliability and incident response.
+This page describes runtime behavior that matters during incidents and scale events.
 
 ## Connection lifecycle
 
-- Palfrey accepts TCP/Unix socket connections.
-- Reads one HTTP request at a time per connection.
-- Optionally keeps connection alive for follow-up requests.
-- Closes on timeout, protocol error, or explicit close behavior.
+1. accept connection
+2. parse request(s)
+3. execute ASGI app
+4. write response
+5. keep alive or close
+
+For WebSocket upgrades, flow switches from HTTP request lifecycle to websocket event lifecycle.
+
+## Limits and overload behavior
+
+- `--limit-concurrency` caps in-flight work
+- excess load receives `503 Service Unavailable`
+- request/response parser limits protect memory and CPU
 
 ## Header behavior
 
-- Optional default `server` and `date` headers are injected unless disabled.
-- If `Content-Length` is missing, payload length is calculated before send.
-- Connection header is managed based on keep-alive decisions.
+- optional default `server` and `date` headers
+- connection handling based on protocol/headers
+- response content length/chunking normalized on write
 
-## Request limits and protection
+## Graceful shutdown model
 
-- `--limit-concurrency` caps active request handlers.
-- Overflow requests receive `503 Service Unavailable`.
-- Request head/body limits protect against oversized payload abuse.
+On shutdown signal, Palfrey:
 
-## Graceful shutdown
+1. stops accepting new connections
+2. waits for active tasks/connections to drain
+3. enforces `--timeout-graceful-shutdown` when set
+4. runs lifespan shutdown when enabled
 
-- Signals trigger shutdown event.
-- Server socket stops accepting new connections.
-- In-flight work is allowed to finish within configured boundaries.
-- Lifespan shutdown runs when enabled.
-
-Graceful work example:
+Graceful handling example:
 
 ```python
 {!> ../../../docs_src/operations/graceful_shutdown.py !}
 ```
 
-## Worker restart behavior
+## Worker recycle behavior
 
-With `--limit-max-requests`, each process can exit after N requests (plus optional jitter) so supervisors replace workers over time.
+`--limit-max-requests` and jitter can be used to rotate workers over time and avoid synchronized restarts.
 
-## Non-Technical explanation
+## Plain-language explanation
 
-Server behavior defines what happens in bad weather: high load, malformed traffic, deploy restarts, and partial failures.
-Predictable behavior is what keeps outages smaller.
+Server behavior defines what happens when things are busy or broken.
+The goal is controlled degradation, not sudden failure.

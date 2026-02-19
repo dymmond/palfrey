@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-<a href="https://github.com/dymmond/palfrey/actions/workflows/test-suite.yml/badge.svg?event=push&branch=main" target="_blank">
-    <img src="https://github.com/dymmond/palfrey/actions/workflows/test-suite.yml/badge.svg?event=push&branch=main" alt="Test Suite">
+<a href="https://github.com/dymmond/palfrey/actions/workflows/ci.yml/badge.svg?event=push&branch=main" target="_blank">
+    <img src="https://github.com/dymmond/palfrey/actions/workflows/ci.yml/badge.svg?event=push&branch=main" alt="Test Suite">
 </a>
 
 <a href="https://pypi.org/project/palfrey" target="_blank">
@@ -37,6 +37,8 @@ Palfrey is a clean-room ASGI server focused on three things:
 - behavior you can reason about
 - deployment controls you can operate safely
 - performance you can reproduce and verify
+
+Protocol runtime modes include HTTP/1.1 backends plus opt-in HTTP/2 (`--http h2`) and HTTP/3 (`--http h3`) paths.
 
 This documentation is written for both technical and non-technical readers.
 

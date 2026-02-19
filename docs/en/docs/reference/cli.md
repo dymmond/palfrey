@@ -54,10 +54,16 @@ Palfrey also mirrors `UVICORN_*` env vars to `PALFREY_*` when no Palfrey-specifi
 | Option | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `--loop` | str | `auto` | `none`, `auto`, `asyncio`, `uvloop` |
-| `--http` | str | `auto` | `auto`, `h11`, `httptools` |
+| `--http` | str | `auto` | `auto`, `h11`, `httptools`, `h2`, `h3` |
 | `--ws` | str | `auto` | `auto`, `none`, `websockets`, `websockets-sansio`, `wsproto` |
 | `--lifespan` | choice | `auto` | `auto`, `on`, `off` |
 | `--h11-max-incomplete-event-size` | int | `None` | h11 buffer cap |
+
+`--http h3` notes:
+
+- requires both `--ssl-certfile` and `--ssl-keyfile`
+- uses UDP/QUIC transport semantics
+- unix socket (`--uds`) and file descriptor (`--fd`) modes are not supported
 
 ## WebSocket tuning
 

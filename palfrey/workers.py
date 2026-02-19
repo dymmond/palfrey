@@ -14,6 +14,17 @@ from palfrey.config import PalfreyConfig
 from palfrey.loops import resolve_loop_setup
 from palfrey.server import PalfreyServer
 
+SIGQUIT_SIGNAL = getattr(signal, "SIGQUIT", getattr(signal, "SIGBREAK", signal.SIGTERM))
+if not hasattr(signal, "SIGQUIT"):
+    signal.SIGQUIT = SIGQUIT_SIGNAL  # type: ignore[attr-defined]
+
+if not hasattr(signal, "siginterrupt"):
+
+    def _siginterrupt(_sig: int, _flag: bool) -> None:
+        return None
+
+    signal.siginterrupt = _siginterrupt  # type: ignore[attr-defined]
+
 
 def _load_gunicorn_runtime() -> tuple[type[Any], int | None]:
     """Load Gunicorn worker class and boot-error code if dependency is installed."""
@@ -120,7 +131,7 @@ if _WORKER_BASE_CLASS is not object:
 
             loop = asyncio.get_running_loop()
             with contextlib.suppress(NotImplementedError, RuntimeError):
-                loop.add_signal_handler(signal.SIGQUIT, self.handle_exit, signal.SIGQUIT, None)
+                loop.add_signal_handler(SIGQUIT_SIGNAL, self.handle_exit, SIGQUIT_SIGNAL, None)
 
         async def _serve(self) -> None:
             """Run Palfrey server with sockets provided by Gunicorn."""

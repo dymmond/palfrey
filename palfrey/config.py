@@ -22,6 +22,8 @@ import click
 from palfrey.acceleration import parse_header_items
 from palfrey.types import AppType
 
+SOCKET_AF_UNIX = getattr(socket, "AF_UNIX", socket.AF_INET)
+
 KnownLoopType = Literal["none", "auto", "asyncio", "uvloop"]
 LoopType = KnownLoopType | str
 KnownHTTPType = Literal["auto", "h11", "httptools"]
@@ -474,7 +476,7 @@ class PalfreyConfig:
 
         logger_args: list[str | int]
         if self.uds:
-            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock = socket.socket(SOCKET_AF_UNIX, socket.SOCK_STREAM)
             try:
                 sock.bind(self.uds)
                 os.chmod(self.uds, 0o666)
@@ -491,7 +493,7 @@ class PalfreyConfig:
             )
             logger_args = [self.uds]
         elif self.fd is not None:
-            sock = socket.fromfd(self.fd, socket.AF_UNIX, socket.SOCK_STREAM)
+            sock = socket.fromfd(self.fd, SOCKET_AF_UNIX, socket.SOCK_STREAM)
             message = "Palfrey running on socket %s (Press CTRL+C to quit)"
             socket_name_format = "%s"
             color_message = (

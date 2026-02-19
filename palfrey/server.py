@@ -41,6 +41,17 @@ from palfrey.types import ClientAddress, ServerAddress
 logger = get_logger("palfrey.server")
 access_logger = get_logger("palfrey.access")
 PIPELINE_QUEUE_LIMIT = 16
+SOCKET_AF_UNIX = getattr(socket, "AF_UNIX", socket.AF_INET)
+
+# Python on Windows doesn't expose asyncio.start_unix_server. Keep a stable
+# attribute so tests and call-sites can uniformly monkeypatch/resolve it.
+if not hasattr(asyncio, "start_unix_server"):
+
+    async def _unsupported_start_unix_server(*_args: Any, **_kwargs: Any) -> asyncio.Server:
+        raise NotImplementedError("Unix domain sockets are not supported on this platform.")
+
+    asyncio.start_unix_server = _unsupported_start_unix_server  # type: ignore[attr-defined]
+
 # Compatibility alias retained for tests and monkeypatch-based integrations.
 resolve_application = _resolve_application
 
@@ -186,7 +197,7 @@ class PalfreyServer:
                     self._servers.append(server)
                 self._server = self._servers[0] if self._servers else None
             elif self.config.fd is not None:
-                server_socket = socket.fromfd(self.config.fd, socket.AF_UNIX, socket.SOCK_STREAM)
+                server_socket = socket.fromfd(self.config.fd, SOCKET_AF_UNIX, socket.SOCK_STREAM)
                 server_socket.setblocking(False)
                 if use_protocol_factory:
                     assert protocol_factory is not None
@@ -209,14 +220,20 @@ class PalfreyServer:
                     uds_perms = os.stat(self.config.uds).st_mode
                 if use_protocol_factory:
                     assert protocol_factory is not None
-                    self._server = await loop.create_unix_server(
+                    create_unix_server = getattr(loop, "create_unix_server", None)
+                    if not callable(create_unix_server):
+                        raise OSError("Unix domain sockets are not supported on this platform.")
+                    self._server = await create_unix_server(
                         protocol_factory,
                         path=self.config.uds,
                         backlog=self.config.backlog,
                         ssl=ssl_context,
                     )
                 else:
-                    self._server = await asyncio.start_unix_server(
+                    start_unix_server = getattr(asyncio, "start_unix_server", None)
+                    if not callable(start_unix_server):
+                        raise OSError("Unix domain sockets are not supported on this platform.")
+                    self._server = await start_unix_server(
                         self._handle_connection,
                         path=self.config.uds,
                         backlog=self.config.backlog,

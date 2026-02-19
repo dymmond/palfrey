@@ -97,7 +97,7 @@ def _run_config(config: PalfreyConfig) -> PalfreyServer | None:
             bound_sockets = [parent_socket]
             supervisor = ReloadSupervisor(
                 config=config,
-                argv=build_reload_argv(fd=parent_socket.fileno()),
+                argv=build_reload_argv(fd=parent_socket.fileno(), config=config),
                 pass_fds=(parent_socket.fileno(),),
             )
             supervisor.run()

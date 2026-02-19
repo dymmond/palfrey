@@ -83,7 +83,7 @@ def test_run_config_uses_reload_supervisor_for_reload_parent(
     monkeypatch.setattr(
         runtime_module,
         "build_reload_argv",
-        lambda *, fd=None: ["python", "-m", "palfrey", "--fd", str(fd)],
+        lambda *, fd=None, config=None: ["python", "-m", "palfrey", "--fd", str(fd)],
     )
     monkeypatch.setattr(runtime_module, "load_env_file", lambda _: None)
     monkeypatch.setattr(runtime_module, "_configure_loop", lambda _: None)

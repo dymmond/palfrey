@@ -287,6 +287,50 @@ def test_handle_connection_switches_to_websocket_upgrade(monkeypatch) -> None:
     assert writer.closed is True
 
 
+def test_handle_connection_uses_custom_ws_protocol_class(monkeypatch) -> None:
+    class DummyWSProtocol(asyncio.Protocol):
+        pass
+
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", ws="websockets"))
+    server._resolved_app = _resolved_app()
+    server.config.ws_protocol_class = DummyWSProtocol
+    writer = DummyWriter()
+    request = HTTPRequest(
+        method="GET",
+        target="/ws",
+        http_version="HTTP/1.1",
+        headers=[("upgrade", "websocket"), ("connection", "Upgrade")],
+        body=b"",
+    )
+    calls = {"count": 0}
+
+    async def fake_read_request(reader, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return request
+        return None
+
+    custom_ws_calls: list[str] = []
+    regular_ws_calls: list[str] = []
+
+    async def fake_run_custom_ws_protocol(self, *, request, reader, writer):
+        custom_ws_calls.append(request.target)
+
+    async def fake_handle_websocket(*args, **kwargs):
+        regular_ws_calls.append("ws")
+
+    monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
+    monkeypatch.setattr(server_module, "is_websocket_upgrade", lambda req: True)
+    monkeypatch.setattr(PalfreyServer, "_run_custom_ws_protocol", fake_run_custom_ws_protocol)
+    monkeypatch.setattr(server_module, "handle_websocket", fake_handle_websocket)
+
+    asyncio.run(server._handle_connection(object(), writer))
+
+    assert custom_ws_calls == ["/ws"]
+    assert regular_ws_calls == []
+    assert writer.closed is True
+
+
 def test_handle_connection_returns_400_for_upgrade_when_ws_backend_disabled(monkeypatch) -> None:
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", ws="none"))
     server._resolved_app = _resolved_app()
@@ -390,6 +434,63 @@ def test_handle_connection_returns_503_when_concurrency_limit_reached(monkeypatc
 
     payload = b"".join(writer.writes)
     assert b"503 Service Unavailable" in payload
+
+
+def test_run_custom_ws_protocol_forwards_handshake_and_stream_bytes() -> None:
+    events: list[tuple[str, bytes | None]] = []
+    transport = object()
+
+    class DummyWSProtocol(asyncio.Protocol):
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+
+        def connection_made(self, received_transport) -> None:
+            assert received_transport is transport
+
+        def data_received(self, data: bytes) -> None:
+            events.append(("data", data))
+
+        def eof_received(self):
+            events.append(("eof", None))
+            return None
+
+        def connection_lost(self, exc: Exception | None) -> None:
+            events.append(("lost", None))
+
+    class DummyProtocolWriter(DummyWriter):
+        def __init__(self) -> None:
+            super().__init__()
+            self.transport = transport
+
+        def is_closing(self) -> bool:
+            return False
+
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", ws="websockets"))
+    server.config.ws_protocol_class = DummyWSProtocol
+    writer = DummyProtocolWriter()
+    request = HTTPRequest(
+        method="GET",
+        target="/ws?x=1",
+        http_version="HTTP/1.1",
+        headers=[("upgrade", "websocket"), ("connection", "Upgrade")],
+        body=b"",
+    )
+
+    async def scenario() -> None:
+        reader = asyncio.StreamReader()
+        reader.feed_data(b"frame-bytes")
+        reader.feed_eof()
+        await server._run_custom_ws_protocol(request=request, reader=reader, writer=writer)
+
+    asyncio.run(scenario())
+
+    assert events[0][0] == "data"
+    assert events[0][1] is not None
+    assert b"GET /ws?x=1 HTTP/1.1\r\n" in events[0][1]
+    assert b"upgrade: websocket\r\n" in events[0][1].lower()
+    assert events[1] == ("data", b"frame-bytes")
+    assert events[2] == ("eof", None)
+    assert events[3] == ("lost", None)
 
 
 def test_handle_connection_returns_503_when_connection_count_reaches_limit(monkeypatch) -> None:

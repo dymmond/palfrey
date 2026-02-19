@@ -480,17 +480,24 @@ class PalfreyServer:
                         await self._write_response(writer, error_response, keep_alive=False)
                         break
 
-                    await handle_websocket(
-                        self._resolved_app.app,
-                        self.config,
-                        reader=reader,
-                        writer=writer,
-                        headers=request.headers,
-                        target=request.target,
-                        client=context.client,
-                        server=context.server,
-                        is_tls=context.is_tls,
-                    )
+                    if self._use_custom_ws_protocol_mode():
+                        await self._run_custom_ws_protocol(
+                            request=request,
+                            reader=reader,
+                            writer=writer,
+                        )
+                    else:
+                        await handle_websocket(
+                            self._resolved_app.app,
+                            self.config,
+                            reader=reader,
+                            writer=writer,
+                            headers=request.headers,
+                            target=request.target,
+                            client=context.client,
+                            server=context.server,
+                            is_tls=context.is_tls,
+                        )
                     break
 
                 if requires_100_continue(request):
@@ -814,6 +821,67 @@ class PalfreyServer:
             )
 
         return create_protocol
+
+    def _use_custom_ws_protocol_mode(self) -> bool:
+        """Return whether runtime should delegate websocket handling to a protocol class."""
+
+        protocol_class = self.config.ws_protocol_class
+        return isinstance(protocol_class, type) and issubclass(protocol_class, asyncio.Protocol)
+
+    async def _run_custom_ws_protocol(
+        self,
+        *,
+        request: HTTPRequest,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        """Delegate websocket bytes to a custom asyncio.Protocol class.
+
+        This mirrors Uvicorn's support for custom ``ws`` protocol classes by
+        instantiating the configured protocol and forwarding the already-read
+        handshake bytes followed by subsequent socket payloads.
+        """
+
+        protocol_class = cast(type[asyncio.Protocol], self.config.ws_protocol_class)
+        protocol_constructor = cast("Callable[..., asyncio.Protocol]", protocol_class)
+
+        loop = asyncio.get_running_loop()
+        app_state = getattr(self._lifespan, "state", {}) if self._lifespan is not None else {}
+        protocol = protocol_constructor(
+            config=self.config,
+            server_state=self.server_state,
+            app_state=app_state,
+            _loop=loop,
+        )
+
+        transport = getattr(writer, "transport", None)
+        if transport is None:
+            raise RuntimeError("Unable to access stream transport for custom websocket protocol.")
+
+        protocol.connection_made(transport)
+        protocol.data_received(self._serialize_http_request(request))
+
+        try:
+            while not writer.is_closing():
+                chunk = await reader.read(65_536)
+                if not chunk:
+                    eof_received = getattr(protocol, "eof_received", None)
+                    if callable(eof_received):
+                        eof_received()
+                    break
+                protocol.data_received(chunk)
+        finally:
+            connection_lost = getattr(protocol, "connection_lost", None)
+            if callable(connection_lost):
+                connection_lost(None)
+
+    @staticmethod
+    def _serialize_http_request(request: HTTPRequest) -> bytes:
+        """Serialize parsed request metadata back into raw HTTP bytes."""
+
+        lines = [f"{request.method} {request.target} {request.http_version}\r\n"]
+        lines.extend(f"{name}: {value}\r\n" for name, value in request.headers)
+        return ("".join(lines) + "\r\n").encode("latin-1") + request.body
 
     def _validate_protocol_backends(self) -> None:
         """Validate that selected protocol backend dependencies are importable.

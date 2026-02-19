@@ -16,7 +16,6 @@ import click
 
 from palfrey import __version__
 from palfrey.config import (
-    KNOWN_LOG_LEVELS,
     LOGGING_CONFIG,
     KnownHTTPType,
     KnownInterfaceType,
@@ -28,7 +27,8 @@ from palfrey.config import (
 from palfrey.importer import AppImportError
 from palfrey.runtime import run
 
-LEVEL_CHOICES = click.Choice(sorted(KNOWN_LOG_LEVELS))
+LOG_LEVEL_NAMES = ("critical", "error", "warning", "info", "debug", "trace")
+LEVEL_CHOICES = click.Choice(list(LOG_LEVEL_NAMES))
 LIFESPAN_CHOICES = click.Choice(list(get_args(KnownLifespanMode)))
 INTERFACE_CHOICES = click.Choice(list(get_args(KnownInterfaceType)))
 
@@ -105,9 +105,53 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
     help="Bind socket to this port. If 0, an available port will be picked.",
 )
 @click.option(
-    "--uds", default=None, type=click.Path(path_type=str), help="Bind to a UNIX domain socket."
+    "--uds",
+    default=None,
+    type=str,
+    help="Bind to a UNIX domain socket.",
 )
 @click.option("--fd", default=None, type=int, help="Bind to socket from this file descriptor.")
+@click.option("--reload", is_flag=True, default=False, help="Enable auto-reload.")
+@click.option(
+    "--reload-dir",
+    "reload_dirs",
+    multiple=True,
+    type=click.Path(path_type=str, exists=True),
+    help="Set reload directories explicitly, instead of using the current working directory.",
+)
+@click.option(
+    "--reload-include",
+    "reload_includes",
+    multiple=True,
+    type=str,
+    help="Set glob patterns to include while watching for files. Includes '*.py' "
+    "by default; these defaults can be overridden with `--reload-exclude`. "
+    "This option has no effect unless watchfiles is installed.",
+)
+@click.option(
+    "--reload-exclude",
+    "reload_excludes",
+    multiple=True,
+    type=str,
+    help="Set glob patterns to exclude while watching for files. Includes "
+    "'.*, .py[cod], .sw.*, ~*' by default; these defaults can be overridden "
+    "with `--reload-include`. This option has no effect unless watchfiles is "
+    "installed.",
+)
+@click.option(
+    "--reload-delay",
+    default=0.25,
+    show_default=True,
+    type=float,
+    help="Delay between previous and next check if application needs to be. Defaults to 0.25s.",
+)
+@click.option(
+    "--workers",
+    default=None,
+    type=int,
+    help="Number of worker processes. Defaults to the $WEB_CONCURRENCY environment"
+    " variable if available, or 1. Not valid with --reload.",
+)
 @click.option(
     "--loop",
     default="auto",
@@ -182,57 +226,16 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
     help="Select ASGI3, ASGI2, or WSGI as the application interface.",
 )
 @click.option(
-    "--reload", is_flag=True, default=False, show_default=True, help="Enable auto-reload."
-)
-@click.option(
-    "--reload-dir",
-    "reload_dirs",
-    multiple=True,
-    type=click.Path(path_type=str, exists=True),
-    help="Set reload directories explicitly, instead of using the current working directory.",
-)
-@click.option(
-    "--reload-include",
-    "reload_includes",
-    multiple=True,
-    type=str,
-    help="Set glob patterns to include while watching for files. Includes '*.py' "
-    "by default; these defaults can be overridden with `--reload-exclude`. "
-    "This option has no effect unless watchfiles is installed.",
-)
-@click.option(
-    "--reload-exclude",
-    "reload_excludes",
-    multiple=True,
-    type=str,
-    help="Set glob patterns to exclude while watching for files. Includes "
-    "'.*, .py[cod], .sw.*, ~*' by default; these defaults can be overridden "
-    "with `--reload-include`. This option has no effect unless watchfiles is "
-    "installed.",
-)
-@click.option(
-    "--reload-delay",
-    default=0.25,
-    show_default=True,
-    type=float,
-    help="Delay between previous and next check if application needs to be. Defaults to 0.25s.",
-)
-@click.option(
-    "--workers",
-    default=None,
-    type=int,
-    help="Number of worker processes. Defaults to the $WEB_CONCURRENCY environment"
-    " variable if available, or 1. Not valid with --reload.",
-)
-@click.option(
     "--env-file",
     default=None,
+    show_default=True,
     type=click.Path(path_type=str, exists=True),
     help="Environment configuration file.",
 )
 @click.option(
     "--log-config",
     default=None,
+    show_default=True,
     type=click.Path(path_type=str, exists=True),
     help="Logging configuration file. Supported formats: .ini, .json, .yaml.",
 )
@@ -245,29 +248,32 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
 )
 @click.option(
     "--access-log/--no-access-log",
+    is_flag=True,
     default=True,
-    show_default=True,
     help="Enable/Disable access log.",
 )
 @click.option(
-    "--use-colors/--no-use-colors", default=None, help="Enable/Disable colorized logging."
+    "--use-colors/--no-use-colors",
+    is_flag=True,
+    default=None,
+    help="Enable/Disable colorized logging.",
 )
 @click.option(
     "--proxy-headers/--no-proxy-headers",
+    is_flag=True,
     default=True,
-    show_default=True,
     help="Enable/Disable X-Forwarded-Proto, X-Forwarded-For to populate url scheme and remote address info.",
 )
 @click.option(
     "--server-header/--no-server-header",
+    is_flag=True,
     default=True,
-    show_default=True,
     help="Enable/Disable default Server header.",
 )
 @click.option(
     "--date-header/--no-date-header",
+    is_flag=True,
     default=True,
-    show_default=True,
     help="Enable/Disable default Date header.",
 )
 @click.option(
@@ -282,7 +288,6 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
 @click.option(
     "--root-path",
     default="",
-    show_default=True,
     type=str,
     help="Set the ASGI 'root_path' for applications submounted below a given URL path.",
 )
@@ -290,12 +295,11 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
     "--limit-concurrency",
     default=None,
     type=int,
-    help="Maximum number of concurrent connections or tasks before issuing HTTP 503 responses.",
+    help="Maximum number of concurrent connections or tasks to allow, before issuing HTTP 503 responses.",
 )
 @click.option(
     "--backlog",
     default=2048,
-    show_default=True,
     type=int,
     help="Maximum number of connections to hold in backlog",
 )
@@ -337,14 +341,14 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
     "--ssl-keyfile",
     default=None,
     show_default=True,
-    type=click.Path(path_type=str),
+    type=str,
     help="SSL key file",
 )
 @click.option(
     "--ssl-certfile",
     default=None,
     show_default=True,
-    type=click.Path(path_type=str),
+    type=str,
     help="SSL certificate file",
 )
 @click.option(
@@ -372,7 +376,7 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
     "--ssl-ca-certs",
     default=None,
     show_default=True,
-    type=click.Path(path_type=str),
+    type=str,
     help="CA certificates file",
 )
 @click.option(
@@ -390,25 +394,33 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
     help="Specify custom default HTTP response headers as a Name:Value pair",
 )
 @click.option(
-    "--app-dir",
-    default="",
-    show_default=True,
-    type=click.Path(path_type=str),
-    help="Look for APP in the specified directory by adding it to the PYTHONPATH.",
-)
-@click.option("--factory", is_flag=True, default=False, help="Treat APP as an application factory.")
-@click.option(
-    "--h11-max-incomplete-event-size",
-    default=None,
-    type=int,
-    help="For h11, the maximum number of bytes to buffer for an incomplete event.",
-)
-@click.option(
     "--version",
     is_flag=True,
     callback=print_version,
     expose_value=False,
     is_eager=True,
+    help="Display the uvicorn version and exit.",
+)
+@click.option(
+    "--app-dir",
+    default="",
+    show_default=True,
+    type=str,
+    help="Look for APP in the specified directory, by adding this to the PYTHONPATH."
+    " Defaults to the current working directory.",
+)
+@click.option(
+    "--h11-max-incomplete-event-size",
+    default=None,
+    type=int,
+    help="For h11, the maximum number of bytes to buffer of an incomplete event.",
+)
+@click.option(
+    "--factory",
+    is_flag=True,
+    default=False,
+    show_default=True,
+    help="Treat APP as an application factory, i.e. a () -> <ASGI app> callable.",
 )
 def main(
     app: str,
@@ -461,8 +473,6 @@ def main(
     factory: bool,
     h11_max_incomplete_event_size: int | None,
 ) -> None:
-    """Run an ASGI app with Uvicorn-compatible CLI options."""
-
     try:
         resolved_log_config: dict[str, Any] | str | None
         if log_config is None:

@@ -58,6 +58,12 @@ Multi-worker example:
 palfrey main:app --host 0.0.0.0 --port 8000 --workers 4 --limit-max-requests 20000 --limit-max-requests-jitter 2000
 ```
 
+Gunicorn + PalfreyWorker alternative:
+
+```bash
+gunicorn main:app -k palfrey.workers.PalfreyWorker -w 4 -b 0.0.0.0:8000
+```
+
 ## Stage 5: Operational readiness
 
 Minimum runbook should include:

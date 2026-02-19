@@ -90,6 +90,12 @@ Check it:
 curl http://127.0.0.1:8000
 ```
 
+Gunicorn + Palfrey worker:
+
+```bash
+gunicorn main:app -k palfrey.workers.PalfreyWorker -w 4 -b 0.0.0.0:8000
+```
+
 ## Documentation Structure
 
 ## Getting Started

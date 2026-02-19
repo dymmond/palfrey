@@ -93,6 +93,26 @@ palfrey main:app
 - process model: [Workers](../operations/workers.md)
 - reliability behavior: [Server Behavior](../concepts/server-behavior.md)
 
+## Stage 9: Gunicorn + PalfreyWorker (Advanced)
+
+Use this when you want Gunicorn process supervision with Palfrey protocol/runtime handling.
+
+```bash
+gunicorn main:app -k palfrey.workers.PalfreyWorker -w 4 -b 0.0.0.0:8000
+```
+
+Alternate worker class (h11-specific):
+
+```bash
+gunicorn main:app -k palfrey.workers.PalfreyH11Worker -w 4 -b 0.0.0.0:8000
+```
+
+Example Gunicorn config file:
+
+```python
+{!> ../../../docs_src/operations/gunicorn_conf.py !}
+```
+
 ## Non-Technical Summary
 
 You just learned three maturity levels:

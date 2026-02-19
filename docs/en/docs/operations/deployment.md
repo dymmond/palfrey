@@ -46,6 +46,26 @@ Reference app:
 {!> ../../../docs_src/operations/systemd_app.py !}
 ```
 
+## Model 5: Gunicorn supervisor with Palfrey workers
+
+Use Gunicorn when your platform standardizes around Gunicorn process supervision.
+
+Direct command:
+
+```bash
+gunicorn main:app -k palfrey.workers.PalfreyWorker -w 4 -b 0.0.0.0:8000
+```
+
+Config-driven startup:
+
+```python
+{!> ../../../docs_src/operations/gunicorn_conf.py !}
+```
+
+```bash
+gunicorn main:app -c docs_src/operations/gunicorn_conf.py
+```
+
 ## Production checklist
 
 - startup command is explicit and versioned

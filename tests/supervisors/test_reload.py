@@ -30,6 +30,31 @@ def test_build_reload_argv_appends_fd_when_provided(
     assert argv[-2:] == ["--fd", "99"]
 
 
+def test_build_reload_argv_falls_back_to_canonical_palfrey_command_for_foreign_parent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["obsidyon", "serve", "--reload"])
+    config = PalfreyConfig(
+        app="tests.fixtures.apps:http_app",
+        reload=True,
+        host="0.0.0.0",
+        port=9999,
+    )
+
+    argv = build_reload_argv(fd=7, config=config)
+
+    assert argv[:4] == [sys.executable, "-m", "palfrey", "tests.fixtures.apps:http_app"]
+    assert "--fd" in argv
+    assert argv[argv.index("--fd") + 1] == "7"
+
+
+def test_build_reload_argv_deduplicates_existing_fd(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["-m", "palfrey", "tests.fixtures.apps:http_app", "--fd", "1"])
+    argv = build_reload_argv(fd=3)
+    assert argv.count("--fd") == 1
+    assert argv[argv.index("--fd") + 1] == "3"
+
+
 def test_reload_supervisor_default_include_patterns() -> None:
     config = PalfreyConfig(app="tests.fixtures.apps:http_app", reload=True)
     supervisor = ReloadSupervisor(config=config, argv=["python", "-m", "palfrey"])

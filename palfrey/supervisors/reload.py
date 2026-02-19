@@ -8,7 +8,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from palfrey.config import PalfreyConfig
@@ -211,7 +211,176 @@ class ReloadSupervisor:
         return changed
 
 
-def build_reload_argv(*, fd: int | None = None) -> list[str]:
+def _looks_like_palfrey_invocation(argv: list[str]) -> bool:
+    """
+    Determine whether the current argv appears to invoke Palfrey directly.
+
+    Args:
+        argv (list[str]): Process argv without interpreter executable.
+
+    Returns:
+        bool: True if argv looks like a direct Palfrey invocation.
+    """
+    if not argv:
+        return False
+
+    command = str(argv[0]).lower()
+    command_name = Path(command).name
+    if "palfrey" in command_name:
+        return True
+    if len(argv) >= 2 and argv[0] == "-m" and argv[1] == "palfrey":
+        return True
+    if command.endswith("__main__.py") and "palfrey" in command:
+        return True
+    return False
+
+
+def _remove_flag_with_value(argv: list[str], flag: str) -> list[str]:
+    """
+    Remove all occurrences of a `--flag value` pair from argv.
+
+    Args:
+        argv (list[str]): Argument vector.
+        flag (str): Flag token to remove.
+
+    Returns:
+        list[str]: Cleaned argv without the selected flag/value pairs.
+    """
+    cleaned: list[str] = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == flag:
+            index += 2
+            continue
+        cleaned.append(token)
+        index += 1
+    return cleaned
+
+
+def _add_option(argv: list[str], flag: str, value: Any) -> None:
+    """
+    Append a single `--flag value` option pair when value is not None.
+
+    Args:
+        argv (list[str]): Target argument vector.
+        flag (str): CLI option flag.
+        value (Any): Option value.
+    """
+    if value is None:
+        return
+    argv.extend([flag, str(value)])
+
+
+def _build_reload_argv_from_config(config: PalfreyConfig) -> list[str]:
+    """
+    Build a canonical Palfrey CLI command from configuration values.
+
+    This path is used when the parent process was started from a non-Palfrey
+    wrapper CLI, ensuring the child process is always a valid Palfrey command.
+
+    Args:
+        config (PalfreyConfig): Runtime configuration to serialize to CLI options.
+
+    Returns:
+        list[str]: Canonical argument vector for the reloader child.
+    """
+    argv: list[str] = [sys.executable, "-m", "palfrey", str(config.app)]
+
+    _add_option(argv, "--host", config.host)
+    _add_option(argv, "--port", config.port)
+    if config.uds:
+        _add_option(argv, "--uds", config.uds)
+
+    _add_option(argv, "--loop", config.loop)
+    _add_option(argv, "--http", config.http)
+    _add_option(argv, "--ws", config.ws)
+    _add_option(argv, "--ws-max-size", config.ws_max_size)
+    _add_option(argv, "--ws-max-queue", config.ws_max_queue)
+    _add_option(argv, "--ws-ping-interval", config.ws_ping_interval)
+    _add_option(argv, "--ws-ping-timeout", config.ws_ping_timeout)
+    _add_option(argv, "--ws-per-message-deflate", str(config.ws_per_message_deflate).lower())
+    _add_option(argv, "--lifespan", config.lifespan)
+    _add_option(argv, "--interface", config.interface)
+
+    if config.reload:
+        argv.append("--reload")
+        _add_option(argv, "--reload-delay", config.reload_delay)
+        for path in config.reload_dirs:
+            _add_option(argv, "--reload-dir", path)
+        for pattern in config.reload_includes:
+            _add_option(argv, "--reload-include", pattern)
+        for pattern in config.reload_excludes:
+            _add_option(argv, "--reload-exclude", pattern)
+
+    _add_option(argv, "--workers", config.workers)
+    _add_option(argv, "--env-file", config.env_file)
+
+    if isinstance(config.log_config, str):
+        _add_option(argv, "--log-config", config.log_config)
+    if config.log_level is not None:
+        _add_option(argv, "--log-level", config.log_level)
+
+    if config.access_log:
+        argv.append("--access-log")
+    else:
+        argv.append("--no-access-log")
+
+    if config.use_colors is True:
+        argv.append("--use-colors")
+    elif config.use_colors is False:
+        argv.append("--no-use-colors")
+
+    if config.proxy_headers:
+        argv.append("--proxy-headers")
+    else:
+        argv.append("--no-proxy-headers")
+
+    if config.server_header:
+        argv.append("--server-header")
+    else:
+        argv.append("--no-server-header")
+
+    if config.date_header:
+        argv.append("--date-header")
+    else:
+        argv.append("--no-date-header")
+
+    _add_option(argv, "--forwarded-allow-ips", config.forwarded_allow_ips)
+    _add_option(argv, "--root-path", config.root_path)
+    _add_option(argv, "--limit-concurrency", config.limit_concurrency)
+    _add_option(argv, "--backlog", config.backlog)
+    _add_option(argv, "--limit-max-requests", config.limit_max_requests)
+    _add_option(argv, "--limit-max-requests-jitter", config.limit_max_requests_jitter)
+    _add_option(argv, "--timeout-keep-alive", config.timeout_keep_alive)
+    _add_option(argv, "--timeout-graceful-shutdown", config.timeout_graceful_shutdown)
+    _add_option(argv, "--timeout-worker-healthcheck", config.timeout_worker_healthcheck)
+
+    _add_option(argv, "--ssl-keyfile", config.ssl_keyfile)
+    _add_option(argv, "--ssl-certfile", config.ssl_certfile)
+    _add_option(argv, "--ssl-keyfile-password", config.ssl_keyfile_password)
+    _add_option(argv, "--ssl-version", config.ssl_version)
+    _add_option(argv, "--ssl-cert-reqs", config.ssl_cert_reqs)
+    _add_option(argv, "--ssl-ca-certs", config.ssl_ca_certs)
+    _add_option(argv, "--ssl-ciphers", config.ssl_ciphers)
+
+    for name, value in config.normalized_headers:
+        _add_option(argv, "--header", f"{name}: {value}")
+
+    if config.app_dir:
+        _add_option(argv, "--app-dir", config.app_dir)
+    if config.factory:
+        argv.append("--factory")
+    _add_option(argv, "--h11-max-incomplete-event-size", config.h11_max_incomplete_event_size)
+
+    return argv
+
+
+def build_reload_argv(
+    *,
+    fd: int | None = None,
+    config: PalfreyConfig | None = None,
+) -> list[str]:
     """
     Construct the argument list necessary to restart the current process.
 
@@ -225,7 +394,14 @@ def build_reload_argv(*, fd: int | None = None) -> list[str]:
     Returns:
         list[str]: The command-line arguments for subprocess spawning.
     """
-    argv = [sys.executable, *sys.argv]
+    if _looks_like_palfrey_invocation(sys.argv):
+        argv = [sys.executable, *sys.argv]
+    elif config is not None:
+        argv = _build_reload_argv_from_config(config)
+    else:
+        argv = [sys.executable, "-m", "palfrey", *sys.argv[1:]]
+
+    argv = _remove_flag_with_value(argv, "--fd")
     if fd is not None:
         argv.extend(["--fd", str(fd)])
     return argv

@@ -262,9 +262,15 @@ def test_serve_initializes_and_shutdowns_lifespan_when_enabled(monkeypatch) -> N
     async def fake_start_server(handler, **kwargs):
         return FakeAsyncServer()
 
+    def fake_load(self: PalfreyConfig) -> None:
+        resolved = _resolved()
+        self.loaded_app = resolved.app
+        self.interface = resolved.interface
+        self.lifespan_class = build_manager
+        self.loaded = True
+
     monkeypatch.setattr(server_module, "configure_logging", lambda config: None)
-    monkeypatch.setattr(server_module, "resolve_application", lambda config: _resolved())
-    monkeypatch.setattr(server_module, "LifespanManager", build_manager)
+    monkeypatch.setattr(PalfreyConfig, "load", fake_load)
     monkeypatch.setattr(server_module.asyncio, "start_server", fake_start_server)
     monkeypatch.setattr(server_module.asyncio, "get_running_loop", lambda: FakeLoop())
 
@@ -288,9 +294,15 @@ def test_serve_auto_mode_continues_when_lifespan_is_unsupported(monkeypatch) -> 
         calls["start_server"] += 1
         return FakeAsyncServer()
 
+    def fake_load(self: PalfreyConfig) -> None:
+        resolved = _resolved()
+        self.loaded_app = resolved.app
+        self.interface = resolved.interface
+        self.lifespan_class = UnsupportedManager
+        self.loaded = True
+
     monkeypatch.setattr(server_module, "configure_logging", lambda config: None)
-    monkeypatch.setattr(server_module, "resolve_application", lambda config: _resolved())
-    monkeypatch.setattr(server_module, "LifespanManager", UnsupportedManager)
+    monkeypatch.setattr(PalfreyConfig, "load", fake_load)
     monkeypatch.setattr(server_module.asyncio, "start_server", fake_start_server)
     monkeypatch.setattr(server_module.asyncio, "get_running_loop", lambda: FakeLoop())
 
@@ -313,9 +325,15 @@ def test_serve_on_mode_stops_when_lifespan_is_unsupported(monkeypatch) -> None:
         calls["start_server"] += 1
         return FakeAsyncServer()
 
+    def fake_load(self: PalfreyConfig) -> None:
+        resolved = _resolved()
+        self.loaded_app = resolved.app
+        self.interface = resolved.interface
+        self.lifespan_class = UnsupportedManager
+        self.loaded = True
+
     monkeypatch.setattr(server_module, "configure_logging", lambda config: None)
-    monkeypatch.setattr(server_module, "resolve_application", lambda config: _resolved())
-    monkeypatch.setattr(server_module, "LifespanManager", UnsupportedManager)
+    monkeypatch.setattr(PalfreyConfig, "load", fake_load)
     monkeypatch.setattr(server_module.asyncio, "start_server", fake_start_server)
     monkeypatch.setattr(server_module.asyncio, "get_running_loop", lambda: FakeLoop())
 

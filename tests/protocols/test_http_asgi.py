@@ -66,6 +66,25 @@ def test_run_http_asgi_collects_response_body_chunks() -> None:
     assert response.body_chunks == [b"hello ", b"world"]
 
 
+def test_run_http_asgi_uses_chunked_default_for_single_body_without_headers() -> None:
+    async def app(scope, receive, send):
+        await receive()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+
+    response = asyncio.run(
+        run_http_asgi(
+            app,
+            {"type": "http", "headers": [], "path": "/", "method": "GET", "state": {}},
+            b"",
+        )
+    )
+
+    assert response.chunked_encoding is True
+    assert (b"transfer-encoding", b"chunked") in response.headers
+    assert response.body_chunks == [b"ok"]
+
+
 def test_run_http_asgi_converts_invalid_initial_message_to_500_response() -> None:
     async def app(scope, receive, send):
         await send({"type": "http.response.wat"})

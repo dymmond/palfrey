@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import socket
 import ssl
+import sys
 from collections.abc import Awaitable, Callable
 from configparser import RawConfigParser
 from contextlib import suppress
+from copy import deepcopy
 from dataclasses import dataclass, field
 from importlib.util import find_spec
 from pathlib import Path
-from typing import IO, Any, Literal
+from typing import IO, Any, Literal, cast
 
 from palfrey.acceleration import parse_header_items
 from palfrey.types import AppType
@@ -20,9 +23,9 @@ from palfrey.types import AppType
 KnownLoopType = Literal["none", "auto", "asyncio", "uvloop"]
 LoopType = KnownLoopType | str
 KnownHTTPType = Literal["auto", "h11", "httptools"]
-HTTPType = KnownHTTPType | str
+HTTPType = KnownHTTPType | str | type[asyncio.Protocol]
 KnownWSType = Literal["auto", "none", "websockets", "websockets-sansio", "wsproto"]
-WSType = KnownWSType | str
+WSType = KnownWSType | str | type[asyncio.Protocol]
 KnownLifespanMode = Literal["auto", "on", "off"]
 LifespanMode = KnownLifespanMode | str
 KnownInterfaceType = Literal["auto", "asgi3", "asgi2", "wsgi"]
@@ -36,6 +39,40 @@ KNOWN_LIFESPAN_MODES = {"auto", "on", "off"}
 KNOWN_INTERFACE_TYPES = {"auto", "asgi3", "asgi2", "wsgi"}
 KNOWN_LOG_LEVELS = {"critical", "error", "warning", "info", "debug", "trace"}
 logger = logging.getLogger("palfrey.error")
+TRACE_LOG_LEVEL = 5
+
+LOGGING_CONFIG: dict[str, Any] = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "default": {
+            "()": "palfrey.logging_config.DefaultFormatter",
+            "fmt": "%(levelprefix)s %(message)s",
+            "use_colors": None,
+        },
+        "access": {
+            "()": "palfrey.logging_config.AccessFormatter",
+            "fmt": '%(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s',
+        },
+    },
+    "handlers": {
+        "default": {
+            "formatter": "default",
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stderr",
+        },
+        "access": {
+            "formatter": "access",
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stdout",
+        },
+    },
+    "loggers": {
+        "palfrey": {"handlers": ["default"], "level": "INFO", "propagate": False},
+        "palfrey.error": {"level": "INFO"},
+        "palfrey.access": {"handlers": ["access"], "level": "INFO", "propagate": False},
+    },
+}
 
 
 def is_dir(path: Path) -> bool:
@@ -124,6 +161,54 @@ def _module_available(module_name: str) -> bool:
     return find_spec(module_name) is not None
 
 
+def create_ssl_context(
+    certfile: str | os.PathLike[str],
+    keyfile: str | os.PathLike[str] | None,
+    password: str | None,
+    ssl_version: int,
+    cert_reqs: int,
+    ca_certs: str | os.PathLike[str] | None,
+    ciphers: str | None,
+) -> ssl.SSLContext:
+    """Create an SSL context using Uvicorn-compatible options."""
+
+    context = ssl.SSLContext(ssl_version)
+    get_password = (lambda: password) if password else None
+    context.load_cert_chain(certfile, keyfile, get_password)
+    context.verify_mode = ssl.VerifyMode(cert_reqs)
+    if ca_certs:
+        context.load_verify_locations(ca_certs)
+    if ciphers:
+        context.set_ciphers(ciphers)
+    return context
+
+
+def _asyncio_loop_factory(use_subprocess: bool = False) -> Callable[[], asyncio.AbstractEventLoop]:
+    """Return asyncio loop factory, matching Uvicorn platform behavior."""
+
+    if sys.platform == "win32" and not use_subprocess:  # pragma: py-not-win32
+        return asyncio.ProactorEventLoop
+    return asyncio.SelectorEventLoop
+
+
+def _uvloop_loop_factory(use_subprocess: bool = False) -> Callable[[], asyncio.AbstractEventLoop]:
+    """Return uvloop loop factory when uvloop is installed."""
+
+    import uvloop
+
+    return uvloop.new_event_loop
+
+
+def _auto_loop_factory(use_subprocess: bool = False) -> Callable[[], asyncio.AbstractEventLoop]:
+    """Resolve auto loop factory preferring uvloop when available."""
+
+    try:
+        import uvloop  # noqa: F401
+    except ImportError:  # pragma: no cover - depends on environment.
+        return _asyncio_loop_factory(use_subprocess=use_subprocess)
+    return _uvloop_loop_factory(use_subprocess=use_subprocess)
+
+
 @dataclass(slots=True)
 class PalfreyConfig:
     """Configuration for server startup, protocol handling, and supervision.
@@ -154,7 +239,9 @@ class PalfreyConfig:
     reload_delay: float = 0.25
     workers: int | None = None
     env_file: str | os.PathLike[str] | None = None
-    log_config: dict[str, Any] | str | RawConfigParser | IO[Any] | None = None
+    log_config: dict[str, Any] | str | RawConfigParser | IO[Any] | None = field(
+        default_factory=lambda: deepcopy(LOGGING_CONFIG)
+    )
     log_level: LogLevel | int | str | None = None
     access_log: bool = True
     proxy_headers: bool = True
@@ -183,6 +270,13 @@ class PalfreyConfig:
     app_dir: str | None = ""
     factory: bool = False
     h11_max_incomplete_event_size: int | None = None
+    loaded: bool = field(default=False, init=False)
+    loaded_app: Any = field(default=None, init=False, repr=False)
+    encoded_headers: list[tuple[bytes, bytes]] = field(default_factory=list, init=False, repr=False)
+    ssl_context: ssl.SSLContext | None = field(default=None, init=False, repr=False)
+    http_protocol_class: Any = field(default=None, init=False, repr=False)
+    ws_protocol_class: Any = field(default=None, init=False, repr=False)
+    lifespan_class: Any = field(default=None, init=False, repr=False)
     _normalized_headers_cache: list[tuple[str, str]] = field(
         default_factory=list,
         init=False,
@@ -194,8 +288,10 @@ class PalfreyConfig:
 
         if ":" not in self.loop:
             self.loop = self.loop.lower()
-        self.http = self.http.lower()
-        self.ws = self.ws.lower()
+        if isinstance(self.http, str) and ":" not in self.http:
+            self.http = self.http.lower()
+        if isinstance(self.ws, str) and ":" not in self.ws:
+            self.ws = self.ws.lower()
         self.lifespan = self.lifespan.lower()
         self.interface = self.interface.lower()
         if isinstance(self.log_level, str):
@@ -206,10 +302,12 @@ class PalfreyConfig:
 
         if self.loop not in KNOWN_LOOP_TYPES and ":" not in self.loop:
             raise ValueError(f"Unsupported loop mode: {self.loop}")
-        if self.http not in KNOWN_HTTP_TYPES:
-            raise ValueError(f"Unsupported HTTP mode: {self.http}")
-        if self.ws not in KNOWN_WS_TYPES:
-            raise ValueError(f"Unsupported WebSocket mode: {self.ws}")
+        if isinstance(self.http, str):
+            if self.http not in KNOWN_HTTP_TYPES and ":" not in self.http:
+                raise ValueError(f"Unsupported HTTP mode: {self.http}")
+        if isinstance(self.ws, str):
+            if self.ws not in KNOWN_WS_TYPES and ":" not in self.ws:
+                raise ValueError(f"Unsupported WebSocket mode: {self.ws}")
         if self.lifespan not in KNOWN_LIFESPAN_MODES:
             raise ValueError(f"Unsupported lifespan mode: {self.lifespan}")
         if self.interface not in KNOWN_INTERFACE_TYPES:
@@ -306,9 +404,13 @@ class PalfreyConfig:
     def effective_http(self) -> KnownHTTPType:
         """Return concrete HTTP backend mode after resolving ``auto``."""
 
+        if not isinstance(self.http, str):
+            return "h11"
         if self.http == "auto":
             return "httptools" if _module_available("httptools") else "h11"
-        return self.http  # type: ignore[return-value]
+        if self.http in KNOWN_HTTP_TYPES:
+            return self.http  # type: ignore[return-value]
+        return "h11"
 
     @property
     def effective_ws(self) -> KnownWSType:
@@ -316,13 +418,25 @@ class PalfreyConfig:
 
         if self.interface == "wsgi":
             return "none"
+        if not isinstance(self.ws, str):
+            if _module_available("websockets"):
+                return "websockets"
+            if _module_available("wsproto"):
+                return "wsproto"
+            return "none"
         if self.ws == "auto":
             if _module_available("websockets"):
                 return "websockets"
             if _module_available("wsproto"):
                 return "wsproto"
             return "none"
-        return self.ws  # type: ignore[return-value]
+        if self.ws in KNOWN_WS_TYPES:
+            return self.ws  # type: ignore[return-value]
+        if _module_available("websockets"):
+            return "websockets"
+        if _module_available("wsproto"):
+            return "wsproto"
+        return "none"
 
     @property
     def is_ssl(self) -> bool:
@@ -389,6 +503,120 @@ class PalfreyConfig:
 
         sock.set_inheritable(True)
         return sock
+
+    def load(self) -> None:
+        """Load runtime application, SSL context, and encoded header state.
+
+        This mirrors Uvicorn's ``Config.load()`` contract for API-level parity.
+        """
+
+        assert not self.loaded
+
+        if self.is_ssl:
+            assert self.ssl_certfile
+            self.ssl_context = create_ssl_context(
+                certfile=self.ssl_certfile,
+                keyfile=self.ssl_keyfile,
+                password=self.ssl_keyfile_password,
+                ssl_version=self.ssl_version,
+                cert_reqs=self.ssl_cert_reqs,
+                ca_certs=self.ssl_ca_certs,
+                ciphers=self.ssl_ciphers,
+            )
+        else:
+            self.ssl_context = None
+
+        encoded = [
+            (name.lower().encode("latin-1"), value.encode("latin-1"))
+            for name, value in self.normalized_headers
+        ]
+        if self.server_header and b"server" not in dict(encoded):
+            self.encoded_headers = [(b"server", b"palfrey")] + encoded
+        else:
+            self.encoded_headers = encoded
+
+        from palfrey.importer import (
+            AppFactoryError,
+            AppImportError,
+            ImportFromStringError,
+            _import_from_string,
+            resolve_application,
+        )
+        from palfrey.lifespan import LifespanManager
+
+        if isinstance(self.http, str):
+            if self.http in KNOWN_HTTP_TYPES:
+                self.http_protocol_class = self.effective_http
+            else:
+                try:
+                    self.http_protocol_class = _import_from_string(self.http)
+                except ImportFromStringError as exc:
+                    logger.error("Error loading HTTP protocol class. %s", exc)
+                    raise SystemExit(1) from exc
+        else:
+            self.http_protocol_class = self.http
+
+        if self.interface == "wsgi" or self.ws == "none":
+            self.ws_protocol_class = None
+        elif isinstance(self.ws, str):
+            if self.ws in KNOWN_WS_TYPES:
+                self.ws_protocol_class = self.effective_ws
+            else:
+                try:
+                    self.ws_protocol_class = _import_from_string(self.ws)
+                except ImportFromStringError as exc:
+                    logger.error("Error loading WebSocket protocol class. %s", exc)
+                    raise SystemExit(1) from exc
+        else:
+            self.ws_protocol_class = self.ws
+
+        self.lifespan_class = None if self.lifespan == "off" else LifespanManager
+
+        try:
+            resolved = resolve_application(self)
+        except AppFactoryError as exc:
+            logger.error("Error loading ASGI app factory: %s", exc)
+            raise SystemExit(1) from exc
+        except AppImportError as exc:
+            logger.error("Error loading ASGI app. %s", exc)
+            raise SystemExit(1) from exc
+
+        self.loaded_app = resolved.app
+        self.interface = resolved.interface
+        self.loaded = True
+
+    def setup_event_loop(self) -> None:
+        """Compatibility shim matching Uvicorn's removed API behavior."""
+
+        raise AttributeError(
+            "The `setup_event_loop` method was replaced by `get_loop_factory` in uvicorn 0.36.0.\n"
+            "None of those methods are supposed to be used directly. If you are doing it, please let me know here: "
+            "https://github.com/Kludex/uvicorn/discussions/2706. Thank you, and sorry for the inconvenience."
+        )
+
+    def get_loop_factory(self) -> Callable[[], asyncio.AbstractEventLoop] | None:
+        """Resolve configured loop mode into a concrete loop factory callable."""
+
+        from palfrey.importer import ImportFromStringError, _import_from_string
+
+        if self.loop == "none":
+            return None
+        if self.loop == "auto":
+            return _auto_loop_factory(use_subprocess=self.use_subprocess)
+        if self.loop == "asyncio":
+            return _asyncio_loop_factory(use_subprocess=self.use_subprocess)
+        if self.loop == "uvloop":
+            return _uvloop_loop_factory(use_subprocess=self.use_subprocess)
+
+        try:
+            loop_factory = _import_from_string(self.loop)
+        except ImportFromStringError as exc:
+            logger.error("Error loading custom loop setup function. %s", exc)
+            raise SystemExit(1) from exc
+        if not callable(loop_factory):
+            logger.error("Error loading custom loop setup function. Import target is not callable.")
+            raise SystemExit(1)
+        return cast("Callable[[], asyncio.AbstractEventLoop]", loop_factory)
 
     @classmethod
     def from_import_string(

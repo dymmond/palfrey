@@ -183,7 +183,7 @@ def test_build_ssl_context_configures_certificate_settings(monkeypatch) -> None:
         def __init__(self, version: int) -> None:
             captured["version"] = version
 
-        def load_cert_chain(self, certfile: str, keyfile: str | None, password: str | None) -> None:
+        def load_cert_chain(self, certfile: str, keyfile: str | None, password) -> None:
             captured["cert"] = certfile
             captured["key"] = keyfile
             captured["password"] = password
@@ -212,7 +212,8 @@ def test_build_ssl_context_configures_certificate_settings(monkeypatch) -> None:
     assert isinstance(context, FakeContext)
     assert captured["cert"] == "cert.pem"
     assert captured["key"] == "key.pem"
-    assert captured["password"] == "secret"
+    assert callable(captured["password"])
+    assert captured["password"]() == "secret"
     assert captured["ca"] == "ca.pem"
     assert captured["ciphers"] == "ECDHE"
     assert context.verify_mode == ssl.CERT_REQUIRED

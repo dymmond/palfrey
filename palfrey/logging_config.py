@@ -174,45 +174,47 @@ def configure_logging(config: PalfreyConfig) -> None:
     log_config = config.log_config
     if log_config:
         if isinstance(log_config, dict):
-            logging.config.dictConfig(cast(dict[str, Any], log_config))
-            return
-        if isinstance(log_config, RawConfigParser):
+            payload = cast(dict[str, Any], log_config)
+            if config.use_colors in (True, False):
+                formatters = payload.get("formatters", {})
+                if isinstance(formatters, dict):
+                    for formatter_name in ("default", "access"):
+                        formatter_config = formatters.get(formatter_name)
+                        if isinstance(formatter_config, dict):
+                            formatter_config["use_colors"] = config.use_colors
+            logging.config.dictConfig(payload)
+        elif isinstance(log_config, RawConfigParser):
             logging.config.fileConfig(log_config, disable_existing_loggers=False)
-            return
-        if hasattr(log_config, "read"):
+        elif hasattr(log_config, "read"):
             logging.config.fileConfig(cast(IO[str], log_config), disable_existing_loggers=False)
-            return
+        else:
+            path = Path(log_config)
+            if path.suffix.lower() == ".json":
+                with path.open("r", encoding="utf-8") as file:
+                    payload_json: dict[str, Any] = json.load(file)
+                logging.config.dictConfig(payload_json)
+            elif path.suffix.lower() in {".yaml", ".yml"}:
+                try:
+                    import yaml
+                except ImportError as exc:  # pragma: no cover - optional dependency branch.
+                    raise RuntimeError(
+                        "YAML log config requires PyYAML. Install optional dependencies."
+                    ) from exc
 
-        path = Path(log_config)
-        if path.suffix.lower() == ".json":
-            with path.open("r", encoding="utf-8") as file:
-                payload: dict[str, Any] = json.load(file)
-            logging.config.dictConfig(payload)
-            return
-        if path.suffix.lower() in {".yaml", ".yml"}:
-            try:
-                import yaml
-            except ImportError as exc:  # pragma: no cover - optional dependency branch.
-                raise RuntimeError(
-                    "YAML log config requires PyYAML. Install optional dependencies."
-                ) from exc
-
-            with path.open("r", encoding="utf-8") as file:
-                payload = yaml.safe_load(file)
-            if not isinstance(payload, dict):
-                raise ValueError("YAML log config must deserialize to a dictionary.")
-            logging.config.dictConfig(payload)
-            return
-
-        logging.config.fileConfig(path, disable_existing_loggers=False)
-        return
-
-    logging.basicConfig(
-        level=_to_logging_level(config.log_level),
-        format=DEFAULT_LOG_FORMAT,
-        force=True,
-    )
-    _apply_default_formatters(config)
+                with path.open("r", encoding="utf-8") as file:
+                    payload_yaml = yaml.safe_load(file)
+                if not isinstance(payload_yaml, dict):
+                    raise ValueError("YAML log config must deserialize to a dictionary.")
+                logging.config.dictConfig(payload_yaml)
+            else:
+                logging.config.fileConfig(path, disable_existing_loggers=False)
+    else:
+        logging.basicConfig(
+            level=_to_logging_level(config.log_level),
+            format=DEFAULT_LOG_FORMAT,
+            force=True,
+        )
+        _apply_default_formatters(config)
 
     if config.log_level is not None:
         level = _to_logging_level(config.log_level)

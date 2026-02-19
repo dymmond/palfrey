@@ -172,9 +172,7 @@ def test_on_tick_returns_true_when_shutdown_requested() -> None:
     assert asyncio.run(server._on_tick(1)) is True
 
 
-def test_on_tick_returns_true_when_max_requests_exceeded(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+def test_on_tick_returns_true_when_max_requests_exceeded() -> None:
     config = PalfreyConfig(
         app="tests.fixtures.apps:http_app",
         limit_max_requests=2,
@@ -183,13 +181,24 @@ def test_on_tick_returns_true_when_max_requests_exceeded(
     server = PalfreyServer(config)
     server._max_requests_before_exit = 2
     server.server_state.total_requests = 2
-    caplog.set_level(logging.INFO, logger="palfrey.server")
 
-    should_exit = asyncio.run(server._on_tick(1))
+    messages: list[str] = []
+
+    class _CaptureHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            messages.append(record.getMessage())
+
+    server_logger = logging.getLogger("palfrey.server")
+    capture_handler = _CaptureHandler()
+    server_logger.addHandler(capture_handler)
+    try:
+        should_exit = asyncio.run(server._on_tick(1))
+    finally:
+        server_logger.removeHandler(capture_handler)
 
     assert should_exit is True
     assert server._shutdown_event.is_set() is True
-    assert "Maximum request limit of 2 exceeded" in caplog.text
+    assert any("Maximum request limit of 2 exceeded" in message for message in messages)
 
 
 def test_main_loop_runs_until_tick_requests_exit(
@@ -264,7 +273,6 @@ def test_shutdown_requests_shutdown_on_all_connections(
 
 def test_shutdown_cancels_tasks_when_graceful_timeout_expires(
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     server = PalfreyServer(
         PalfreyConfig(
@@ -275,7 +283,16 @@ def test_shutdown_cancels_tasks_when_graceful_timeout_expires(
     server._server = FakeAsyncServer()  # type: ignore[assignment]
     task = FakeTask()
     server.server_state.tasks = {task}  # type: ignore[assignment]
-    caplog.set_level(logging.ERROR, logger="palfrey.server")
+
+    messages: list[str] = []
+
+    class _CaptureHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            messages.append(record.getMessage())
+
+    server_logger = logging.getLogger("palfrey.server")
+    capture_handler = _CaptureHandler()
+    server_logger.addHandler(capture_handler)
 
     async def fake_wait_tasks_to_complete(self: PalfreyServer) -> None:
         return None
@@ -291,11 +308,14 @@ def test_shutdown_cancels_tasks_when_graceful_timeout_expires(
     monkeypatch.setattr(server_module.asyncio, "wait_for", fake_wait_for)
     monkeypatch.setattr(server_module.asyncio, "sleep", fake_sleep)
 
-    asyncio.run(server._shutdown())
+    try:
+        asyncio.run(server._shutdown())
+    finally:
+        server_logger.removeHandler(capture_handler)
 
     assert task.cancelled is True
     assert task.message == "Task cancelled, timeout graceful shutdown exceeded"
-    assert "timeout graceful shutdown exceeded" in caplog.text
+    assert any("timeout graceful shutdown exceeded" in message for message in messages)
 
 
 def test_wait_tasks_to_complete_waits_for_connections_and_tasks(
@@ -373,7 +393,6 @@ def test_normalize_address_invalid_port_uses_default() -> None:
 
 def test_handle_http_request_access_log_includes_query_string(
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", access_log=True))
     server._resolved_app = _resolved_http_app()
@@ -389,21 +408,32 @@ def test_handle_http_request_access_log_includes_query_string(
         return HTTPResponse(status=204, headers=[], body_chunks=[])
 
     monkeypatch.setattr(server_module, "run_http_asgi", fake_run_http_asgi)
-    caplog.set_level(logging.INFO, logger="palfrey.access")
 
-    response = asyncio.run(
-        server._handle_http_request(
-            request,
-            ConnectionContext(
-                client=("127.0.0.1", 1111),
-                server=("127.0.0.1", 8000),
-                is_tls=False,
-            ),
+    messages: list[str] = []
+
+    class _CaptureHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            messages.append(record.getMessage())
+
+    access_log = logging.getLogger("palfrey.access")
+    capture_handler = _CaptureHandler()
+    access_log.addHandler(capture_handler)
+    try:
+        response = asyncio.run(
+            server._handle_http_request(
+                request,
+                ConnectionContext(
+                    client=("127.0.0.1", 1111),
+                    server=("127.0.0.1", 8000),
+                    is_tls=False,
+                ),
+            )
         )
-    )
+    finally:
+        access_log.removeHandler(capture_handler)
 
     assert response.status == 204
-    assert '"GET /items?limit=10 HTTP/1.1" 204' in caplog.text
+    assert any('"GET /items?limit=10 HTTP/1.1" 204' in message for message in messages)
 
 
 def test_handle_http_request_skips_access_log_when_disabled(

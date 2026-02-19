@@ -51,6 +51,53 @@ def test_configure_logging_with_dict_payload_uses_dictconfig(
     assert captured["payload"] == payload
 
 
+def test_configure_logging_with_dict_payload_applies_log_level_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "handlers": {"default": {"class": "logging.StreamHandler"}},
+        "root": {"handlers": ["default"], "level": "INFO"},
+    }
+    monkeypatch.setattr(logging_config_module.logging.config, "dictConfig", lambda _value: None)
+    monkeypatch.setattr(
+        logging_config_module.logging.config, "fileConfig", lambda *_args, **_kwargs: None
+    )
+
+    configure_logging(
+        PalfreyConfig(app="tests.fixtures.apps:http_app", log_config=payload, log_level="debug")
+    )
+    assert logging.getLogger("palfrey.error").level == logging.DEBUG
+    assert logging.getLogger("palfrey.access").level == logging.DEBUG
+    assert logging.getLogger("palfrey.asgi").level == logging.DEBUG
+
+
+def test_configure_logging_with_dict_payload_disables_access_logger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "handlers": {"default": {"class": "logging.StreamHandler"}},
+        "root": {"handlers": ["default"], "level": "INFO"},
+        "loggers": {
+            "palfrey.access": {"handlers": ["default"], "level": "INFO", "propagate": True}
+        },
+    }
+    monkeypatch.setattr(logging_config_module.logging.config, "dictConfig", lambda _value: None)
+
+    access_logger = logging.getLogger("palfrey.access")
+    access_logger.handlers = [logging.NullHandler()]
+    access_logger.propagate = True
+
+    configure_logging(
+        PalfreyConfig(app="tests.fixtures.apps:http_app", log_config=payload, access_log=False)
+    )
+    assert access_logger.handlers == []
+    assert access_logger.propagate is False
+
+
 def test_configure_logging_with_json_file_uses_dictconfig(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -125,7 +172,9 @@ def test_configure_logging_basic_config_uses_provided_level(
         captured.update(kwargs)
 
     monkeypatch.setattr(logging_config_module.logging, "basicConfig", fake_basic_config)
-    configure_logging(PalfreyConfig(app="tests.fixtures.apps:http_app", log_level="debug"))
+    configure_logging(
+        PalfreyConfig(app="tests.fixtures.apps:http_app", log_level="debug", log_config=None)
+    )
     assert captured["level"] == logging.DEBUG
     assert captured["force"] is True
 

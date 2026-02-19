@@ -46,3 +46,72 @@ async def websocket_app(scope, receive, send):
                 return
             if message["type"] == "websocket.receive":
                 await send({"type": "websocket.send", "text": message.get("text", "")})
+
+
+async def websocket_close_app(scope, receive, send):
+    """Accept a websocket and immediately close with explicit code/reason."""
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    if scope["type"] == "websocket":
+        await send({"type": "websocket.accept"})
+        await send({"type": "websocket.close", "code": 1001, "reason": "custom reason"})
+
+
+async def websocket_http_response_app(scope, receive, send):
+    """Reject websocket upgrade with HTTP response extension messages."""
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    if scope["type"] == "websocket":
+        await send(
+            {
+                "type": "websocket.http.response.start",
+                "status": 418,
+                "headers": [(b"content-type", b"text/plain; charset=utf-8")],
+            }
+        )
+        await send({"type": "websocket.http.response.body", "body": b"teapot"})
+
+
+async def websocket_subprotocol_app(scope, receive, send):
+    """Accept websocket and negotiate a known subprotocol when requested."""
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    if scope["type"] == "websocket":
+        chosen = "chat" if "chat" in scope.get("subprotocols", []) else None
+        await send({"type": "websocket.accept", "subprotocol": chosen})
+        await send({"type": "websocket.close", "code": 1000})
+
+
+async def lifespan_fail_app(scope, receive, send):
+    """Fail lifespan startup to validate process-exit behavior."""
+
+    if scope["type"] != "lifespan":
+        return
+
+    message = await receive()
+    if message["type"] == "lifespan.startup":
+        await send({"type": "lifespan.startup.failed", "message": "startup failed"})

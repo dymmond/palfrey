@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 import palfrey.runtime as runtime_module
@@ -16,7 +18,6 @@ def test_configure_loop_rejects_unsupported_mode() -> None:
 
 def test_run_config_ignores_workers_when_reload_enabled(
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     calls: list[str] = []
 
@@ -57,10 +58,25 @@ def test_run_config_ignores_workers_when_reload_enabled(
     monkeypatch.delenv("PALFREY_RELOAD_CHILD", raising=False)
 
     config = PalfreyConfig(app="tests.fixtures.apps:http_app", reload=True, workers=2)
-    _run_config(config)
+
+    messages: list[str] = []
+
+    class _CaptureHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            messages.append(record.getMessage())
+
+    runtime_logger = logging.getLogger("palfrey.runtime")
+    capture_handler = _CaptureHandler()
+    runtime_logger.addHandler(capture_handler)
+    try:
+        _run_config(config)
+    finally:
+        runtime_logger.removeHandler(capture_handler)
 
     assert calls == ["init", "pass_fds:1", "run"]
-    assert '"workers" flag is ignored when reloading is enabled.' in caplog.text
+    assert any(
+        '"workers" flag is ignored when reloading is enabled.' in message for message in messages
+    )
 
 
 def test_run_config_rejects_reload_for_non_import_app() -> None:

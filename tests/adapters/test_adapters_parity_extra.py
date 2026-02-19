@@ -22,7 +22,7 @@ def _scope() -> dict[str, object]:
     }
 
 
-def test_wsgi_adapter_defaults_to_500_when_start_response_not_called() -> None:
+def test_wsgi_adapter_emits_body_events_when_start_response_not_called() -> None:
     sent: list[dict[str, object]] = []
 
     def wsgi_app(environ, start_response):
@@ -36,9 +36,8 @@ def test_wsgi_adapter_defaults_to_500_when_start_response_not_called() -> None:
 
     asyncio.run(WSGIAdapter(wsgi_app)(_scope(), receive, send))
 
-    assert sent[0]["type"] == "http.response.start"
-    assert sent[0]["status"] == 500
-    assert sent[1]["body"] == b"payload"
+    assert sent[0] == {"type": "http.response.body", "body": b"payload", "more_body": True}
+    assert sent[1] == {"type": "http.response.body", "body": b"", "more_body": False}
 
 
 def test_wsgi_adapter_passes_through_multiple_chunks() -> None:
@@ -58,4 +57,7 @@ def test_wsgi_adapter_passes_through_multiple_chunks() -> None:
         sent.append(message)
 
     asyncio.run(WSGIAdapter(wsgi_app)(_scope(), receive, send))
-    assert sent[1]["body"] == b"hello world"
+    assert sent[1] == {"type": "http.response.body", "body": b"hello", "more_body": True}
+    assert sent[2] == {"type": "http.response.body", "body": b" ", "more_body": True}
+    assert sent[3] == {"type": "http.response.body", "body": b"world", "more_body": True}
+    assert sent[4] == {"type": "http.response.body", "body": b"", "more_body": False}

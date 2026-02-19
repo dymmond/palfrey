@@ -26,7 +26,7 @@ jobs:
         run: hatch run check-types
 
   tests:
-    name: Tests (Python ${{ matrix.python-version }})
+    name: Tests + Coverage Gate (Linux, Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -43,6 +43,26 @@ jobs:
         run: python -m pip install --upgrade hatch
       - name: Run tests with coverage gate
         run: hatch run test-cov
+
+  portability:
+    name: Portability Smoke (Python ${{ matrix.python-version }} on ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ["macos-latest", "windows-latest"]
+        python-version: ["3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+      - name: Install Hatch
+        run: python -m pip install --upgrade hatch
+      - name: Run portability smoke tests
+        run: hatch run test:test tests/cli tests/config tests/importer tests/runtime tests/unit
 
   docs:
     name: Docs Build

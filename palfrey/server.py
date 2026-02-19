@@ -18,8 +18,8 @@ from importlib.util import find_spec
 from types import FrameType
 from typing import Any, cast
 
-from palfrey.config import PalfreyConfig
-from palfrey.importer import ResolvedApp, resolve_application
+from palfrey.config import PalfreyConfig, create_ssl_context
+from palfrey.importer import ResolvedApp, resolve_application as _resolve_application
 from palfrey.lifespan import LifespanManager
 from palfrey.logging_config import configure_logging, get_logger
 from palfrey.protocols.http import (
@@ -41,6 +41,8 @@ from palfrey.types import ClientAddress, ServerAddress
 logger = get_logger("palfrey.server")
 access_logger = get_logger("palfrey.access")
 PIPELINE_QUEUE_LIMIT = 16
+# Compatibility alias retained for tests and monkeypatch-based integrations.
+resolve_application = _resolve_application
 
 
 HANDLED_SIGNALS = (
@@ -129,12 +131,18 @@ class PalfreyServer:
 
         configure_logging(self.config)
         self._validate_protocol_backends()
-        self._resolved_app = resolve_application(self.config)
+        if not self.config.loaded:
+            self.config.load()
+
+        self._resolved_app = ResolvedApp(
+            app=self.config.loaded_app,
+            interface=self.config.interface,
+        )
         self._max_requests_before_exit = self._compute_max_requests_before_exit()
         self._base_default_headers = self._build_static_default_headers()
 
-        if self.config.lifespan != "off":
-            self._lifespan = LifespanManager(
+        if self.config.lifespan_class is not None:
+            self._lifespan = self.config.lifespan_class(
                 self._resolved_app.app,
                 lifespan_mode=self.config.lifespan,
             )
@@ -522,7 +530,7 @@ class PalfreyServer:
                 request_coro = read_http_request(
                     reader,
                     max_head_size=self.config.h11_max_incomplete_event_size or 1_048_576,
-                    parser_mode=self.config.http,
+                    parser_mode=self.config.effective_http,
                 )
                 try:
                     if first_request and keep_alive_timeout > 0:
@@ -696,27 +704,22 @@ class PalfreyServer:
         return default_host, default_port
 
     def _build_ssl_context(self) -> ssl.SSLContext | None:
+        if self.config.ssl_context is not None:
+            return self.config.ssl_context
         if not self.config.is_ssl:
             return None
-        if not self.config.ssl_certfile:
-            raise ValueError("ssl_certfile is required when TLS is enabled")
 
-        ssl_version = self.config.ssl_version or ssl.PROTOCOL_TLS_SERVER
-        context = ssl.SSLContext(ssl_version)
-        context.load_cert_chain(
+        assert self.config.ssl_certfile
+        self.config.ssl_context = create_ssl_context(
             certfile=self.config.ssl_certfile,
             keyfile=self.config.ssl_keyfile,
             password=self.config.ssl_keyfile_password,
+            ssl_version=self.config.ssl_version,
+            cert_reqs=self.config.ssl_cert_reqs,
+            ca_certs=self.config.ssl_ca_certs,
+            ciphers=self.config.ssl_ciphers,
         )
-
-        if self.config.ssl_ca_certs:
-            context.load_verify_locations(self.config.ssl_ca_certs)
-
-        if self.config.ssl_cert_reqs is not None:
-            context.verify_mode = cast(ssl.VerifyMode, self.config.ssl_cert_reqs)
-
-        context.set_ciphers(self.config.ssl_ciphers)
-        return context
+        return self.config.ssl_context
 
     def _compute_max_requests_before_exit(self) -> int | None:
         """Compute effective max requests, including configured jitter."""

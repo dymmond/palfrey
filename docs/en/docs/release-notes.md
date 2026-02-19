@@ -1,15 +1,34 @@
 # Release Notes
 
-This page summarizes notable milestones.
+This page provides release navigation and policy.
 
-For full detail, see [`CHANGELOG.md`](https://github.com/dymmond/palfrey/blob/main/CHANGELOG.md).
+## Source of truth
 
-## Upcoming
+Detailed release history is maintained in:
 
-- Expanded documentation architecture and migration guides.
-- Improved conceptual coverage for ASGI, server behavior, and deployment modes.
-- Additional operational guides for Docker, TLS, and troubleshooting.
+- [`CHANGELOG.md`](https://github.com/dymmond/palfrey/blob/main/CHANGELOG.md)
 
-## Previous entries
+## Versioning policy
 
-Track all shipped behavior and fixes in changelog with semantic version tags.
+Palfrey follows semantic versioning:
+
+- MAJOR: breaking behavior changes
+- MINOR: backward-compatible features
+- PATCH: backward-compatible fixes
+
+## Recommended reading order after each release
+
+1. release summary
+2. behavior changes
+3. migration notes (if any)
+4. operational impact notes
+
+## Upgrade checklist
+
+- review changelog entries for your current-to-target range
+- run staging smoke tests with production-like config
+- validate logs/metrics/health checks after deploy
+
+## Non-technical summary
+
+Release notes answer one question: "What changed, and what should my team do about it?"

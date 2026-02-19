@@ -1,14 +1,14 @@
-# Docker Operations
+# Docker
 
-This page covers practical container deployment with Palfrey.
+This page covers practical container deployment patterns.
 
-## Example app for container probes
+## Probe-ready app example
 
 ```python
 {!> ../../../docs_src/operations/docker_healthcheck.py !}
 ```
 
-## Minimal Dockerfile pattern
+## Minimal Dockerfile
 
 ```dockerfile
 FROM python:3.13-slim
@@ -21,25 +21,37 @@ EXPOSE 8000
 CMD ["palfrey", "docs_src.operations.docker_healthcheck:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
-## Container health checks
+## Recommended multi-stage pattern
 
-Add health probes in your orchestrator against `/healthz` and `/readyz`.
+Use multi-stage builds when compiling optional components or installing build-only dependencies.
 
-## Runtime flags commonly used in containers
+## Runtime flags often used in containers
 
 - `--host 0.0.0.0`
-- `--port <container-port>`
-- `--workers <n>` when CPU resources justify it
-- proxy settings when behind ingress/proxy
+- `--port 8000`
+- `--workers N` (when resource limits justify)
+- proxy flags when behind ingress
 
-## Image and runtime recommendations
+## Container health checks
 
-- Use pinned base image tags.
-- Keep runtime images minimal; move build tooling to separate build stages.
-- Avoid embedding secrets in images.
-- Keep startup command explicit and versioned.
+Configure orchestrator probes for:
 
-## Non-Technical explanation
+- liveness
+- readiness
 
-Containerizing Palfrey packages runtime behavior into a repeatable unit,
-so staging and production execute the same startup logic.
+Example endpoint choices:
+
+- `/healthz`
+- `/readyz`
+
+## Operational recommendations
+
+- keep base images pinned
+- keep images minimal
+- avoid embedding secrets in image layers
+- keep startup command explicit and reviewed
+
+## Non-technical summary
+
+Containers package runtime behavior into repeatable units.
+Repeatability is what makes staging and production comparable.

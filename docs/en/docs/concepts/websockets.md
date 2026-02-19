@@ -1,49 +1,64 @@
-# WebSockets Concepts
+# WebSockets
 
-WebSockets upgrade an HTTP connection into a long-lived bidirectional channel.
+WebSockets turn an HTTP upgrade into a long-lived bidirectional channel.
 
-## Handshake Overview
+## Handshake essentials
 
-Client sends upgrade headers (`Upgrade`, `Connection`, `Sec-WebSocket-*`).
-Palfrey validates handshake and then exposes ASGI websocket events.
+Client must send valid upgrade headers, including:
 
-## Application acceptance model
+- `Upgrade: websocket`
+- `Connection: Upgrade`
+- `Sec-WebSocket-Key`
+- `Sec-WebSocket-Version: 13`
 
-- App can accept (`websocket.accept`) and exchange messages.
-- App can close (`websocket.close`) to reject or terminate.
+If handshake validation fails, connection is rejected.
 
-Basic echo example:
+## ASGI flow
+
+1. app receives `websocket.connect`
+2. app sends one of:
+   - `websocket.accept`
+   - `websocket.close`
+   - `websocket.http.response.start` + body (HTTP-style rejection path)
+3. after accept, app handles receive/send messages
+4. close handshake and disconnect complete session
+
+Easy echo example:
 
 ```python
 {!> ../../../docs_src/concepts/websocket_echo.py !}
 ```
 
-Authenticated gate example:
+Auth gate example:
 
 ```python
 {!> ../../../docs_src/concepts/websocket_auth_gate.py !}
 ```
 
-Room fanout example:
+Stateful room example:
 
 ```python
 {!> ../../../docs_src/concepts/websocket_chat_room.py !}
 ```
 
-## Operational controls
+## Runtime controls
 
-- `--ws none` to disable WebSocket upgrades.
-- `--ws-max-size` to cap frame payload size.
-- Ping-related flags are available for compatibility-focused configurations.
+- `--ws`: backend mode selection
+- `--ws-max-size`: max frame/message size
+- `--ws-max-queue`: receive queue sizing
+- `--ws-ping-interval` and `--ws-ping-timeout`
+- `--ws-per-message-deflate`
 
-## Failure modes to test
+## Failure cases you should test
 
-- Invalid handshake headers.
-- Oversized frames.
-- abrupt client disconnects.
-- invalid UTF-8 text frames.
+- invalid handshake headers
+- oversized payloads
+- invalid UTF-8 text frames
+- half-open disconnects
+- proxy configurations that drop upgrade headers
 
-## Non-Technical explanation
+## Plain-language explanation
 
-HTTP is like sending letters.
-WebSockets are like opening a phone call and talking both ways until one side hangs up.
+HTTP is a request letter.
+WebSocket is a live conversation.
+It stays open until one side closes.

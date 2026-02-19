@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-<a href="https://github.com/dymmond/palfrey/actions/workflows/test-suite.yml/badge.svg?event=push&branch=main" target="_blank">
-    <img src="https://github.com/dymmond/palfrey/actions/workflows/test-suite.yml/badge.svg?event=push&branch=main" alt="Test Suite">
+<a href="https://github.com/dymmond/palfrey/actions/workflows/ci.yml/badge.svg?event=push&branch=main" target="_blank">
+    <img src="https://github.com/dymmond/palfrey/actions/workflows/ci.yml/badge.svg?event=push&branch=main" alt="Test Suite">
 </a>
 
 <a href="https://pypi.org/project/palfrey" target="_blank">
@@ -32,45 +32,124 @@
 
 ---
 
-## Key points
+Palfrey is a clean-room ASGI server focused on three things:
 
-- No runtime dependency on Uvicorn.
-- Click-based CLI with Uvicorn-compatible option surface.
-- HTTP, WebSocket, and lifespan protocol support.
-- Loop setup modes and middleware stack (proxy headers, ASGI message logging).
-- Reload and worker process supervision.
-- Optional Rust acceleration helpers.
+- behavior you can reason about
+- deployment controls you can operate safely
+- performance you can reproduce and verify
 
-## Quick start
+Protocol runtime modes include HTTP/1.1 backends plus opt-in HTTP/2 (`--http h2`) and HTTP/3 (`--http h3`) paths.
 
-```bash
-palfrey myapp.main:app --host 127.0.0.1 --port 8000
-```
+This documentation is written for both technical and non-technical readers.
 
-Programmatic startup:
+- Engineers can use the protocol details, option tables, and runbooks.
+- Product, support, and operations teams can use the plain-language summaries and checklists.
+
+## What Palfrey Does
+
+At runtime, Palfrey sits between clients and your ASGI application.
+
+1. accepts TCP or UNIX socket connections
+2. parses protocol bytes into ASGI events
+3. calls your app with `scope`, `receive`, `send`
+4. writes responses back to clients
+5. manages process behavior (reload, workers, graceful shutdown)
+
+## Who Should Start Where
+
+## If you are new to ASGI
+
+1. [Installation](getting-started/installation.md)
+2. [Quickstart](getting-started/quickstart.md)
+3. [Terms and Mental Models](concepts/terms-and-mental-models.md)
+4. [Server Behavior](concepts/server-behavior.md)
+
+## If you operate production services
+
+1. [Deployment](operations/deployment.md)
+2. [Workers](operations/workers.md)
+3. [Observability](operations/observability.md)
+4. [Troubleshooting](guides/troubleshooting.md)
+5. [Release Process](operations/release-process.md)
+
+## First 60 Seconds
+
+Create `main.py`:
 
 ```python
-from palfrey import run
-
 async def app(scope, receive, send):
-    if scope["type"] == "http":
-        await send({"type": "http.response.start", "status": 200, "headers": []})
-        await send({"type": "http.response.body", "body": b"hello"})
+    """Return a plain-text greeting for HTTP requests."""
+    if scope["type"] != "http":
+        return
 
-run(app)
+    body = b"Hello from Palfrey"
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 200,
+            "headers": [
+                (b"content-type", b"text/plain; charset=utf-8"),
+                (b"content-length", str(len(body)).encode("ascii")),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": body})
 ```
 
-## Quality gates
+Run Palfrey:
 
 ```bash
-hatch run lint
-hatch run check-types
-hatch run test-cov
-hatch run docs-build
+palfrey main:app --host 127.0.0.1 --port 8000
 ```
 
-## Docs
+Check it:
 
-- [Overview](docs/en/docs/index.md)
-- [Benchmarks](docs/en/docs/operations/benchmarks.md)
-- [Release Process](docs/en/docs/operations/release-process.md)
+```bash
+curl http://127.0.0.1:8000
+```
+
+Gunicorn + Palfrey worker:
+
+```bash
+gunicorn main:app -k palfrey.workers.PalfreyWorker -w 4 -b 0.0.0.0:8000
+```
+
+## Documentation Structure
+
+## Getting Started
+
+- install, verify, and run your first app
+- move from a minimal app to real startup patterns
+
+## Concepts
+
+- what ASGI is, and how Palfrey applies it
+- how HTTP, WebSocket, and lifespan flows behave
+- how server internals affect user-visible outcomes
+
+## Reference
+
+- full CLI and config surface
+- protocol and logging behavior
+- env var model and common errors
+
+## Guides
+
+- migration, security hardening, production rollout
+- practical troubleshooting and FAQ
+
+## Operations
+
+- deployment shapes, workers, reload model
+- capacity planning, observability, benchmark method
+- platform-specific notes and release process
+
+## Plain-Language Summary
+
+If your application is the business logic, Palfrey is the runtime control layer around it.
+A good runtime control layer gives teams:
+
+- predictable startup and shutdown
+- fewer surprises under traffic spikes
+- clearer incident response paths
+- safer, repeatable deployments

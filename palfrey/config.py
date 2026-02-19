@@ -28,7 +28,7 @@ if not hasattr(socket, "AF_UNIX"):
 # Type Aliases for valid configuration options
 KnownLoopType = Literal["none", "auto", "asyncio", "uvloop"]
 LoopType = KnownLoopType | str
-KnownHTTPType = Literal["auto", "h11", "httptools"]
+KnownHTTPType = Literal["auto", "h11", "httptools", "h2", "h3"]
 HTTPType = KnownHTTPType | str | type[asyncio.Protocol]
 KnownWSType = Literal["auto", "none", "websockets", "websockets-sansio", "wsproto"]
 WSType = KnownWSType | str | type[asyncio.Protocol]
@@ -40,7 +40,7 @@ LogLevel = Literal["critical", "error", "warning", "info", "debug", "trace"]
 
 # Validation sets for configuration parameters
 KNOWN_LOOP_TYPES = {"none", "auto", "asyncio", "uvloop"}
-KNOWN_HTTP_TYPES = {"auto", "h11", "httptools"}
+KNOWN_HTTP_TYPES = {"auto", "h11", "httptools", "h2", "h3"}
 KNOWN_WS_TYPES = {"auto", "none", "websockets", "websockets-sansio", "wsproto"}
 KNOWN_LIFESPAN_MODES = {"auto", "on", "off"}
 KNOWN_INTERFACE_TYPES = {"auto", "asgi3", "asgi2", "wsgi"}
@@ -487,7 +487,7 @@ class PalfreyConfig:
         Resolves the concrete HTTP implementation to use when 'auto' is selected.
 
         Returns:
-            KnownHTTPType: Either 'httptools' if available, or 'h11'.
+            KnownHTTPType: Either 'httptools' if available, or a configured explicit mode.
         """
         if not isinstance(self.http, str):
             return "h11"
@@ -505,6 +505,8 @@ class PalfreyConfig:
         Returns:
             KnownWSType: The resolved WebSocket backend or 'none' if inapplicable.
         """
+        if self.effective_http == "h3":
+            return "none"
         if self.interface == "wsgi":
             return "none"
         if not isinstance(self.ws, str):

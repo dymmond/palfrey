@@ -104,3 +104,15 @@ def test_effective_ws_resolves_auto_to_none_when_no_backends(
 def test_effective_ws_forces_none_for_wsgi_interface() -> None:
     config = PalfreyConfig(app="tests.fixtures.apps:http_app", interface="wsgi", ws="websockets")
     assert config.effective_ws == "none"
+
+
+def test_config_accepts_http2_and_http3_modes() -> None:
+    config_h2 = PalfreyConfig(app="tests.fixtures.apps:http_app", http="h2")
+    config_h3 = PalfreyConfig(app="tests.fixtures.apps:http_app", http="h3")
+    assert config_h2.http == "h2"
+    assert config_h3.http == "h3"
+
+
+def test_effective_ws_forces_none_for_http3_mode() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:http_app", http="h3", ws="websockets")
+    assert config.effective_ws == "none"

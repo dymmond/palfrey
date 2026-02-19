@@ -32,6 +32,8 @@ from palfrey.protocols.http import (
     run_http_asgi,
     should_keep_alive,
 )
+from palfrey.protocols.http2 import serve_http2_connection
+from palfrey.protocols.http3 import create_http3_server
 from palfrey.protocols.utils import get_path_with_query_string
 from palfrey.protocols.websocket import handle_websocket
 
@@ -229,6 +231,10 @@ class PalfreyServer:
         for sig in (signal.SIGINT, signal.SIGTERM):
             with contextlib.suppress(NotImplementedError, RuntimeError):
                 loop.add_signal_handler(sig, lambda _sig=sig: self._handle_exit_signal(_sig))
+
+        if self.config.effective_http == "h3":
+            await self._serve_http3(sockets=sockets)
+            return
 
         ssl_context = self._build_ssl_context()
         use_protocol_factory = self._use_protocol_factory_mode()
@@ -456,9 +462,13 @@ class PalfreyServer:
             servers = [self._server]
 
         for server in servers:
-            server.close()
+            close = getattr(server, "close", None)
+            if callable(close):
+                close()
         for server in servers:
-            await server.wait_closed()
+            wait_closed = getattr(server, "wait_closed", None)
+            if callable(wait_closed):
+                await wait_closed()
         self._servers.clear()
         self._server = None
 
@@ -529,6 +539,24 @@ class PalfreyServer:
         current_task = asyncio.current_task()
         if current_task is not None:
             self.server_state.tasks.add(current_task)
+
+        if self.config.effective_http == "h2":
+            try:
+                await self._handle_http2_connection(
+                    reader=reader,
+                    writer=writer,
+                    context=context,
+                )
+            except Exception as exc:
+                logger.exception("HTTP/2 connection handler failed: %s", exc)
+            finally:
+                self.server_state.connections.discard(tracked_connection)
+                if current_task is not None:
+                    self.server_state.tasks.discard(current_task)
+                writer.close()
+                with contextlib.suppress(Exception):
+                    await writer.wait_closed()
+            return
 
         keep_processing = True
         keep_alive_timeout = self.config.timeout_keep_alive
@@ -655,6 +683,57 @@ class PalfreyServer:
             writer.close()
             with contextlib.suppress(Exception):
                 await writer.wait_closed()
+
+    async def _handle_http2_connection(
+        self,
+        *,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        context: ConnectionContext,
+    ) -> None:
+        """
+        Handle one HTTP/2 connection and map each completed stream to the ASGI app.
+
+        Args:
+            reader (asyncio.StreamReader): Source stream reader.
+            writer (asyncio.StreamWriter): Destination stream writer.
+            context (ConnectionContext): Connection metadata for scope construction.
+        """
+
+        async def request_handler(request: HTTPRequest) -> HTTPResponse:
+            if self._is_concurrency_limit_exceeded():
+                return self._service_unavailable_response()
+
+            acquired = await self._enter_request_slot()
+            if not acquired:
+                return self._service_unavailable_response()
+
+            try:
+                response = await self._handle_http_request(request, context)
+            except Exception as exc:
+                logger.exception("HTTP/2 request handling failed: %s", exc)
+                response = HTTPResponse(status=500, headers=[(b"content-type", b"text/plain")])
+                response.body_chunks = [b"Internal Server Error"]
+                append_default_response_headers(response, self.config)
+            finally:
+                await self._leave_request_slot()
+
+            self.server_state.total_requests += 1
+            if self._max_requests_before_exit is None:
+                self._max_requests_before_exit = self._compute_max_requests_before_exit()
+            if (
+                self._max_requests_before_exit is not None
+                and self.server_state.total_requests >= self._max_requests_before_exit
+            ):
+                self.request_shutdown()
+
+            return response
+
+        await serve_http2_connection(
+            reader=reader,
+            writer=writer,
+            request_handler=request_handler,
+        )
 
     async def _queue_connection_requests(
         self,
@@ -876,7 +955,73 @@ class PalfreyServer:
             ca_certs=self.config.ssl_ca_certs,
             ciphers=self.config.ssl_ciphers,
         )
+        if self.config.effective_http == "h2":
+            with contextlib.suppress(NotImplementedError, ValueError, AttributeError):
+                self.config.ssl_context.set_alpn_protocols(["h2"])
         return self.config.ssl_context
+
+    async def _serve_http3(self, *, sockets: list[socket.socket] | None) -> None:
+        """
+        Start QUIC/HTTP3 serving loop using aioquic.
+
+        Args:
+            sockets (list[socket.socket] | None): Pre-bound sockets. Not supported for HTTP/3.
+        """
+        if sockets is not None:
+            raise RuntimeError("HTTP mode 'h3' does not support pre-bound sockets.")
+        if self.config.fd is not None:
+            raise RuntimeError("HTTP mode 'h3' does not support --fd.")
+        if self.config.uds:
+            raise RuntimeError("HTTP mode 'h3' does not support --uds.")
+        if self._resolved_app is None:
+            raise RuntimeError("Application is not resolved.")
+
+        async def request_handler(
+            request: HTTPRequest,
+            client: ClientAddress,
+            server: ServerAddress,
+        ) -> HTTPResponse:
+            context = ConnectionContext(client=client, server=server, is_tls=True)
+
+            if self._is_concurrency_limit_exceeded():
+                return self._service_unavailable_response()
+
+            acquired = await self._enter_request_slot()
+            if not acquired:
+                return self._service_unavailable_response()
+
+            try:
+                response = await self._handle_http_request(request, context)
+            except Exception as exc:
+                logger.exception("HTTP/3 request handling failed: %s", exc)
+                response = HTTPResponse(status=500, headers=[(b"content-type", b"text/plain")])
+                response.body_chunks = [b"Internal Server Error"]
+                append_default_response_headers(response, self.config)
+            finally:
+                await self._leave_request_slot()
+
+            self.server_state.total_requests += 1
+            if self._max_requests_before_exit is None:
+                self._max_requests_before_exit = self._compute_max_requests_before_exit()
+            if (
+                self._max_requests_before_exit is not None
+                and self.server_state.total_requests >= self._max_requests_before_exit
+            ):
+                self.request_shutdown()
+
+            return response
+
+        self._server = await create_http3_server(
+            config=self.config,
+            request_handler=request_handler,
+        )
+        self._servers = [self._server]
+
+        logger.info("Listening on udp://%s:%d", self.config.host, self.config.port)
+        self._started = True
+
+        await self._main_loop()
+        await self._shutdown()
 
     def _compute_max_requests_before_exit(self) -> int | None:
         """
@@ -1002,6 +1147,15 @@ class PalfreyServer:
         """
         if self.config.http == "httptools" and find_spec("httptools") is None:
             raise RuntimeError("HTTP mode 'httptools' requires the 'httptools' package.")
+        if self.config.http == "h2" and find_spec("h2") is None:
+            raise RuntimeError("HTTP mode 'h2' requires the 'h2' package.")
+        if self.config.http == "h3":
+            if find_spec("aioquic") is None:
+                raise RuntimeError("HTTP mode 'h3' requires the 'aioquic' package.")
+            if not self.config.ssl_certfile or not self.config.ssl_keyfile:
+                raise RuntimeError("HTTP mode 'h3' requires both --ssl-certfile and --ssl-keyfile.")
+            if self.config.fd is not None or self.config.uds:
+                raise RuntimeError("HTTP mode 'h3' does not support --fd or --uds.")
 
         selected_ws = self.config.effective_ws
         if selected_ws == "none":

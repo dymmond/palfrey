@@ -59,6 +59,12 @@ testing = [
 benchmark = [
     "uvicorn[standard]>=0.34.0,<1.0.0",
 ]
+http2 = [
+    "h2>=4.1.0",
+]
+http3 = [
+    "aioquic>=1.2.0",
+]
 
 docs = [
     "sayer>=0.7.4",

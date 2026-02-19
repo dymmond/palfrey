@@ -17,6 +17,20 @@ Operationally relevant controls:
 - `--timeout-keep-alive`
 - `--limit-concurrency`
 
+HTTP backend modes:
+
+- `h11`: pure-Python HTTP/1.1 parser
+- `httptools`: C-accelerated HTTP/1.1 parser
+- `h2`: HTTP/2 stream processing backend
+- `h3`: HTTP/3 (QUIC) backend
+
+HTTP/3 notes:
+
+- requires TLS cert+key
+- runs over UDP/QUIC instead of TCP
+- does not use Unix socket (`--uds`) or inherited FD (`--fd`) modes
+- websocket mode is disabled in HTTP/3 runtime mode
+
 ## WebSocket protocol behavior
 
 Handshake requirements:

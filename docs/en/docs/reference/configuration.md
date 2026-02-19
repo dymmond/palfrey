@@ -33,7 +33,7 @@ Programmatic setup example:
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `loop` | `auto` | event loop policy |
-| `http` | `auto` | HTTP implementation |
+| `http` | `auto` | HTTP implementation (`auto`, `h11`, `httptools`, `h2`, `h3`) |
 | `ws` | `auto` | websocket implementation |
 | `h11_max_incomplete_event_size` | `None` | h11 incomplete event cap |
 
@@ -106,6 +106,8 @@ Header example:
 - `reload=True` requires app import string target.
 - `workers>1` requires app import string target.
 - `wsgi` interface disables websocket support (`effective_ws = none`).
+- `http="h3"` disables websocket runtime (`effective_ws = none`).
+- `http="h3"` requires TLS cert+key and does not support `uds`/`fd`.
 - explicit backend selection requires corresponding dependency installed.
 
 ## Environment defaults

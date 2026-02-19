@@ -1,34 +1,69 @@
 # Release Notes
 
-This page provides release navigation and policy.
+## 0.1.0
 
-## Source of truth
+This is the first public release of Palfrey.
 
-Detailed release history is maintained in:
+Palfrey launches as a clean-room ASGI server with familiar runtime ergonomics, strong operational controls,
+and an upgrade path beyond HTTP/1.1 through opt-in HTTP/2 and HTTP/3 modes.
 
-- [`CHANGELOG.md`](https://github.com/dymmond/palfrey/blob/main/CHANGELOG.md)
+### Highlights
 
-## Versioning policy
+- Uvicorn-style CLI surface with Click.
+- Production-ready HTTP/1.1 + WebSocket + lifespan runtime.
+- Process models for single-process, worker mode, reload mode, and Gunicorn worker integration.
+- Opt-in HTTP/2 (`--http h2`) support.
+- Opt-in HTTP/3/QUIC (`--http h3`) support.
+- Structured, expanded documentation across getting started, reference, guides, and operations.
 
-Palfrey follows semantic versioning:
+### Core Capabilities Included
 
-- MAJOR: breaking behavior changes
-- MINOR: backward-compatible features
-- PATCH: backward-compatible fixes
+- Protocols:
+  - HTTP/1.1 (`h11`, `httptools`)
+  - WebSockets (`websockets`, `websockets-sansio`, `wsproto`)
+  - Lifespan startup/shutdown
+  - HTTP/2 (opt-in)
+  - HTTP/3 (opt-in)
+- Runtime controls:
+  - keep-alive, concurrency limits, request limits, graceful shutdown
+  - proxy header trust controls
+  - TLS and logging configuration
+- Deployment options:
+  - host/port, UDS, FD binding (where applicable)
+  - multi-worker process model
+  - Gunicorn integration via `palfrey.workers.PalfreyWorker`
 
-## Recommended reading order after each release
+### Installation Profiles
 
-1. release summary
-2. behavior changes
-3. migration notes (if any)
-4. operational impact notes
+- Minimal:
+  - `pip install palfrey`
+- Standard extras:
+  - `pip install "palfrey[standard]"`
+- HTTP/2:
+  - `pip install "palfrey[http2]"`
+- HTTP/3:
+  - `pip install "palfrey[http3]"`
 
-## Upgrade checklist
+### First-Release Operational Notes
 
-- review changelog entries for your current-to-target range
-- run staging smoke tests with production-like config
-- validate logs/metrics/health checks after deploy
+- Defaults stay stable and conservative:
+  - `--http auto` remains HTTP/1.1 backend selection.
+- HTTP/3 mode requirements:
+  - requires `--ssl-certfile` and `--ssl-keyfile`
+  - runs over UDP/QUIC
+  - does not use `--fd` or `--uds`
+  - websocket runtime is disabled in HTTP/3 mode
 
-## Non-technical summary
+### Quick Start Commands
 
-Release notes answer one question: "What changed, and what should my team do about it?"
+```bash
+palfrey main:app --host 127.0.0.1 --port 8000
+```
+
+```bash
+palfrey main:app --http h2 --host 127.0.0.1 --port 8000
+```
+
+```bash
+palfrey main:app --http h3 --ws none --host 127.0.0.1 --port 8443 --ssl-certfile cert.pem --ssl-keyfile key.pem
+```

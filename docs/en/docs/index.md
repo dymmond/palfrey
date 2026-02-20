@@ -42,8 +42,9 @@ Protocol runtime modes include HTTP/1.1 backends plus opt-in HTTP/2 (`--http h2`
 
 ## Palfrey vs Uvicorn
 
-Palfrey was built as a compatible alternative to Uvicorn, not as a dismissal of Uvicorn.
-Uvicorn remains a strong, battle-tested ASGI server and heavily influenced Palfrey's API compatibility goals.
+Palfrey was built with deep respect for Uvicorn and the ASGI ecosystem it helped mature.
+This is not a "winner vs loser" comparison. Uvicorn is an excellent, battle-tested server, and Palfrey intentionally keeps a compatible API/CLI experience so teams coming from Uvicorn feel at home.
+Our goal is to offer another strong option when teams want different internal architecture and extended runtime capabilities.
 
 Benchmark snapshot (your run):
 

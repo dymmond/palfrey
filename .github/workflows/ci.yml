@@ -2,9 +2,16 @@ name: Test Suite
 
 on:
   push:
-    branches: ["main"]
+    branches:
+      - "main"
+    paths-ignore:
+      - "docs/**"
   pull_request:
     branches: ["main"]
+    paths-ignore:
+      - "docs/**"
+  schedule:
+    - cron: "0 0 * * *"
 
 jobs:
   quality:

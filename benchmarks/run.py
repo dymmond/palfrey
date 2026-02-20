@@ -105,6 +105,8 @@ def _build_command(server: str, port: int) -> list[str]:
             "--no-access-log",
             "--http",
             "httptools",
+            "--loop",
+            "uvloop",
             "--ws",
             "websockets",
         ]
@@ -119,7 +121,9 @@ def _build_command(server: str, port: int) -> list[str]:
         str(port),
         "--no-access-log",
         "--http",
-        "h11",
+        "httptools",
+        "--loop",
+        "uvloop",
         "--ws",
         "websockets",
     ]

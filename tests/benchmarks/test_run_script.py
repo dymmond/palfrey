@@ -89,7 +89,7 @@ def test_build_command_uses_optimized_profiles() -> None:
     assert "--no-access-log" in uvicorn_cmd
 
     assert palfrey_cmd[palfrey_cmd.index("--http") + 1] == "httptools"
-    assert uvicorn_cmd[uvicorn_cmd.index("--http") + 1] == "h11"
+    assert uvicorn_cmd[uvicorn_cmd.index("--http") + 1] == "httptools"
 
     assert palfrey_cmd[palfrey_cmd.index("--ws") + 1] == "websockets"
     assert uvicorn_cmd[uvicorn_cmd.index("--ws") + 1] == "websockets"

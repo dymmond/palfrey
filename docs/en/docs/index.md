@@ -48,12 +48,12 @@ Our goal is to offer another strong option when teams want different internal ar
 
 Benchmark snapshot (your run):
 
-- Command: `python benchmarks/run.py --http-requests 50000`
+- Command: `python -m benchmarks.run --http-requests 100000`
 
 | Scenario | Palfrey Ops/s | Uvicorn Ops/s | Relative Speed |
 | --- | ---: | ---: | ---: |
-| HTTP | 36793.21 | 22021.90 | `1.671x` |
-| WebSocket | 36556.28 | 13822.97 | `2.645x` |
+| HTTP | 36859.67 | 36357.47 | `1.014x` |
+| WebSocket | 38884.53 | 15317.18 | `2.539x` |
 
 These numbers are environment-dependent. Always benchmark with your own app, traffic profile, and infrastructure before making production decisions.
 

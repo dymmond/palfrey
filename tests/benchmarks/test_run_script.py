@@ -15,9 +15,7 @@ def test_create_connection_with_retry_retries_retryable_errno(
     sleep_calls: list[float] = []
     probe_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-    def fake_create_connection(
-        address: tuple[str, int], timeout: float = 5.0
-    ) -> socket.socket:
+    def fake_create_connection(address: tuple[str, int], timeout: float = 5.0) -> socket.socket:
         attempts["count"] += 1
         assert address == ("127.0.0.1", 8000)
         assert timeout == 1.0
@@ -26,9 +24,7 @@ def test_create_connection_with_retry_retries_retryable_errno(
         return probe_socket
 
     monkeypatch.setattr(bench_run.socket, "create_connection", fake_create_connection)
-    monkeypatch.setattr(
-        bench_run.time, "sleep", lambda value: sleep_calls.append(value)
-    )
+    monkeypatch.setattr(bench_run.time, "sleep", lambda value: sleep_calls.append(value))
     monkeypatch.setattr(bench_run.random, "random", lambda: 0.0)
 
     conn = bench_run._create_connection_with_retry(
@@ -50,9 +46,7 @@ def test_create_connection_with_retry_retries_retryable_errno(
 def test_create_connection_with_retry_raises_non_retryable_errno(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_create_connection(
-        address: tuple[str, int], timeout: float = 5.0
-    ) -> socket.socket:
+    def fake_create_connection(address: tuple[str, int], timeout: float = 5.0) -> socket.socket:
         raise OSError(errno.ECONNREFUSED, "Connection refused")
 
     monkeypatch.setattr(bench_run.socket, "create_connection", fake_create_connection)

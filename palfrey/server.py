@@ -347,7 +347,7 @@ class PalfreyServer:
                     listening_sockets.extend(bound_sockets)
 
         for sock in listening_sockets:
-            logger.info("Listening on %s", sock.getsockname())
+            logger.info("Listening on %s (Press CTRL+C to quit)", sock.getsockname())
         self._started = True
 
         await self._main_loop()

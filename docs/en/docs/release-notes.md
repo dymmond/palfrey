@@ -1,5 +1,11 @@
 # Release Notes
 
+## 0.1.2
+
+### Changed
+
+- Startup message update with clearer protocol mode reporting and reload mode status when applicable.
+
 ## 0.1.1
 
 This is the first patch release for Palfrey.

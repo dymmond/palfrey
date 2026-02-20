@@ -229,6 +229,7 @@ class PalfreyServer:
                 return
 
         loop = asyncio.get_running_loop()
+        self._log_runtime_configuration(loop)
         for sig in (signal.SIGINT, signal.SIGTERM):
             with contextlib.suppress(NotImplementedError, RuntimeError):
                 loop.add_signal_handler(sig, lambda _sig=sig: self._handle_exit_signal(_sig))
@@ -957,6 +958,42 @@ class PalfreyServer:
             with contextlib.suppress(NotImplementedError, ValueError, AttributeError):
                 self.config.ssl_context.set_alpn_protocols(["h2"])
         return self.config.ssl_context
+
+    @staticmethod
+    def _loop_backend_name(loop: asyncio.AbstractEventLoop) -> str:
+        """
+        Infer a stable loop backend name from the runtime loop type.
+
+        Args:
+            loop (asyncio.AbstractEventLoop): Running event loop instance.
+
+        Returns:
+            str: Friendly loop backend label suitable for startup logs.
+        """
+        module_name = loop.__class__.__module__
+        class_name = loop.__class__.__name__
+
+        if module_name.startswith("uvloop"):
+            return "uvloop"
+        if module_name.startswith("asyncio"):
+            return "asyncio"
+        return f"{module_name}.{class_name}"
+
+    def _log_runtime_configuration(self, loop: asyncio.AbstractEventLoop) -> None:
+        """
+        Emit a concise startup summary for selected runtime backends.
+
+        Args:
+            loop (asyncio.AbstractEventLoop): Running event loop instance.
+        """
+        logger.info(
+            "Runtime configuration: loop=%s, http=%s, ws=%s, lifespan=%s, interface=%s",
+            self._loop_backend_name(loop),
+            self.config.effective_http,
+            self.config.effective_ws,
+            self.config.lifespan,
+            self.config.interface,
+        )
 
     def _log_running_messages(self, sockets: list[socket.socket]) -> None:
         """

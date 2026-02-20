@@ -40,6 +40,22 @@ Palfrey is a clean-room ASGI server focused on three things:
 
 Protocol runtime modes include HTTP/1.1 backends plus opt-in HTTP/2 (`--http h2`) and HTTP/3 (`--http h3`) paths.
 
+## Palfrey vs Uvicorn
+
+Palfrey was built as a compatible alternative to Uvicorn, not as a dismissal of Uvicorn.
+Uvicorn remains a strong, battle-tested ASGI server and heavily influenced Palfrey's API compatibility goals.
+
+Benchmark snapshot (your run):
+
+- Command: `python benchmarks/run.py --http-requests 50000`
+
+| Scenario | Palfrey Ops/s | Uvicorn Ops/s | Relative Speed |
+| --- | ---: | ---: | ---: |
+| HTTP | 36793.21 | 22021.90 | `1.671x` |
+| WebSocket | 36556.28 | 13822.97 | `2.645x` |
+
+These numbers are environment-dependent. Always benchmark with your own app, traffic profile, and infrastructure before making production decisions.
+
 This documentation is written for both technical and non-technical readers.
 
 - Engineers can use the protocol details, option tables, and runbooks.

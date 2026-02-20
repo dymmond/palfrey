@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import ssl
 
 import pytest
@@ -48,6 +49,108 @@ def _resolved_app() -> ResolvedApp:
         await send({"type": "http.response.body", "body": b"ok"})
 
     return ResolvedApp(app=app, interface="asgi3")
+
+
+class _SocketWithName:
+    def __init__(self, sockname: object) -> None:
+        self._sockname = sockname
+
+    def getsockname(self) -> object:
+        return self._sockname
+
+
+def test_loop_backend_name_returns_asyncio_for_stdlib_module_name() -> None:
+    fake_loop_class = type("SelectorEventLoop", (), {"__module__": "asyncio.unix_events"})
+    fake_loop = fake_loop_class()
+    assert PalfreyServer._loop_backend_name(fake_loop) == "asyncio"  # type: ignore[arg-type]
+
+
+def test_loop_backend_name_returns_uvloop_for_uvloop_module_name() -> None:
+    fake_loop_class = type("Loop", (), {"__module__": "uvloop.loop"})
+    fake_loop = fake_loop_class()
+    assert PalfreyServer._loop_backend_name(fake_loop) == "uvloop"  # type: ignore[arg-type]
+
+
+def test_loop_backend_name_returns_qualified_name_for_custom_loops() -> None:
+    fake_loop_class = type("Loop", (), {"__module__": "custom.runtime"})
+    fake_loop = fake_loop_class()
+    assert PalfreyServer._loop_backend_name(fake_loop) == "custom.runtime.Loop"  # type: ignore[arg-type]
+
+
+def test_log_runtime_configuration_emits_backend_summary() -> None:
+    fake_loop_class = type("Loop", (), {"__module__": "uvloop.loop"})
+    fake_loop = fake_loop_class()
+    server = PalfreyServer(
+        PalfreyConfig(
+            app="tests.fixtures.apps:http_app",
+            http="h11",
+            ws="wsproto",
+            lifespan="on",
+            interface="asgi3",
+        )
+    )
+
+    messages: list[str] = []
+
+    class _CaptureHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            messages.append(record.getMessage())
+
+    server_logger = logging.getLogger("palfrey.server")
+    previous_level = server_logger.level
+    server_logger.setLevel(logging.INFO)
+    capture_handler = _CaptureHandler()
+    capture_handler.setLevel(logging.INFO)
+    server_logger.addHandler(capture_handler)
+    try:
+        server._log_runtime_configuration(fake_loop)  # type: ignore[arg-type]
+    finally:
+        server_logger.removeHandler(capture_handler)
+        server_logger.setLevel(previous_level)
+
+    assert (
+        "Runtime configuration: loop=uvloop, http=h11, ws=wsproto, lifespan=on, interface=asgi3"
+        in messages
+    )
+
+
+def test_log_running_messages_deduplicates_targets() -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
+    sockets = [
+        _SocketWithName(("127.0.0.1", 8000)),
+        _SocketWithName(("127.0.0.1", 8000)),
+    ]
+
+    running_lines: list[str] = []
+
+    class _CaptureHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            message = record.getMessage()
+            if "Palfrey running on" in message:
+                running_lines.append(message)
+
+    server_logger = logging.getLogger("palfrey.server")
+    previous_level = server_logger.level
+    server_logger.setLevel(logging.INFO)
+    capture_handler = _CaptureHandler()
+    capture_handler.setLevel(logging.INFO)
+    server_logger.addHandler(capture_handler)
+    try:
+        server._log_running_messages(sockets)  # type: ignore[arg-type]
+    finally:
+        server_logger.removeHandler(capture_handler)
+        server_logger.setLevel(previous_level)
+
+    assert running_lines == ["Palfrey running on http://127.0.0.1:8000 (Press CTRL+C to quit)"]
+
+
+def test_format_running_target_wraps_ipv6_host() -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
+    socket_with_ipv6 = _SocketWithName(("::1", 8000, 0, 0))
+
+    target = server._format_running_target(socket_with_ipv6)  # type: ignore[arg-type]
+
+    assert target == "http://[::1]:8000"
 
 
 def test_normalize_address_from_tuple() -> None:

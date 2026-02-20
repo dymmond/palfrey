@@ -26,6 +26,8 @@ theme:
     toggle:
       icon: material/weather-sunny
       name: Switch to light mode
+  favicon: statics/images/favicon.ico
+  logo: statics/images/white.png
   font:
     text: Source Sans 3
     code: JetBrains Mono

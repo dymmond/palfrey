@@ -202,6 +202,7 @@ class PalfreyServer:
         Internal implementation of the server startup and lifecycle.
         """
         configure_logging(self.config)
+        logger.info("Started server process [%d]", os.getpid())
         self._validate_protocol_backends()
         if not self.config.loaded:
             self.config.load()
@@ -228,6 +229,7 @@ class PalfreyServer:
                 return
 
         loop = asyncio.get_running_loop()
+        self._log_runtime_configuration(loop)
         for sig in (signal.SIGINT, signal.SIGTERM):
             with contextlib.suppress(NotImplementedError, RuntimeError):
                 loop.add_signal_handler(sig, lambda _sig=sig: self._handle_exit_signal(_sig))
@@ -340,14 +342,11 @@ class PalfreyServer:
             self._servers = [self._server] if self._server is not None else []
 
         listening_sockets: list[socket.socket] = []
-        if sockets is None:
-            for server in self._servers:
-                bound_sockets = cast(list[socket.socket] | None, getattr(server, "sockets", None))
-                if bound_sockets:
-                    listening_sockets.extend(bound_sockets)
-
-        for sock in listening_sockets:
-            logger.info("Listening on %s (Press CTRL+C to quit)", sock.getsockname())
+        for server in self._servers:
+            bound_sockets = cast(list[socket.socket] | None, getattr(server, "sockets", None))
+            if bound_sockets:
+                listening_sockets.extend(bound_sockets)
+        self._log_running_messages(listening_sockets)
         self._started = True
 
         await self._main_loop()
@@ -960,6 +959,105 @@ class PalfreyServer:
                 self.config.ssl_context.set_alpn_protocols(["h2"])
         return self.config.ssl_context
 
+    @staticmethod
+    def _loop_backend_name(loop: asyncio.AbstractEventLoop) -> str:
+        """
+        Infer a stable loop backend name from the runtime loop type.
+
+        Args:
+            loop (asyncio.AbstractEventLoop): Running event loop instance.
+
+        Returns:
+            str: Friendly loop backend label suitable for startup logs.
+        """
+        module_name = loop.__class__.__module__
+        class_name = loop.__class__.__name__
+
+        if module_name.startswith("uvloop"):
+            return "uvloop"
+        if module_name.startswith("asyncio"):
+            return "asyncio"
+        return f"{module_name}.{class_name}"
+
+    def _log_runtime_configuration(self, loop: asyncio.AbstractEventLoop) -> None:
+        """
+        Emit a concise startup summary for selected runtime backends.
+
+        Args:
+            loop (asyncio.AbstractEventLoop): Running event loop instance.
+        """
+        logger.info(
+            "Runtime configuration: loop=%s, http=%s, ws=%s, lifespan=%s, interface=%s",
+            self._loop_backend_name(loop),
+            self.config.effective_http,
+            self.config.effective_ws,
+            self.config.lifespan,
+            self.config.interface,
+        )
+
+    def _log_running_messages(self, sockets: list[socket.socket]) -> None:
+        """
+        Emit human-friendly startup messages for bound listeners.
+
+        Args:
+            sockets (list[socket.socket]): Socket list attached to running servers.
+        """
+        if not sockets:
+            if self.config.uds:
+                logger.info(
+                    "Palfrey running on unix socket %s (Press CTRL+C to quit)",
+                    self.config.uds,
+                )
+                return
+
+            scheme = "https" if self.config.is_ssl else "http"
+            host = self.config.host
+            if ":" in host and not host.startswith("["):
+                host = f"[{host}]"
+            logger.info(
+                "Palfrey running on %s://%s:%d (Press CTRL+C to quit)",
+                scheme,
+                host,
+                self.config.port,
+            )
+            return
+
+        seen_targets: set[str] = set()
+        for sock in sockets:
+            target = self._format_running_target(sock)
+            if target in seen_targets:
+                continue
+            seen_targets.add(target)
+            logger.info("Palfrey running on %s (Press CTRL+C to quit)", target)
+
+    def _format_running_target(self, sock: socket.socket) -> str:
+        """
+        Convert a socket endpoint into a display string.
+
+        Args:
+            sock (socket.socket): Bound listener socket.
+
+        Returns:
+            str: URL-like or unix-socket endpoint representation.
+        """
+        try:
+            sockname = sock.getsockname()
+        except OSError:
+            return "<unknown>"
+
+        if isinstance(sockname, str):
+            return f"unix socket {sockname}"
+
+        if isinstance(sockname, tuple) and len(sockname) >= 2:
+            host = str(sockname[0])
+            port = int(sockname[1])
+            if ":" in host and not host.startswith("["):
+                host = f"[{host}]"
+            scheme = "https" if self.config.is_ssl else "http"
+            return f"{scheme}://{host}:{port}"
+
+        return str(sockname)
+
     async def _serve_http3(self, *, sockets: list[socket.socket] | None) -> None:
         """
         Start QUIC/HTTP3 serving loop using aioquic.
@@ -1017,7 +1115,14 @@ class PalfreyServer:
         )
         self._servers = [self._server]
 
-        logger.info("Listening on udp://%s:%d", self.config.host, self.config.port)
+        host = self.config.host
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        logger.info(
+            "Palfrey running on https://%s:%d (HTTP/3 over QUIC) (Press CTRL+C to quit)",
+            host,
+            self.config.port,
+        )
         self._started = True
 
         await self._main_loop()

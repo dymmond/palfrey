@@ -2,13 +2,34 @@
 
 ## 0.1.2
 
+### Highlights
+
+- Startup logs now follow the familiar style flow while keeping Palfrey wording.
+- Runtime mode details are emitted at startup so operators can verify effective protocol choices immediately.
+- Listener endpoint logs are clearer across TCP, IPv6, UNIX sockets, and HTTP/3 startup paths.
+
+### Added
+
+- Startup runtime summary:
+    - `loop` backend in use
+    - effective `http` backend
+    - effective `ws` backend
+    - configured lifespan mode
+    - selected application interface mode
+
 ### Changed
 
-- Startup message update with clearer protocol mode reporting and reload mode status when applicable.
+- Startup endpoint lines now use normalized URL-like output where possible.
+- IPv6 startup targets are formatted with brackets for readability and copy/paste correctness.
+- Duplicate startup endpoint lines are deduplicated when multiple server objects expose the same listener.
+
+### Operational impact
+
+- Better startup observability for local development, containers, and production logs.
+- Faster validation of effective runtime behavior during deploys and rollouts.
+- No breaking CLI changes and no default behavior changes to protocol selection.
 
 ## 0.1.1
-
-This is the first patch release for Palfrey.
 
 ### Fixed
 

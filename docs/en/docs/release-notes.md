@@ -1,5 +1,11 @@
 # Release Notes
 
+## 0.1.3
+
+### Changed
+
+- Make `WSGI` server port PEP3333 compliant.
+
 ## 0.1.2
 
 ### Highlights

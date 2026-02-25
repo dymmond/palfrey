@@ -204,7 +204,7 @@ class WSGIAdapter:
         if server is None:
             server = ("localhost", 80)
         environ["SERVER_NAME"] = server[0]
-        environ["SERVER_PORT"] = server[1]
+        environ["SERVER_PORT"] = str(server[1]) if server[1] is not None else ""
 
         if client is not None:
             environ["REMOTE_ADDR"] = client[0]

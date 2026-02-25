@@ -60,6 +60,7 @@ testing = [
 ]
 benchmark = [
     "uvicorn[standard]>=0.34.0,<1.0.0",
+    "pytest-codspeed>=4.3.0,<5.0.0",
 ]
 http2 = [
     "h2>=4.1.0",

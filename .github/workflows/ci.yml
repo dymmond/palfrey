@@ -24,7 +24,7 @@ jobs:
         with:
           python-version: "3.14"
       - name: Install Hatch
-        run: python -m pip install --upgrade hatch
+        run: python -m pip install --upgrade hatch virtualenv==20.39.1
       - name: Lint
         run: hatch run lint
       - name: Format check
@@ -47,7 +47,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
       - name: Install Hatch
-        run: python -m pip install --upgrade hatch
+        run: python -m pip install --upgrade hatch virtualenv==20.39.1
       - name: Run tests with coverage gate
         run: hatch run test-cov
 
@@ -67,7 +67,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
       - name: Install Hatch
-        run: python -m pip install --upgrade hatch
+        run: python -m pip install --upgrade hatch virtualenv==20.39.1
       - name: Run portability smoke tests
         run: hatch run test:test tests/cli tests/config tests/importer tests/runtime tests/unit
 
@@ -81,6 +81,6 @@ jobs:
         with:
           python-version: "3.14"
       - name: Install Hatch
-        run: python -m pip install --upgrade hatch
+        run: python -m pip install --upgrade hatch virtualenv==20.39.1
       - name: Build docs
         run: hatch run docs-build

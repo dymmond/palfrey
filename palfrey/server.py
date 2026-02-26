@@ -630,7 +630,6 @@ class PalfreyServer:
                 else:
                     context.on_100_continue = None
 
-                # Concurrency limit checks
                 if self._is_concurrency_limit_exceeded():
                     await self._write_response(
                         writer,
@@ -639,19 +638,18 @@ class PalfreyServer:
                     )
                     break
 
-                acquired = await self._enter_request_slot()
+                # Concurrency limit checks
+                acquired = self._enter_request_slot()
                 if not acquired:
                     await self._write_response(
-                        writer,
-                        self._service_unavailable_response(),
-                        keep_alive=False,
+                        writer, self._service_unavailable_response(), keep_alive=False
                     )
                     break
 
                 try:
                     response = await self._handle_http_request(request, context)
                 finally:
-                    await self._leave_request_slot()
+                    self._leave_request_slot()
 
                 keep_processing = should_keep_alive(request, response)
                 await self._write_response(writer, response, keep_alive=keep_processing)
@@ -703,7 +701,7 @@ class PalfreyServer:
             if self._is_concurrency_limit_exceeded():
                 return self._service_unavailable_response()
 
-            acquired = await self._enter_request_slot()
+            acquired = self._enter_request_slot()
             if not acquired:
                 return self._service_unavailable_response()
 
@@ -715,7 +713,7 @@ class PalfreyServer:
                 response.body_chunks = [b"Internal Server Error"]
                 append_default_response_headers(response, self.config)
             finally:
-                await self._leave_request_slot()
+                self._leave_request_slot()
 
             self.server_state.total_requests += 1
             if self._max_requests_before_exit is None:
@@ -881,7 +879,7 @@ class PalfreyServer:
         append_default_response_headers(response, self.config)
         return response
 
-    async def _enter_request_slot(self) -> bool:
+    def _enter_request_slot(self) -> bool:
         """
         Decrements the available concurrency slot count.
         """
@@ -889,11 +887,11 @@ class PalfreyServer:
         if limit is None:
             return True
 
-        async with self._request_counter_lock:
-            if self._active_requests >= limit:
-                return False
-            self._active_requests += 1
-            return True
+        if self._active_requests >= limit:
+            return False
+
+        self._active_requests += 1
+        return True
 
     def _is_concurrency_limit_exceeded(self) -> bool:
         """
@@ -904,7 +902,7 @@ class PalfreyServer:
             return False
         return len(self.server_state.connections) >= limit or len(self.server_state.tasks) >= limit
 
-    async def _leave_request_slot(self) -> None:
+    def _leave_request_slot(self) -> None:
         """
         Increments the available concurrency slot count.
         """
@@ -912,9 +910,8 @@ class PalfreyServer:
         if limit is None:
             return
 
-        async with self._request_counter_lock:
-            if self._active_requests > 0:
-                self._active_requests -= 1
+        if self._active_requests > 0:
+            self._active_requests -= 1
 
     @staticmethod
     def _normalize_address(
@@ -1084,7 +1081,7 @@ class PalfreyServer:
             if self._is_concurrency_limit_exceeded():
                 return self._service_unavailable_response()
 
-            acquired = await self._enter_request_slot()
+            acquired = self._enter_request_slot()
             if not acquired:
                 return self._service_unavailable_response()
 
@@ -1096,7 +1093,7 @@ class PalfreyServer:
                 response.body_chunks = [b"Internal Server Error"]
                 append_default_response_headers(response, self.config)
             finally:
-                await self._leave_request_slot()
+                self._leave_request_slot()
 
             self.server_state.total_requests += 1
             if self._max_requests_before_exit is None:
@@ -1242,9 +1239,24 @@ class PalfreyServer:
         """
         Re-serializes an HTTPRequest object into raw bytes for custom protocols.
         """
-        lines = [f"{request.method} {request.target} {request.http_version}\r\n"]
-        lines.extend(f"{name}: {value}\r\n" for name, value in request.headers)
-        return ("".join(lines) + "\r\n").encode("latin-1") + request.body
+        parts: list[bytes] = [
+            f"{request.method} {request.target} {request.http_version}\r\n".encode("latin-1")
+        ]
+
+        for name, value in request.headers:
+            # Safely coerce to bytes in case parsers/middlewares provided raw bytes
+            name_bytes = name if isinstance(name, bytes) else name.encode("latin-1")
+            value_bytes = value if isinstance(value, bytes) else value.encode("latin-1")
+
+            parts.append(name_bytes)
+            parts.append(b": ")
+            parts.append(value_bytes)
+            parts.append(b"\r\n")
+
+        parts.append(b"\r\n")
+        parts.append(request.body)
+
+        return b"".join(parts)
 
     def _validate_protocol_backends(self) -> None:
         """

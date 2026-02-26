@@ -2,9 +2,24 @@
 
 ## 0.1.3
 
-### Changed
+#### Added
 
-- Make `WSGI` server port PEP3333 compliant.
+* Implemented the `write()` callable return for the `start_response` function in `WSGIAdapter` to fully support legacy WSGI applications.
+
+#### Changed
+
+* Updated `_build_wsgi_environ` to decode `query_string` using `latin1` instead of `ascii` to prevent `UnicodeDecodeError` on raw byte parameters.
+
+#### Fixed
+
+* Fixed PEP 3333 violation by mapping `wsgi.errors` to `sys.stderr` instead of `sys.stdout`.
+* Fixed framework `KeyError` crashes by providing a `127.0.0.1` fallback for `REMOTE_ADDR` when the ASGI `client` scope is `None`.
+* Fixed `exc_info` swallowing in `start_response`; it now correctly re-raises the exception if HTTP headers have already been committed to the client.
+
+#### Security
+
+* Mitigated Out-Of-Memory (OOM) vulnerabilities by replacing unbounded in-memory body buffering with `tempfile.SpooledTemporaryFile`, safely overflowing payloads >1MB to disk.
+
 
 ## 0.1.2
 

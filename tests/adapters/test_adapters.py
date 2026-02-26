@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import sys
+import tempfile
 
 import pytest
 
@@ -122,7 +122,7 @@ def test_wsgi_adapter_translates_scope_and_streams_response() -> None:
     assert captured_environ["SERVER_PORT"] == "8000"
     assert captured_environ["HTTP_X_TOKEN"] == "abc"
     assert "CONTENT_LENGTH" not in captured_environ
-    assert captured_environ["wsgi.errors"] is sys.stdout
+    assert captured_environ["wsgi.errors"] is sys.stderr
     assert captured_environ["wsgi.multiprocess"] is True
 
 
@@ -218,13 +218,85 @@ def test_build_wsgi_environ_encoding_parity() -> None:
         "method": "GET",
         "path": "/文/all",
         "root_path": "/文",
-        "client": None,
+        "client": None,  # Testing REMOTE_ADDR fallback
         "server": None,
-        "query_string": b"a=123&b=456",
+        "query_string": b"a=123&b=\xff",  # Testing latin1 raw byte decode
         "headers": [(b"key", b"value1"), (b"key", b"value2")],
         "extensions": {},
     }
-    environ = WSGIAdapter._build_wsgi_environ(scope, io.BytesIO(b"").read())
+
+    # FIX: Pass a mock IO object instead of a raw byte string
+    with tempfile.SpooledTemporaryFile() as dummy_file:
+        environ = WSGIAdapter._build_wsgi_environ(scope, dummy_file)  # type: ignore[arg-type]
+
     assert environ["SCRIPT_NAME"] == "/文".encode().decode("latin-1")
     assert environ["PATH_INFO"] == b"/all".decode("latin-1")
     assert environ["HTTP_KEY"] == "value1,value2"
+    assert environ["REMOTE_ADDR"] == "127.0.0.1"
+    assert environ["QUERY_STRING"] == "a=123&b=ÿ"
+
+
+def test_wsgi_adapter_start_response_write_callable() -> None:
+    """Tests that start_response returns a functional write() callable."""
+    sent_messages: list[dict[str, object]] = []
+
+    def wsgi_app(environ, start_response):
+        write = start_response("200 OK", [("content-type", "text/plain")])
+        write(b"chunk1")
+        write(b"chunk2")
+        return []
+
+    async def receive() -> dict[str, object]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: dict[str, object]) -> None:
+        sent_messages.append(message)
+
+    asyncio.run(WSGIAdapter(wsgi_app)(_http_scope(), receive, send))
+
+    # We expect start, chunk1, chunk2, and the final empty completion chunk
+    assert len(sent_messages) == 4
+    assert sent_messages[1]["body"] == b"chunk1"
+    assert sent_messages[2]["body"] == b"chunk2"
+
+
+def test_wsgi_adapter_spools_large_body() -> None:
+    """Tests that payloads over 1MB are safely spooled without error."""
+    # Create a 2MB payload
+    large_payload = b"x" * (1024 * 1024 * 2)
+    captured_len = 0
+
+    def wsgi_app(environ, start_response):
+        nonlocal captured_len
+        start_response("200 OK", [("content-type", "text/plain")])
+        # Read the file-like object back out
+        body = environ["wsgi.input"].read()
+        captured_len = len(body)
+        return [b"ok"]
+
+    queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    # Send it in two 1MB chunks to simulate streaming
+    queue.put_nowait(
+        {
+            "type": "http.request",
+            "body": large_payload[: 1024 * 1024],
+            "more_body": True,
+        }
+    )
+    queue.put_nowait(
+        {
+            "type": "http.request",
+            "body": large_payload[1024 * 1024 :],
+            "more_body": False,
+        }
+    )
+
+    async def receive() -> dict[str, object]:
+        return await queue.get()
+
+    async def send(_message: dict[str, object]) -> None:
+        return None
+
+    asyncio.run(WSGIAdapter(wsgi_app)(_http_scope(), receive, send))
+
+    assert captured_len == 1024 * 1024 * 2

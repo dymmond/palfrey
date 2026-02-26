@@ -316,7 +316,8 @@ def test_build_ssl_context_configures_certificate_settings(monkeypatch) -> None:
     assert context.verify_mode == ssl.CERT_REQUIRED
 
 
-def test_handle_connection_writes_400_on_bad_request(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_handle_connection_writes_400_on_bad_request(monkeypatch) -> None:
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
     server._resolved_app = _resolved_app()
     writer = DummyWriter()
@@ -326,14 +327,15 @@ def test_handle_connection_writes_400_on_bad_request(monkeypatch) -> None:
 
     monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
 
-    asyncio.run(server._handle_connection(object(), writer))
+    await server._handle_connection(asyncio.StreamReader(), writer)
 
     payload = b"".join(writer.writes)
     assert b"400 Bad Request" in payload
     assert writer.closed is True
 
 
-def test_handle_connection_writes_500_on_unhandled_exception(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_handle_connection_writes_500_on_unhandled_exception(monkeypatch) -> None:
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
     server._resolved_app = _resolved_app()
     writer = DummyWriter()
@@ -343,14 +345,15 @@ def test_handle_connection_writes_500_on_unhandled_exception(monkeypatch) -> Non
 
     monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
 
-    asyncio.run(server._handle_connection(object(), writer))
+    await server._handle_connection(asyncio.StreamReader(), writer)
 
     payload = b"".join(writer.writes)
     assert b"500 Internal Server Error" in payload
     assert writer.closed is True
 
 
-def test_handle_connection_switches_to_websocket_upgrade(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_handle_connection_switches_to_websocket_upgrade(monkeypatch) -> None:
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", ws="websockets"))
     server._resolved_app = _resolved_app()
     writer = DummyWriter()
@@ -378,13 +381,14 @@ def test_handle_connection_switches_to_websocket_upgrade(monkeypatch) -> None:
     monkeypatch.setattr(server_module, "is_websocket_upgrade", lambda req: True)
     monkeypatch.setattr(server_module, "handle_websocket", fake_handle_websocket)
 
-    asyncio.run(server._handle_connection(object(), writer))
+    await server._handle_connection(asyncio.StreamReader(), writer)
 
     assert called == ["ws"]
     assert writer.closed is True
 
 
-def test_handle_connection_uses_custom_ws_protocol_class(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_handle_connection_uses_custom_ws_protocol_class(monkeypatch) -> None:
     class DummyWSProtocol(asyncio.Protocol):
         pass
 
@@ -421,14 +425,15 @@ def test_handle_connection_uses_custom_ws_protocol_class(monkeypatch) -> None:
     monkeypatch.setattr(PalfreyServer, "_run_custom_ws_protocol", fake_run_custom_ws_protocol)
     monkeypatch.setattr(server_module, "handle_websocket", fake_handle_websocket)
 
-    asyncio.run(server._handle_connection(object(), writer))
+    await server._handle_connection(asyncio.StreamReader(), writer)
 
     assert custom_ws_calls == ["/ws"]
     assert regular_ws_calls == []
     assert writer.closed is True
 
 
-def test_handle_connection_returns_400_for_upgrade_when_ws_backend_disabled(
+@pytest.mark.asyncio
+async def test_handle_connection_returns_400_for_upgrade_when_ws_backend_disabled(
     monkeypatch,
 ) -> None:
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", ws="none"))
@@ -458,7 +463,7 @@ def test_handle_connection_returns_400_for_upgrade_when_ws_backend_disabled(
     monkeypatch.setattr(server_module, "is_websocket_upgrade", lambda req: True)
     monkeypatch.setattr(server_module, "handle_websocket", fake_handle_websocket)
 
-    asyncio.run(server._handle_connection(object(), writer))
+    await server._handle_connection(asyncio.StreamReader(), writer)
 
     payload = b"".join(writer.writes)
     assert b"400 Bad Request" in payload
@@ -466,7 +471,8 @@ def test_handle_connection_returns_400_for_upgrade_when_ws_backend_disabled(
     assert writer.closed is True
 
 
-def test_handle_connection_sends_100_continue_and_respects_max_requests(
+@pytest.mark.asyncio
+async def test_handle_connection_sends_100_continue_and_respects_max_requests(
     monkeypatch,
 ) -> None:
     config = PalfreyConfig(
@@ -502,7 +508,7 @@ def test_handle_connection_sends_100_continue_and_respects_max_requests(
     monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
     monkeypatch.setattr(server_module, "should_keep_alive", lambda request, response: False)
 
-    asyncio.run(server._handle_connection(object(), writer))
+    await server._handle_connection(asyncio.StreamReader(), writer)
 
     payload = b"".join(writer.writes)
     assert b"100 Continue" in payload
@@ -510,7 +516,8 @@ def test_handle_connection_sends_100_continue_and_respects_max_requests(
     assert server._shutdown_event.is_set() is True
 
 
-def test_handle_connection_returns_503_when_concurrency_limit_reached(
+@pytest.mark.asyncio
+async def test_handle_connection_returns_503_when_concurrency_limit_reached(
     monkeypatch,
 ) -> None:
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", limit_concurrency=0))
@@ -533,13 +540,14 @@ def test_handle_connection_returns_503_when_concurrency_limit_reached(
 
     monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
 
-    asyncio.run(server._handle_connection(object(), writer))
+    await server._handle_connection(asyncio.StreamReader(), writer)
 
     payload = b"".join(writer.writes)
     assert b"503 Service Unavailable" in payload
 
 
-def test_run_custom_ws_protocol_forwards_handshake_and_stream_bytes() -> None:
+@pytest.mark.asyncio
+async def test_run_custom_ws_protocol_forwards_handshake_and_stream_bytes() -> None:
     events: list[tuple[str, bytes | None]] = []
     transport = object()
 
@@ -579,13 +587,12 @@ def test_run_custom_ws_protocol_forwards_handshake_and_stream_bytes() -> None:
         body=b"",
     )
 
-    async def scenario() -> None:
-        reader = asyncio.StreamReader()
-        reader.feed_data(b"frame-bytes")
-        reader.feed_eof()
-        await server._run_custom_ws_protocol(request=request, reader=reader, writer=writer)
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"frame-bytes")
+    reader.feed_eof()
 
-    asyncio.run(scenario())
+    # Await directly in the test body
+    await server._run_custom_ws_protocol(request=request, reader=reader, writer=writer)
 
     assert events[0][0] == "data"
     assert events[0][1] is not None
@@ -596,7 +603,8 @@ def test_run_custom_ws_protocol_forwards_handshake_and_stream_bytes() -> None:
     assert events[3] == ("lost", None)
 
 
-def test_handle_connection_returns_503_when_connection_count_reaches_limit(
+@pytest.mark.asyncio
+async def test_handle_connection_returns_503_when_connection_count_reaches_limit(
     monkeypatch,
 ) -> None:
     # Set limit to 1
@@ -615,14 +623,20 @@ def test_handle_connection_returns_503_when_connection_count_reaches_limit(
         body=b"",
     )
 
-    # Mock the reader to return our request
+    # Use a closure to track calls and signal EOF
+    calls = {"count": 0}
+
     async def fake_read_request(reader, **kwargs):
-        return request
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return request
+        # Return None on subsequent calls to terminate the background task loop
+        return None
 
     monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
 
-    # Run the connection handler
-    asyncio.run(server._handle_connection(object(), writer))
+    # Run the connection handler using a real StreamReader to satisfy the background task
+    await server._handle_connection(asyncio.StreamReader(), writer)
 
     payload = b"".join(writer.writes)
     assert b"503 Service Unavailable" in payload

@@ -56,6 +56,7 @@ dev = [
 ]
 testing = [
   "pytest>=8.3.0,<9.0.0",
+  "pytest-asyncio>=1.3.0",
   "pytest-cov>=5.0.0,<7.0.0",
 ]
 benchmark = [
@@ -147,8 +148,6 @@ features = ["testing", "standard"]
 test = "pytest --cov=palfrey --cov-report=term-missing --cov-report=xml:coverage_reports/coverage.xml --cov-fail-under=85"
 test_man = "pytest -- {args} -s -vv"
 
-
-#test_man = "hatch test -- {args} -s -vv"
 
 [tool.ruff]
 line-length = 100

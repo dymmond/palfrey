@@ -49,7 +49,9 @@ def _resolved() -> SimpleNamespace:
     return SimpleNamespace(app=app, interface="asgi3")
 
 
-def test_validate_protocol_backends_rejects_missing_h2(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_validate_protocol_backends_rejects_missing_h2(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", http="h2"))
 
     def fake_find_spec(name: str):
@@ -100,7 +102,9 @@ def test_validate_protocol_backends_rejects_h3_without_tls_files() -> None:
             server._validate_protocol_backends()
 
 
-def test_validate_protocol_backends_rejects_h3_fd_and_uds(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_validate_protocol_backends_rejects_h3_fd_and_uds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     server_fd = PalfreyServer(
         PalfreyConfig(
             app="tests.fixtures.apps:http_app",
@@ -151,7 +155,8 @@ def test_build_ssl_context_sets_h2_alpn(monkeypatch: pytest.MonkeyPatch) -> None
     assert context.protocols == [["h2"]]
 
 
-def test_handle_connection_routes_http2_to_protocol_handler(
+@pytest.mark.asyncio
+async def test_handle_connection_routes_http2_to_protocol_handler(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", http="h2"))
@@ -184,7 +189,7 @@ def test_handle_connection_routes_http2_to_protocol_handler(
     monkeypatch.setattr(server_module, "serve_http2_connection", fake_serve_http2_connection)
     monkeypatch.setattr(PalfreyServer, "_handle_http_request", fake_handle_http_request)
 
-    asyncio.run(server._handle_connection(object(), writer))  # type: ignore[arg-type]
+    await server._handle_connection(asyncio.StreamReader(), writer)  # type: ignore[arg-type]
 
     assert called["writer"] is writer
     assert called["status"] == 200
@@ -192,7 +197,10 @@ def test_handle_connection_routes_http2_to_protocol_handler(
     assert server.server_state.total_requests == 1
 
 
-def test_serve_http3_path_uses_http3_server_factory(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_serve_http3_path_uses_http3_server_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     events: dict[str, object] = {}
 
     class FakeLoop:
@@ -241,7 +249,7 @@ def test_serve_http3_path_uses_http3_server_factory(monkeypatch: pytest.MonkeyPa
         )
     )
     server._shutdown_event.set()
-    asyncio.run(server.serve())
+    await server.serve()
 
     assert events["config"] is server.config
     assert fake_server.closed is True

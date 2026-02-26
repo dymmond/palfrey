@@ -117,33 +117,41 @@ def parse_request_head(data: bytes) -> tuple[str, str, str, list[tuple[str, str]
     if HAS_RUST_EXTENSION and _parse_request_head is not None:
         return _parse_request_head(data)
 
-    # FAST PATH: Split on raw bytes to avoid decoding the entire payload block
-    lines = data.split(b"\r\n")
-    if not lines or not lines[0]:
+        # 1. Find the end of the request line (the first CRLF)
+    end_of_line = data.find(b"\r\n")
+    if end_of_line == -1:
         raise ValueError("Missing request line")
 
-    request_line_parts = lines[0].split(b" ")
-    if len(request_line_parts) != 3:
+    # 2. Extract and split the request line directly
+    request_line = data[:end_of_line]
+    parts = request_line.split(b" ")
+    if len(parts) != 3:
         raise ValueError("Invalid request line")
 
-    # Decode only the extracted, minimal parts
-    method = request_line_parts[0].decode("latin-1")
-    target = request_line_parts[1].decode("latin-1")
-    version = request_line_parts[2].decode("latin-1")
+    method = parts[0].decode("latin-1")
+    target = parts[1].decode("latin-1")
+    version = parts[2].decode("latin-1")
 
+    # 3. Parse headers using find/partition to avoid list creation
     headers: list[tuple[str, str]] = []
+    cursor = end_of_line + 2
 
-    # Iterate through lines following the request line
-    for line in lines[1:]:
-        if not line:
+    while cursor < len(data):
+        next_line_end = data.find(b"\r\n", cursor)
+        if next_line_end == -1:  # Malformed or end of buffer
             break
-        # Partition on bytes, avoiding unicode overhead
-        name_b, separator, value_b = line.partition(b":")
-        if not separator:
+
+        line = data[cursor:next_line_end]
+        if not line:  # Double CRLF reached
+            break
+
+        name, sep, value = line.partition(b":")
+        if not sep:
             raise ValueError(f"Malformed header line: {line!r}")
 
-        # Strip and decode only the exact fragments needed
-        headers.append((name_b.strip().decode("latin-1"), value_b.lstrip().decode("latin-1")))
+        headers.append((name.strip().decode("latin-1"), value.lstrip().decode("latin-1")))
+
+        cursor = next_line_end + 2
 
     return method, target, version, headers
 

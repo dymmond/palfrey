@@ -141,9 +141,7 @@ def parse_request_head(data: bytes) -> tuple[str, str, str, list[tuple[str, str]
     return method, target, version, headers
 
 
-def unmask_websocket_payload(
-    payload: WebSocketPayloadBuffer, masking_key: bytes
-) -> bytes:
+def unmask_websocket_payload(payload: WebSocketPayloadBuffer, masking_key: bytes) -> bytes:
     """
     Applies the WebSocket XOR masking algorithm to a payload.
 

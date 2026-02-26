@@ -171,7 +171,6 @@ class PalfreyServer:
     _servers: list[asyncio.Server] = field(default_factory=list)
     _external_sockets: list[socket.socket] = field(default_factory=list)
     _lifespan: LifespanManager | None = None
-    _request_counter_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _max_requests_before_exit: int | None = None
     _base_default_headers: list[tuple[bytes, bytes]] = field(default_factory=list)
     _last_notified: float = 0.0

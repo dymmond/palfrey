@@ -4,22 +4,25 @@
 
 #### Added
 
-* Implemented the `write()` callable return for the `start_response` function in `WSGIAdapter` to fully support legacy WSGI applications.
+* **Single-Chunk Optimization:** Implemented logic to automatically inject `Content-Length` headers for single-chunk ASGI responses, significantly reducing the overhead of HTTP chunked transfer framing for standard API calls.
+* **In-Flight Chunk Framing:** Refactored the HTTP/1.1 response engine to apply byte-framing (hex size + CRLF) during the transmission phase, enabling true streaming without post-processing delays.
+* **Legacy WSGI Support:** Added the mandatory `write()` callable return to `start_response` in the `WSGIAdapter` to ensure compatibility with older synchronous Python web frameworks.
 
 #### Changed
 
-* Updated `_build_wsgi_environ` to decode `query_string` using `latin1` instead of `ascii` to prevent `UnicodeDecodeError` on raw byte parameters.
+* **Zero-Copy Serialization:** Overhauled `encode_http_response` and `_serialize_http_request` to use C-level byte concatenation (`b"".join`), eliminating the high memory and CPU cost of intermediate Unicode string allocations.
+* **Synchronous Slot Tracking:** Converted request concurrency tracking from `asyncio.Lock` to a high-performance synchronous counter, removing a task-scheduling bottleneck on every incoming request.
+* **Protocol Accuracy:** Updated `_build_wsgi_environ` to decode query strings via `latin-1` per PEP 3333, preventing server crashes on raw or non-ASCII byte sequences in URLs.
 
 #### Fixed
 
-* Fixed PEP 3333 violation by mapping `wsgi.errors` to `sys.stderr` instead of `sys.stdout`.
-* Fixed framework `KeyError` crashes by providing a `127.0.0.1` fallback for `REMOTE_ADDR` when the ASGI `client` scope is `None`.
-* Fixed `exc_info` swallowing in `start_response`; it now correctly re-raises the exception if HTTP headers have already been committed to the client.
+* **WSGI Compliance:** Re-mapped `wsgi.errors` to `sys.stderr` and ensured `REMOTE_ADDR` fallbacks are provided to prevent `KeyError` crashes in standard WSGI frameworks like Django.
+* **HEAD Request Handling:** Fixed a `500 Internal Server Error` where `HEAD` requests would fail validation due to missing body content; the state machine now correctly suppresses body validation for the `HEAD` method.
+* **State Machine Integrity:** Enforced strict ASGI event sequencing in the HTTP handler, preventing common violations such as sending body data before response start or duplicate header transmission.
 
 #### Security
 
-* Mitigated Out-Of-Memory (OOM) vulnerabilities by replacing unbounded in-memory body buffering with `tempfile.SpooledTemporaryFile`, safely overflowing payloads >1MB to disk.
-
+* **Memory Exhaustion Protection:** Replaced unbounded in-memory request buffering with `tempfile.SpooledTemporaryFile` in the `WSGIAdapter`, automatically spilling payloads exceeding 1MB to disk to prevent OOM (Out Of Memory) attacks.
 
 ## 0.1.2
 

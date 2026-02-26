@@ -177,14 +177,11 @@ def test_request_slot_limit_enforced() -> None:
     config = PalfreyConfig(app="tests.fixtures.apps:http_app", limit_concurrency=1)
     server = PalfreyServer(config)
 
-    async def scenario() -> None:
-        assert await server._enter_request_slot() is True
-        assert await server._enter_request_slot() is False
-        await server._leave_request_slot()
-        assert await server._enter_request_slot() is True
-        await server._leave_request_slot()
-
-    asyncio.run(scenario())
+    assert server._enter_request_slot() is True
+    assert server._enter_request_slot() is False
+    server._leave_request_slot()
+    assert server._enter_request_slot() is True
+    server._leave_request_slot()
 
 
 def test_request_slot_unlimited_is_always_available() -> None:
@@ -192,11 +189,8 @@ def test_request_slot_unlimited_is_always_available() -> None:
         PalfreyConfig(app="tests.fixtures.apps:http_app", limit_concurrency=None)
     )
 
-    async def scenario() -> None:
-        assert await server._enter_request_slot() is True
-        await server._leave_request_slot()
-
-    asyncio.run(scenario())
+    assert server._enter_request_slot() is True
+    server._leave_request_slot()
 
 
 def test_is_concurrency_limit_exceeded_matches_uvicorn_semantics() -> None:
@@ -605,8 +599,13 @@ def test_run_custom_ws_protocol_forwards_handshake_and_stream_bytes() -> None:
 def test_handle_connection_returns_503_when_connection_count_reaches_limit(
     monkeypatch,
 ) -> None:
+    # Set limit to 1
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", limit_concurrency=1))
     server._resolved_app = _resolved_app()
+
+    # Seed the connections so the limit is ALREADY reached
+    server.server_state.connections.add(object())
+
     writer = DummyWriter()
     request = HTTPRequest(
         method="GET",
@@ -615,17 +614,22 @@ def test_handle_connection_returns_503_when_connection_count_reaches_limit(
         headers=[],
         body=b"",
     )
-    calls = {"count": 0}
 
+    # Mock the reader to return our request
     async def fake_read_request(reader, **kwargs):
-        calls["count"] += 1
-        if calls["count"] == 1:
-            return request
-        return None
+        return request
 
     monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
 
+    # Run the connection handler
     asyncio.run(server._handle_connection(object(), writer))
 
     payload = b"".join(writer.writes)
     assert b"503 Service Unavailable" in payload
+
+
+def test_request_slot_zero_limit_always_blocks() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:http_app", limit_concurrency=0)
+    server = PalfreyServer(config)
+
+    assert server._enter_request_slot() is False

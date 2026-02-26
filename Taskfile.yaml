@@ -85,6 +85,8 @@ tasks:
 
   test:
     desc: Runs the suite tests
+    env:
+      LILYA_SETTINGS_MODULE: tests.settings.TestSettings
     cmds:
       - hatch run test:test {{ .ARGS }}
 
@@ -95,7 +97,5 @@ tasks:
 
   coverage:
     desc: Runs the coverage tests
-    env:
-      LILYA_SETTINGS_MODULE: tests.settings.TestSettings
     cmds:
       - hatch run test:coverage {{ .ARGS }}

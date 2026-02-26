@@ -144,8 +144,11 @@ new_lang = "hatch run docs:update_languages; scripts/docs.py new-lang --lang {ar
 features = ["testing", "standard"]
 
 [tool.hatch.envs.test.scripts]
-test = "pytest --cov=palfrey --cov-report=term-missing --cov-report=xml --cov-fail-under=85"
+test = "pytest --cov=palfrey --cov-report=term-missing --cov-report=xml:coverage_reports/coverage.xml --cov-fail-under=85"
 test_man = "pytest -- {args} -s -vv"
+
+
+#test_man = "hatch test -- {args} -s -vv"
 
 [tool.ruff]
 line-length = 100

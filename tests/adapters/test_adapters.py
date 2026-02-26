@@ -119,7 +119,7 @@ def test_wsgi_adapter_translates_scope_and_streams_response() -> None:
     assert captured_environ["QUERY_STRING"] == "x=1"
     assert captured_environ["REMOTE_ADDR"] == "127.0.0.1"
     assert captured_environ["SERVER_NAME"] == "127.0.0.1"
-    assert captured_environ["SERVER_PORT"] == 8000
+    assert captured_environ["SERVER_PORT"] == "8000"
     assert captured_environ["HTTP_X_TOKEN"] == "abc"
     assert "CONTENT_LENGTH" not in captured_environ
     assert captured_environ["wsgi.errors"] is sys.stdout

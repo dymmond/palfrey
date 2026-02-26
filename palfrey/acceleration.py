@@ -8,6 +8,7 @@ SplitCSVValuesFn = Callable[[str], list[str]]
 WebSocketPayloadBuffer = bytes | bytearray | memoryview
 UnmaskWebSocketPayloadFn = Callable[[WebSocketPayloadBuffer, bytes], bytes]
 
+# Placeholders for the Rust extension functions
 _parse_header_items: ParseHeaderItemsFn | None = None
 _parse_request_head: ParseRequestHeadFn | None = None
 _split_csv_values: SplitCSVValuesFn | None = None
@@ -100,9 +101,6 @@ def parse_request_head(data: bytes) -> tuple[str, str, str, list[tuple[str, str]
     Processes the initial request line and subsequent headers. The input data should
     ideally contain the full header block ending with the standard CRLFCRLF delimiter.
 
-    This pure-Python fallback is heavily optimized to operate entirely on raw bytes
-    until the final extraction, avoiding massive upfront Unicode decoding overhead.
-
     Args:
         data (bytes): The raw byte sequence representing the HTTP request head.
 
@@ -117,46 +115,35 @@ def parse_request_head(data: bytes) -> tuple[str, str, str, list[tuple[str, str]
     if HAS_RUST_EXTENSION and _parse_request_head is not None:
         return _parse_request_head(data)
 
-        # 1. Find the end of the request line (the first CRLF)
-    end_of_line = data.find(b"\r\n")
-    if end_of_line == -1:
+    # Use latin-1 decoding to preserve the original byte values as per HTTP specs
+    decoded = data.decode("latin-1")
+
+    lines = decoded.split("\r\n")
+    if not lines or not lines[0]:
         raise ValueError("Missing request line")
 
-    # 2. Extract and split the request line directly
-    request_line = data[:end_of_line]
-    parts = request_line.split(b" ")
-    if len(parts) != 3:
+    request_line_parts = lines[0].split(" ")
+    if len(request_line_parts) != 3:
         raise ValueError("Invalid request line")
 
-    method = parts[0].decode("latin-1")
-    target = parts[1].decode("latin-1")
-    version = parts[2].decode("latin-1")
-
-    # 3. Parse headers using find/partition to avoid list creation
+    method, target, version = request_line_parts
     headers: list[tuple[str, str]] = []
-    cursor = end_of_line + 2
 
-    while cursor < len(data):
-        next_line_end = data.find(b"\r\n", cursor)
-        if next_line_end == -1:  # Malformed or end of buffer
+    # Iterate through lines following the request line
+    for line in lines[1:]:
+        if not line:
             break
-
-        line = data[cursor:next_line_end]
-        if not line:  # Double CRLF reached
-            break
-
-        name, sep, value = line.partition(b":")
-        if not sep:
+        name, separator, value = line.partition(":")
+        if not separator:
             raise ValueError(f"Malformed header line: {line!r}")
-
-        headers.append((name.strip().decode("latin-1"), value.lstrip().decode("latin-1")))
-
-        cursor = next_line_end + 2
+        headers.append((name.strip(), value.lstrip()))
 
     return method, target, version, headers
 
 
-def unmask_websocket_payload(payload: WebSocketPayloadBuffer, masking_key: bytes) -> bytes:
+def unmask_websocket_payload(
+    payload: WebSocketPayloadBuffer, masking_key: bytes
+) -> bytes:
     """
     Applies the WebSocket XOR masking algorithm to a payload.
 
@@ -179,14 +166,13 @@ def unmask_websocket_payload(payload: WebSocketPayloadBuffer, masking_key: bytes
     if HAS_RUST_EXTENSION and _unmask_websocket_payload is not None:
         return _unmask_websocket_payload(payload, masking_key)
 
-    # Manual XOR application for pure-Python fallback.
-    # Operating on bytearray is the fastest pure-Python mutable buffer option.
+    # Manual XOR application for pure-Python fallback
     m0, m1, m2, m3 = masking_key
     output = bytearray(payload)
     length = len(output)
     index = 0
 
-    # Process bytes in 4-byte chunks for a significant performance boost in Python
+    # Process bytes in 4-byte chunks for a slight performance boost in Python
     while index + 4 <= length:
         output[index] ^= m0
         output[index + 1] ^= m1

@@ -11,7 +11,7 @@ task lint
 task format-check
 task check-types
 task test
-hatch run docs-build
+hatch run docs:build
 ```
 
 ## 2. Prepare version and changelog

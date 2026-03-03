@@ -1,3 +1,8 @@
+---
+hide:
+  - navigation
+---
+
 # Support Palfrey
 
 If Palfrey helps your team, there are simple ways to support the project.

@@ -83,4 +83,4 @@ jobs:
       - name: Install Hatch
         run: python -m pip install --upgrade hatch virtualenv==20.39.1
       - name: Build docs
-        run: hatch run docs-build
+        run: hatch run docs:build

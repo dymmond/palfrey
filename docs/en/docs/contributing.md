@@ -1,3 +1,8 @@
+---
+hide:
+  - navigation
+---
+
 # Contributing
 
 Thank you for contributing to Palfrey.
@@ -43,7 +48,7 @@ task lint
 task format-check
 task check-types
 task test
-hatch run docs-build
+hatch run docs:build
 ```
 
 ## Tests
@@ -62,11 +67,12 @@ hatch run test:test tests/protocols/test_websocket_protocol.py
 
 Docs live under `docs/en/docs`.
 Runnable examples live under `docs_src` and are included in docs pages.
+Generated build-ready docs are written to `docs/generated`.
 
 Build docs:
 
 ```bash
-hatch run docs-build
+hatch run docs:build
 ```
 
 ## Pull request checklist

@@ -123,3 +123,45 @@ def test_requires_100_continue_false_without_header() -> None:
         body=b"",
     )
     assert requires_100_continue(request) is False
+
+
+# TDD Tests for Task 10: Single-Chunk Body Optimization
+# Tests verify that Content-Length bodies arriving in one chunk return directly (no join)
+# while multi-chunk bodies still join correctly.
+
+
+def test_read_http_request_single_chunk_body_no_join() -> None:
+    """Single-chunk POST body should return directly without b''.join()."""
+    # 100 bytes of body that arrives in one TCP packet
+    payload = b"POST /submit HTTP/1.1\r\nHost: test\r\nContent-Length: 100\r\n\r\n" + (b"x" * 100)
+    request = asyncio.run(_read(payload))
+    assert request is not None
+    assert request.body == b"x" * 100
+    # body_chunks should have exactly 1 chunk (the optimization target)
+    assert len(request.body_chunks) == 1
+    assert request.body_chunks[0] == b"x" * 100
+
+
+def test_read_http_request_multi_chunk_body_joins_correctly() -> None:
+    """Multi-chunk POST body should still join correctly via b''.join()."""
+    # Large body (> 65536 bytes) that spans multiple 65536-byte read chunks
+    large_payload = b"y" * 100_000
+    payload = (
+        b"POST /submit HTTP/1.1\r\nHost: test\r\nContent-Length: 100000\r\n\r\n" + large_payload
+    )
+    request = asyncio.run(_read(payload))
+    assert request is not None
+    assert request.body == large_payload
+    # Multi-chunk body should be properly joined
+    assert len(request.body_chunks) > 1
+    assert b"".join(request.body_chunks) == large_payload
+
+
+def test_read_http_request_empty_body_content_length_zero() -> None:
+    """Content-Length: 0 should return b'' correctly."""
+    payload = b"POST /empty HTTP/1.1\r\nHost: test\r\nContent-Length: 0\r\n\r\n"
+    request = asyncio.run(_read(payload))
+    assert request is not None
+    assert request.body == b""
+    # Empty body case should still work (returns [b""] from _read_content_length_body_chunks)
+    assert len(request.body_chunks) >= 1

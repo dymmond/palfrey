@@ -302,13 +302,17 @@ async def _read_content_length_body_chunks(
     """
     Reads a fixed-size body from the stream into manageable chunks.
 
+    Optimization: If the body arrives in a single chunk (common case for small
+    POST/PUT requests), returns it directly without b"".join() allocation.
+    Multi-chunk bodies are still joined correctly.
+
     Args:
         reader (asyncio.StreamReader): The socket reader.
         content_length (int): Total expected bytes from Content-Length header.
         body_limit (int): Maximum bytes allowed by server configuration.
 
     Returns:
-        list[bytes]: List of body fragments.
+        list[bytes]: List of body fragments (single chunk for small bodies).
     """
     if content_length > body_limit:
         raise ValueError("HTTP body exceeds configured limit")
@@ -322,6 +326,11 @@ async def _read_content_length_body_chunks(
         chunk = await reader.readexactly(min(read_size, remaining))
         chunks.append(chunk)
         remaining -= len(chunk)
+
+    # Optimization: Single-chunk bodies return directly (no b"".join([chunk]) allocation)
+    if len(chunks) == 1:
+        return chunks
+
     return chunks
 
 

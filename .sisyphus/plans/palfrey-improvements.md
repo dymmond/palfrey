@@ -920,7 +920,7 @@ Max Concurrent: 7 (Waves 1 & 2)
   - Files: `palfrey/protocols/http.py`, `palfrey/server.py`, `tests/protocols/test_http_response_streaming.py`
   - Pre-commit: `task lint && task test`
 
-- [ ] 9. Zero-Copy Header Handling — Keep Bytes in Hot Path
+- [x] 9. Zero-Copy Header Handling — Keep Bytes in Hot Path
 
   **What to do**:
   - Eliminate the decode→re-encode cycle in the HTTP header hot path:
@@ -1262,7 +1262,7 @@ Max Concurrent: 7 (Waves 1 & 2)
   - Files: `palfrey/protocols/http.py`, `tests/protocols/test_http_status_cache.py`
   - Pre-commit: `task lint && task test`
 
-- [ ] 13. HTTP Write Backpressure (Port from WebSocket Path)
+- [x] 13. HTTP Write Backpressure (Port from WebSocket Path)
 
   **What to do**:
   - The WebSocket path in `protocols/websocket.py` has backpressure handling (checks `transport.get_write_buffer_size()` and pauses/resumes), but the HTTP write path does not:
@@ -1342,7 +1342,7 @@ Max Concurrent: 7 (Waves 1 & 2)
   - Files: `palfrey/server.py`, `tests/server/test_http_backpressure.py`
   - Pre-commit: `task lint && task test`
 
-- [ ] 14. Rust Extension — Verify, Fix, Optimize
+- [x] 14. Rust Extension — Verify, Fix, Optimize
 
   **What to do**:
   - Based on Task 4's audit findings, take action on the Rust extension:

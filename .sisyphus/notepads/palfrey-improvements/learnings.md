@@ -307,6 +307,19 @@ Palfrey vs Uvicorn:
 - **QA Scenario 1**: Live connection test succeeded (127.0.0.1:18905 with benchmark app)
   - Response received: 165 bytes
   - Connection established successfully with TCP_NODELAY set
+
+## Task 13 HTTP Write Backpressure Learnings (2026-03-11)
+
+- Ported WebSocket-style backpressure strategy into HTTP `_write_response` by checking writer transport buffer size and only draining when pending output reaches/exceeds the same practical threshold (`262_144` bytes).
+- Kept fast path lightweight: small/non-congested responses avoid `get_write_buffer_size()` calls entirely via `pending_bytes` gate, then do a single final `await writer.drain()`.
+- Streaming writer (`writelines`) integration uses bounded batching: accumulate chunks until threshold, flush batch, then conditionally drain; preserves Task 8 streaming behavior while adding memory safety under slow clients.
+- Fallback iterative `write` path mirrors same threshold logic to keep behavior consistent for transports/test doubles without `writelines`.
+- WebSocket handoff requires string headers; HTTP parser emits bytes headers. Added explicit conversion at server handoff to preserve upgrade correctness while keeping byte-path internally.
+- Added dedicated tests in `tests/server/test_http_backpressure.py` covering:
+  - high-watermark drain engagement,
+  - write-resume ordering after drain,
+  - non-congested no-overhead path,
+  - chunked/streaming + `writelines` backpressure behavior.
 - **QA Scenario 2**: Full test suite passed (698 tests, 89.55% coverage)
   - 3 pre-existing failures unrelated to socket tuning
   - All new socket option tests pass
@@ -327,3 +340,353 @@ Palfrey vs Uvicorn:
 - Module docstrings already in place (Task 6)
 - Inline comments added for TCP_NODELAY logic (explain Nagle algorithm and exception handling)
 - Test docstrings explain purpose and platform dependencies
+
+## Task 9 Zero-Copy Header Bytes Learnings (2026-03-11)
+
+- `HTTPRequest.headers` now accepts mixed parser-origin tuples (`str/str` from legacy paths and `bytes/bytes` from fast paths), while request parsing normalizes non-WebSocket HTTP headers to lowercase bytes at parse time.
+- `httptools` callback path no longer decodes+re-encodes header fields: `on_header` stores `(name.lower(), value)` directly as bytes.
+- `build_http_scope` now emits byte headers without per-header `.encode()` churn; when headers are already lowercase bytes it reuses them directly.
+- Compatibility safeguard: WebSocket upgrade requests are still exposed to websocket handlers as `str` headers by converting only those upgraded requests inside `read_http_request`, preserving existing handshake behavior while keeping normal HTTP hot path byte-native.
+- Verified by new focused tests in `tests/protocols/test_http_header_bytes.py` (httptools + h11 byte preservation, non-ASCII value preservation, lowercase byte names, and no-copy identity path for already-lowercase byte headers).
+
+## Documentation Patterns for Rust Extensions in Python Projects
+
+### Research Date: 2026-03-11
+
+Analyzed four major Python projects with Rust extensions:
+- **pydantic** (pydantic-core)
+- **orjson** (fully Rust-based JSON)
+- **cryptography** (Rust + C/OpenSSL)
+- **polars** (Rust dataframes)
+
+---
+
+## 1. WHERE They Explain Rust Extensions
+
+### Installation Docs (Primary Location)
+All projects explain Rust in their installation documentation:
+
+**pydantic** (`docs.pydantic.dev/install`):
+- Simple install section mentions `pydantic-core` as a dependency
+- No explicit "Rust required" warning for users
+- Rust is transparent to end users (wheels handle it)
+
+**cryptography** (`cryptography.io/installation`):
+- Dedicated "Rust" section in installation docs
+- Clear explanation: "Rust is only required when building from source"
+- Explicit statement: "Rust is NOT required to USE cryptography"
+
+**orjson** (README):
+- No installation warnings in main section
+- "Packaging" section at bottom explains build requirements
+- Assumes users install wheels (default case)
+
+**polars** (`docs.pola.rs/installation`):
+- Simple `pip install polars`
+- Special section for "Legacy CPU" (`polars[rtcompat]`)
+- No Rust mention for standard installation
+
+### FAQ / Troubleshooting (Secondary Location)
+**cryptography** has excellent FAQ:
+- "Why does cryptography require Rust?"
+- "Installing cryptography fails with 'Can not find Rust compiler'"
+- Clear answers with links to Rust installation
+
+**pydantic**:
+- No Rust-specific FAQ (because wheels cover 99% of users)
+- Discussion threads on GitHub for edge cases
+
+---
+
+## 2. HOW They Explain Installation
+
+### Pattern: Wheels First, Source Second
+
+**Standard messaging (all projects)**:
+```bash
+pip install package-name  # Just works™
+```
+
+**When wheels available** (99% of users):
+- No Rust mentioned
+- No build dependencies mentioned
+- Clean, simple experience
+
+**When building from source** (1% of users):
+```bash
+# cryptography example
+$ pip install cryptography  # Tries wheel first
+# If wheel unavailable, builds from source (requires Rust)
+```
+
+### Clear Hierarchy
+
+1. **Preferred**: Install from PyPI wheels
+   - Works out-of-the-box
+   - No compiler needed
+   - No Rust needed
+
+2. **Alternative**: Build from source
+   - Requires Rust toolchain
+   - Requires C compiler (some projects)
+   - Only for: unsupported platforms, custom builds, development
+
+### Platform Coverage Communication
+
+**cryptography** lists supported platforms:
+- "x86-64 CentOS Stream 9, 10"
+- "ARM64 Ubuntu rolling"
+- "macOS 15 Sequoia"
+- Clear expectation setting
+
+**polars** explains wheel availability:
+- "Distributes amd64/x86_64, aarch64/arm64, ppc64le wheels"
+- Special `[rtcompat]` extra for legacy CPUs without AVX2
+
+**orjson**:
+- "Distributes amd64, i686, aarch64, arm7, ppc64le, s390x wheels"
+- "Wheels for amd64 run on x86-64-v1 (2003) or later"
+- Very specific about CPU requirements
+
+---
+
+## 3. HOW They Explain Benefits
+
+### Performance Focus (User-Facing)
+
+**pydantic**:
+- Homepage: "With its v2 rewrite powered by a Rust core, Pydantic is now 5–50x faster than v1"
+- Not "we use Rust" but "you get 5-50x faster validation"
+
+**orjson**:
+- "benchmarks as the fastest Python library for JSON"
+- "something like 10x as fast as json"
+- Specific numbers, comparative benchmarks
+
+**cryptography**:
+- "We want cryptography to be as secure as possible"
+- "Rust provides memory safety while retaining OpenSSL performance"
+- Security angle, not just speed
+
+**polars**:
+- "Blazingly fast DataFrame library"
+- "Written from scratch in Rust, designed close to the machine"
+- Emphasizes the FROM-SCRATCH design decision
+
+### Technical Details (For Interested Users)
+
+**cryptography FAQ**: "Why does cryptography require Rust?"
+> "We want cryptography to be as secure as possible while retaining the advantages of OpenSSL, so we've chosen to rewrite non-cryptographic operations (such as ASN.1 parsing) in a high performance memory safe language: Rust."
+
+**pydantic** (internals docs):
+> "pydantic-core provides the core validation logic, internally it owns one CombinedValidator which may in turn own more CombinedValidators..."
+
+Both explain WHY without requiring users to understand Rust.
+
+---
+
+## 4. HOW They Handle "Rust Not Installed" Gracefully
+
+### User-Friendly Error Messages
+
+**cryptography** error:
+```
+error: Can not find Rust compiler
+
+If you are seeing a compilation error please try the following steps to
+successfully install cryptography:
+1) Upgrade to the latest pip
+2) If on Windows/macOS, ensure you're on the latest version
+3) If building from source is required: <Rust installation link>
+```
+
+**orjson** (from issue #7687):
+```
+Cargo, the Rust package manager, is not installed or is not on PATH.
+This package requires Rust and Cargo to compile extensions. Install it through
+the system's package manager or via https://rustup.rs/
+```
+
+### Graceful Degradation
+
+**polars**:
+- Main package requires Rust to build
+- `polars[rtcompat]` variant for legacy hardware
+- No pure-Python fallback (performance is core value prop)
+
+**pydantic**:
+- v1 (pure Python) still available as `pydantic.v1`
+- Allows incremental migration
+- No runtime fallback in v2
+
+**cryptography**:
+- No fallback (security is critical)
+- Clear error: upgrade pip or install Rust
+
+**orjson**:
+- No fallback (performance is the only reason to use it)
+- Users can use stdlib `json` if builds fail
+
+### Pattern: No Silent Fallbacks
+None of these projects do a "try Rust, fall back to Python" runtime check. The extension either builds or it doesn't.
+
+---
+
+## 5. Troubleshooting Sections
+
+### cryptography (Best-in-Class)
+
+**FAQ Section**:
+- "cryptography failed to install!" → Upgrade pip first
+- "Can not find Rust compiler" → Rust installation guide
+- "Installing with OpenSSL older than 3.0.0 fails" → Upgrade OS/OpenSSL
+- "I'm getting errors on AWS Lambda" → Link to AWS Lambda docs
+
+**Installation Section**:
+- Per-platform build instructions (Windows, Linux, macOS)
+- Environment variables for custom builds (`OPENSSL_DIR`)
+- Static wheels explanation
+
+### polars
+
+**Installation troubleshooting**:
+- Legacy CPU section (`pip install polars[rtcompat]`)
+- Big index extension for >4B rows
+- Pre-built binaries vs source builds
+- Environment variables for Rust features
+
+### pydantic
+
+**Minimal troubleshooting** (wheels cover most cases):
+- GitHub Discussions for "no pure Python version of pydantic-core"
+- Issue tracker for build failures
+- Migration guide for v1→v2
+
+### orjson
+
+**No troubleshooting section**:
+- README focuses on usage
+- "Packaging" section at end for developers
+- Assumes wheels work (they cover most platforms)
+
+---
+
+## Best Practices Summary
+
+### Documentation Structure
+
+1. **Installation page**:
+   - Simple command first (`pip install package`)
+   - Platform support listed
+   - Troubleshooting link
+
+2. **FAQ page**:
+   - "Why Rust?" (technical users)
+   - "Build failed?" (error scenarios)
+   - "Do I need Rust?" (answer: usually no)
+
+3. **Performance/Why page**:
+   - Benchmark numbers
+   - User benefits (not implementation details)
+
+### User-Facing Messaging
+
+**DO**:
+- "5-50x faster validation" (pydantic)
+- "Blazingly fast" (polars)
+- "Most secure" (cryptography)
+- "Install requires Rust 1.83.0+" (when building from source)
+
+**DON'T**:
+- "We rewrote this in Rust" (users don't care)
+- "pyo3 bindings to..." (too technical)
+- Assume users know what Rust is
+
+### Installation Guidance
+
+**Recommended Pattern**:
+```markdown
+## Installation
+
+Install from PyPI (recommended):
+```bash
+pip install package-name
+```
+
+This installs pre-built wheels for most platforms.
+
+### Building from Source
+
+If no wheel is available for your platform:
+1. Install Rust 1.83+ from https://rustup.rs
+2. Run: `pip install package-name --no-binary package-name`
+
+Note: Rust is only required to BUILD the package, not to USE it.
+```
+
+### Troubleshooting Template
+
+```markdown
+## Troubleshooting
+
+### "Can not find Rust compiler"
+
+**Solution**: Upgrade pip first:
+```bash
+pip install --upgrade pip
+pip install package-name
+```
+
+If this doesn't work, you may need to build from source.
+See [Building from Source](#building-from-source).
+
+### Build failed on my platform
+
+Check supported platforms: <list>
+
+For unsupported platforms, see our contributing guide.
+```
+
+### Handling "No Rust Installed"
+
+1. **Clear error messages** with actionable next steps
+2. **No silent fallbacks** (quality over compatibility)
+3. **Upgrade pip** as first troubleshooting step
+4. **Link to rustup.rs** for Rust installation
+
+---
+
+## Key Insights
+
+### What Makes Good Rust Extension Docs
+
+1. **Transparency without noise**: Mention Rust exists, don't make it users' problem
+2. **Benefits first**: "10x faster" not "written in Rust"
+3. **Platform coverage**: List what works out-of-box
+4. **Clear fallback path**: "If wheel unavailable, here's how to build"
+5. **Excellent FAQ**: Anticipate "Why Rust?" and "Build failed" questions
+
+### What to Avoid
+
+1. **Rust-centric messaging**: Users don't need Rust knowledge
+2. **Missing troubleshooting**: Build failures will happen
+3. **Unclear benefits**: "Why not just use pure Python?"
+4. **No platform list**: Set expectations upfront
+5. **Complex build instructions**: Most users should never see them
+
+### The Wheel Pattern
+
+All projects follow this:
+- 99% of users: `pip install package` → wheel installs → done
+- 1% of users: build fails → clear error → Rust install guide → build from source
+
+The docs should match this 99/1 split.
+
+
+## Task 14 Rust Extension Verification/Optimization Learnings (2026-03-11)
+
+- `parse_request_head` now returns byte-oriented fields from Rust (`Cow<[u8]>`), preserving wire bytes and avoiding UTF-8 decoding mismatch; Python shim decodes with `latin-1` to keep public API parity (`str` tuple).
+- Using `Vec<u8>` in PyO3 0.22 can materialize Python `list[int]` for function returns in this setup; explicit `PyBytes` return (`Bound<PyBytes>`) for `unmask_websocket_payload` guarantees `bytes` semantics and fixed parity.
+- Added `PALFREY_NO_RUST` import gate to acceleration shim, enabling deterministic fallback-only QA and benchmark runs without uninstalling extension artifacts.
+- Randomized parity tests are effective at catching hidden contract drift between Rust and fallback paths (especially around output types and latin-1 preservation).
+- Benchmark outcome in this environment: parsing helpers are near parity, while WebSocket unmasking is dramatically faster in Rust (~99x), making binary hot-path acceleration the strongest ROI.

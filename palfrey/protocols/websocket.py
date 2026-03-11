@@ -1491,6 +1491,7 @@ async def _handle_websocket_websockets_sansio_backend(
         This coroutine manages the data bridge between the asyncio StreamReader
         and the websockets backend.
         """
+        nonlocal close_sent
         while not close_sent:
             packet = await reader.read(65_536)
             if not packet:

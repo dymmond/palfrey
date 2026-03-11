@@ -871,3 +871,45 @@ if HAS_RUST_EXTENSION and _unmask_websocket_payload is not None:
 - All 3 phases execute correctly (primer/warmup/measure)
 - JSON output validates with `python -m json.tool`
 - Statistical summary printed correctly
+
+### Task 18: Docstring Coverage
+
+- Achieved 100% docstring coverage in `palfrey/protocols/`.
+- Followed Google Python Style Guide for all new/improved docstrings.
+- Verified with AST-based coverage tool.
+
+## Task 18 Bug Fix: pump_reader() nonlocal Declaration (2026-03-11)
+
+**Issue**: UnboundLocalError in `pump_reader()` function when code references `close_sent` variable from outer scope
+
+**Root Cause**:
+- Added docstring to `pump_reader()` nested function in `_handle_websocket_websockets_sansio_backend()` (line 1487-1493)
+- Function body references `close_sent` from outer scope (line 1494: `while not close_sent:`)
+- Missing `nonlocal close_sent` declaration caused Python to treat `close_sent` as local variable
+- Later assignments to `close_sent` (lines 1510, 1525) defined it as local, but the first reference in `while not close_sent:` happened before definition
+- Result: `UnboundLocalError: cannot access local variable 'close_sent' where it is not associated with a value`
+
+**Pattern to Follow**:
+- Line 1413: `_handle_frame()` function has `nonlocal close_sent, fragmented_type` declaration
+- `pump_reader()` needed same pattern with `nonlocal close_sent` (only closes_sent, no fragmented_type used)
+
+**Fix Applied**:
+- File: `palfrey/protocols/websocket.py:1494`
+- Added single line: `nonlocal close_sent` immediately after docstring (line 1494), before `while not close_sent:`
+- One-line atomic change, no code logic modified
+
+**Verification**:
+- ✅ Specific failing test passes: `test_websockets_sansio_backend_accepts_and_roundtrips_text`
+- ✅ All 722 tests pass (89.45% coverage, ≥85% requirement met)
+- ✅ All protocol tests pass (no regressions)
+- ✅ LSP diagnostics: Pre-existing type errors unrelated to this fix
+
+**Lesson Learned**:
+- When adding docstrings to nested functions that reference outer scope variables, verify nonlocal declarations are present
+- Missing `nonlocal` declarations are subtle bugs that only manifest at runtime (when the variable is first referenced)
+- Pattern: nested helper functions should declare ALL referenced outer-scope variables at the top (after docstring, before first use)
+
+**Impact**:
+- Unblocks WebSocket protocol testing
+- No performance or behavioral change (declarative only)
+- Maintains backward compatibility

@@ -1606,7 +1606,7 @@ Max Concurrent: 7 (Waves 1 & 2)
   - Files: `palfrey/protocols/http2.py`, `tests/protocols/test_http2_streaming.py`
   - Pre-commit: `task lint && task test`
 
-- [ ] 17. Benchmark Methodology Upgrade — 3-Phase Approach
+- [x] 17. Benchmark Methodology Upgrade — 3-Phase Approach
 
   **What to do**:
   - Upgrade the benchmark harness in `benchmarks/run.py` to use a rigorous 3-phase methodology:
@@ -1692,7 +1692,7 @@ Max Concurrent: 7 (Waves 1 & 2)
   - Files: `benchmarks/run.py`, `tests/benchmarks/test_benchmark_harness.py`
   - Pre-commit: `task lint && task test`
 
-- [ ] 18. Function Docstrings — protocols/ Directory
+- [x] 18. Function Docstrings — protocols/ Directory
 
   **What to do**:
   - Add or improve function/method docstrings in all `palfrey/protocols/` modules:

@@ -30,10 +30,14 @@ if TYPE_CHECKING:
     from typing import Protocol
 
     class _UVLoopModule(Protocol):
-        def new_event_loop(self) -> asyncio.AbstractEventLoop: ...
+        def new_event_loop(self) -> asyncio.AbstractEventLoop:
+            """Creates a new event loop instance."""
+            ...
 
     class _ClickModule(Protocol):
-        def style(self, text: object, **styles: object) -> str: ...
+        def style(self, text: object, **styles: object) -> str:
+            """Styles text for CLI output."""
+            ...
 
 else:
     _UVLoopModule = Any
@@ -45,10 +49,22 @@ from palfrey.types import AppType
 
 
 def _load_uvloop() -> _UVLoopModule:
+    """
+    Imports and returns the uvloop module.
+
+    Returns:
+        _UVLoopModule: The imported uvloop module.
+    """
     return cast("_UVLoopModule", importlib.import_module("uvloop"))
 
 
 def _load_click() -> _ClickModule:
+    """
+    Imports and returns the click module.
+
+    Returns:
+        _ClickModule: The imported click module.
+    """
     return cast("_ClickModule", importlib.import_module("click"))
 
 

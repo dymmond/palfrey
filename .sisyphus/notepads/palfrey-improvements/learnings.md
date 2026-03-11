@@ -913,3 +913,12 @@ if HAS_RUST_EXTENSION and _unmask_websocket_payload is not None:
 - Unblocks WebSocket protocol testing
 - No performance or behavioral change (declarative only)
 - Maintains backward compatibility
+
+## Task 19: Docstring Coverage Improvement
+- **Coverage Improvement**: 95.2% → 98.3% (+3.1%)
+- **Target Achieved**: 98.3% (≥95.0% target)
+- **Modules Improved**:
+    - `palfrey/server.py`: Added docstrings to internal helpers (`stop_request_reader`, `request_handler`, `drain_if_needed`, `create_protocol`).
+    - `palfrey/config.py`: Added docstrings to module-level helpers and Protocol methods.
+- **Key Insight**: Nested functions in `palfrey/server.py` often closure over significant state (e.g., `request_reader_task`, `pending_bytes`). Docstrings for these should acknowledge their purpose within the parent method's lifecycle.
+- **Pattern Insight**: Maintaining Google-style docstrings across the project ensures consistent documentation that works well with automated analysis tools.

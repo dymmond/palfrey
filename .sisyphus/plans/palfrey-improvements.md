@@ -1780,7 +1780,7 @@ Max Concurrent: 7 (Waves 1 & 2)
   - Files: `palfrey/protocols/http.py`, `palfrey/protocols/http2.py`, `palfrey/protocols/http3.py`, `palfrey/protocols/websocket.py`
   - Pre-commit: `task lint`
 
-- [ ] 19. Function Docstrings — server.py, config.py, Remaining Modules
+- [x] 19. Function Docstrings — server.py, config.py, Remaining Modules
 
   **What to do**:
   - Add or improve function/method docstrings in all remaining modules:

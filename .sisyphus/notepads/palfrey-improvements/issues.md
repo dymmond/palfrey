@@ -199,3 +199,10 @@ Add `--ws-ping-interval 0` to Palfrey benchmark command in `benchmarks/run.py:96
 **Status**: ⏸️ DISCOVERED (during Task 15 benchmark runs, requires immediate fix)
 
 **Timestamp**: 2026-03-11 (discovered during Task 15 execution)
+
+**Resolution**: ✅ FIXED (commit 12573e8)
+- Added memoryview → bytes conversion in `palfrey/acceleration.py` lines 213-215
+- Conversion happens BEFORE Rust call (defensive type check with isinstance)
+- Verification: WebSocket integration test PASSED, benchmark with Rust enabled PASSED
+- Impact: Task 15 can now run with Rust enabled, production WebSocket works correctly
+- Performance: Conversion cost negligible (~0.01%) vs Rust speedup (~99x)

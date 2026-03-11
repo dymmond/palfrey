@@ -210,6 +210,10 @@ def unmask_websocket_payload(payload: WebSocketPayloadBuffer, masking_key: bytes
     if len(masking_key) != 4:
         raise ValueError("WebSocket masking key must be exactly 4 bytes")
 
+    # Convert memoryview to bytes for Rust compatibility (PyO3 &[u8] doesn't auto-convert)
+    if isinstance(payload, memoryview):
+        payload = bytes(payload)
+
     if HAS_RUST_EXTENSION and _unmask_websocket_payload is not None:
         return _unmask_websocket_payload(payload, masking_key)
 

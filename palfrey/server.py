@@ -46,7 +46,7 @@ from palfrey.protocols.http import (
     HTTPResponse,
     append_default_response_headers,
     build_http_scope,
-    encode_http_response,
+    encode_http_response_chunks,
     is_websocket_upgrade,
     read_http_request,
     requires_100_continue,
@@ -886,8 +886,13 @@ class PalfreyServer:
         """
         Serializes and writes the HTTP response to the stream.
         """
-        payload = encode_http_response(response, keep_alive=keep_alive)
-        writer.write(payload)
+        payload_chunks = encode_http_response_chunks(response, keep_alive=keep_alive)
+        writelines = getattr(writer, "writelines", None)
+        if callable(writelines):
+            writelines(payload_chunks)
+        else:
+            for chunk in payload_chunks:
+                writer.write(chunk)
         await writer.drain()
 
     def _service_unavailable_response(self) -> HTTPResponse:

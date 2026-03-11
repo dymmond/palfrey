@@ -28,7 +28,7 @@ from __future__ import annotations
 import asyncio
 import http
 import importlib
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from types import ModuleType
@@ -701,6 +701,54 @@ def append_default_response_headers(
         response.headers.append((name.encode("latin-1"), value.encode("latin-1")))
 
 
+def encode_http_response_chunks(response: HTTPResponse, keep_alive: bool) -> Iterable[bytes]:
+    try:
+        reason = http.HTTPStatus(response.status).phrase
+    except ValueError:
+        reason = ""
+
+    yield f"HTTP/1.1 {response.status} {reason}\r\n".encode("ascii")
+
+    has_content_length = False
+    has_transfer_encoding = False
+    has_connection = False
+
+    for name, value in response.headers:
+        lowered_name = name.lower()
+        if lowered_name == b"content-length":
+            has_content_length = True
+        elif lowered_name == b"transfer-encoding":
+            has_transfer_encoding = True
+        elif lowered_name == b"connection":
+            has_connection = True
+
+        yield name
+        yield b": "
+        yield value
+        yield b"\r\n"
+
+    if not has_content_length and not has_transfer_encoding:
+        payload_len = 0 if response.suppress_body else sum(len(c) for c in response.body_chunks)
+        yield b"content-length: "
+        yield str(payload_len).encode("ascii")
+        yield b"\r\n"
+
+    if not has_connection:
+        yield b"connection: keep-alive\r\n" if keep_alive else b"connection: close\r\n"
+
+    yield b"\r\n"
+
+    if response.chunked_encoding:
+        for chunk in response.body_chunks:
+            if chunk:
+                yield f"{len(chunk):x}\r\n".encode("ascii")
+                yield chunk
+                yield b"\r\n"
+        yield b"0\r\n\r\n"
+    elif not response.suppress_body:
+        yield from response.body_chunks
+
+
 def encode_http_response(response: HTTPResponse, keep_alive: bool) -> bytes:
     """
     Zero-copy serialization of the HTTPResponse into raw wire bytes.
@@ -716,55 +764,7 @@ def encode_http_response(response: HTTPResponse, keep_alive: bool) -> bytes:
     Returns:
         bytes: The fully serialized HTTP response ready for `transport.write()`.
     """
-    try:
-        reason = http.HTTPStatus(response.status).phrase
-    except ValueError:
-        reason = ""
-
-    parts: list[bytes] = [f"HTTP/1.1 {response.status} {reason}\r\n".encode("ascii")]
-
-    has_content_length = False
-    has_transfer_encoding = False
-    has_connection = False
-
-    for name, value in response.headers:
-        lowered_name = name.lower()
-        if lowered_name == b"content-length":
-            has_content_length = True
-        elif lowered_name == b"transfer-encoding":
-            has_transfer_encoding = True
-        elif lowered_name == b"connection":
-            has_connection = True
-
-        parts.append(name)
-        parts.append(b": ")
-        parts.append(value)
-        parts.append(b"\r\n")
-
-    # Re-added the missing fallback Content-Length injection for the test suite
-    if not has_content_length and not has_transfer_encoding:
-        payload_len = 0 if response.suppress_body else sum(len(c) for c in response.body_chunks)
-        parts.append(b"content-length: ")
-        parts.append(str(payload_len).encode("ascii"))
-        parts.append(b"\r\n")
-
-    if not has_connection:
-        parts.append(b"connection: keep-alive\r\n" if keep_alive else b"connection: close\r\n")
-
-    parts.append(b"\r\n")  # End of headers
-
-    # Restored the chunk framing logic to occur exactly here at encode time
-    if response.chunked_encoding:
-        for chunk in response.body_chunks:
-            if chunk:
-                parts.append(f"{len(chunk):x}\r\n".encode("ascii"))
-                parts.append(chunk)
-                parts.append(b"\r\n")
-        parts.append(b"0\r\n\r\n")
-    elif not response.suppress_body:
-        parts.extend(response.body_chunks)
-
-    return b"".join(parts)
+    return b"".join(encode_http_response_chunks(response, keep_alive))
 
 
 def should_keep_alive(request: HTTPRequest, response: HTTPResponse) -> bool:

@@ -29,6 +29,17 @@ _(To be populated as tasks progress)_
 
 _Updated by subagents after each task completion._
 
+## Task 15 Benchmarking Learnings (2026-03-11)
+
+- Required statistical method for this wave was stable: run smoke (10k) first, then three full runs (100k), and use medians to mitigate short-run jitter.
+- Using baseline medians from Task 1 provides a consistent before/after comparison even when baseline was recorded across multiple runs.
+- Wave 2 aggregate impact measured from medians in this environment:
+  - HTTP (Palfrey): +5.0% vs baseline
+  - WebSocket (Palfrey): +5.1% vs baseline
+- Palfrey/Uvicorn relative speed remained near parity in HTTP (~0.98x) and maintained strong WebSocket advantage (~2.31x median).
+- Benchmark execution exposed a current regression when Rust acceleration is enabled on WebSocket receive path: `memoryview` reaches Rust unmask function expecting `PyBytes`, causing runtime 500 after upgrade. Temporary benchmark workaround was `PALFREY_NO_RUST=1` to complete comparable runs.
+
+
 ## Task 8 Streaming HTTP Response Writer Learnings (2026-03-11)
 
 - Added `encode_http_response_chunks(response, keep_alive)` in `palfrey/protocols/http.py` to emit response wire bytes as an iterable instead of forcing a full `b"".join(parts)` at write time.

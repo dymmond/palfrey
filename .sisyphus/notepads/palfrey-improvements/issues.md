@@ -163,3 +163,39 @@ Add `--ws-ping-interval 0` to Palfrey benchmark command in `benchmarks/run.py:96
 - Added `"--ws-ping-interval"` and `"0"` to `benchmarks/run.py` lines 112-113
 - Disables automatic ping frames for benchmark only (production behavior unchanged)
 - Task 15 unblocked
+
+## Task 14 Rust Regression - memoryview Not Accepted (CRITICAL BLOCKER)
+
+**Issue**: Rust WebSocket unmask function fails when receiving `memoryview` object
+
+**Error**: `TypeError: argument 'payload': 'memoryview' object cannot be converted to 'PyBytes'`
+
+**Impact**:
+- ❌ BLOCKS all WebSocket benchmarks with Rust enabled
+- ❌ Task 15 had to run with `PALFREY_NO_RUST=1` to complete
+- ❌ Production WebSocket connections will fail with 500 after upgrade
+- ❌ Negates Task 14 performance gains for WebSocket workloads
+
+**Root Cause** (hypothesis):
+- Task 14 changed Rust function signature: `fn unmask_websocket_payload(payload: &[u8], ...)`
+- PyO3 expects `&[u8]` to accept Python `bytes` objects
+- WebSocket receive path somewhere creates `memoryview` from socket read
+- `memoryview` is NOT automatically converted to `&[u8]` by PyO3
+- Rust function rejects the call with TypeError
+
+**Evidence**:
+- Benchmark runs fail with Rust enabled
+- Benchmark succeeds with `PALFREY_NO_RUST=1`
+- Task 14 semantic parity tests passed (used `bytes` objects, not `memoryview`)
+
+**Solution Required**:
+1. Find where `memoryview` is created in WebSocket receive path
+2. Either:
+   - Convert `memoryview` to `bytes` before calling Rust function
+   - OR change Rust signature to accept `PyBuffer` protocol (handles both bytes and memoryview)
+
+**Priority**: URGENT (blocks Task 15 completion, production regression)
+
+**Status**: ⏸️ DISCOVERED (during Task 15 benchmark runs, requires immediate fix)
+
+**Timestamp**: 2026-03-11 (discovered during Task 15 execution)

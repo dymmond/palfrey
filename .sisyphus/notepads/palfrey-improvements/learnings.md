@@ -29,6 +29,14 @@ _(To be populated as tasks progress)_
 
 _Updated by subagents after each task completion._
 
+## Task 8 Streaming HTTP Response Writer Learnings (2026-03-11)
+
+- Added `encode_http_response_chunks(response, keep_alive)` in `palfrey/protocols/http.py` to emit response wire bytes as an iterable instead of forcing a full `b"".join(parts)` at write time.
+- Updated `PalfreyServer._write_response` to stream response chunks with `writer.writelines(...)` when available, with a compatibility fallback to per-chunk `writer.write(...)` for test doubles and transports lacking `writelines`.
+- Large-body path now preserves original body chunk object identity through serialization (`test_encode_http_response_chunks_large_body_preserves_chunk_reference`), demonstrating no extra full-body copy in the server write path.
+- Chunked transfer encoding remains correctly framed per chunk (`size\r\n`, data, `\r\n`, terminal `0\r\n\r\n`) and is now emitted incrementally as discrete chunks.
+- Keep-alive and `connection` header behavior remain unchanged under streaming path (validated by tests + manual curl checks).
+
 ## Rust Extension Audit Learnings (Task 4)
 
 - Rust acceleration module currently exports 4 PyO3 functions: `parse_header_items`, `split_csv_values`, `parse_request_head`, `unmask_websocket_payload`.
@@ -238,3 +246,17 @@ Palfrey vs Uvicorn:
 - Signal-capture non-main-thread branch can be deterministically tested by monkeypatching `threading.current_thread` and `threading.main_thread` to distinct sentinel objects.
 - For logger assertions in this suite, replacing `server_module.logger.info` with a temporary capture callable is more reliable than relying on global caplog plumbing.
 - HTTP/3 guard paths (`sockets`, `fd`, `uds`, unresolved app) and request-handler error fallbacks (503/500) are testable in isolation by calling `_serve_http3` with monkeypatched `_main_loop`/`_shutdown` and then exercising the captured request handler.
+
+## Task 12 Pre-Computed Status Lines & Cached Headers (2026-03-11)
+
+- Module-level `_STATUS_LINES: dict[int, bytes]` pre-computes 13 common HTTP status codes (200, 201, 204, 301, 302, 304, 400, 401, 403, 404, 500, 502, 503) as immutable bytes objects.
+- Performance optimization targets the hot path: `encode_http_response_chunks()` performs O(1) lookup in `_STATUS_LINES` before falling back to dynamic `http.HTTPStatus().phrase` generation for uncommon codes (418, 451, etc.).
+- Pre-computation eliminates repeated f-string evaluation + `.encode("ascii")` call per response; on 10k+ req/s servers, this compounds to significant overhead reduction.
+- `_SERVER_HEADER_VALUE: bytes = b"palfrey"` caches the Server header as pre-encoded bytes, avoiding redundant encoding in `append_default_response_headers()`.
+- Backward compatibility preserved: uncommon status codes (e.g., 418 "I'm a Teapot") fall through to dynamic phrase lookup—no custom codes break.
+- TDD workflow: 18 tests in `tests/unit/test_http_status_cache.py` validate (1) pre-computed dict presence, (2) format correctness for common codes, (3) uncommon code fallback, (4) header caching in response encoding.
+- All tests pass (18/18 in new suite). Zero lint errors introduced. No impact on existing test failures (pre-existing socket option test issues unrelated).
+- Evidence files document both QA scenarios:
+  - Scenario 1: Direct module import verification of `_STATUS_LINES` dict contents
+  - Scenario 2: HTTP 418 response encoding confirms dynamic fallback mechanism works correctly
+- Module docstring pattern reinforced: inline comments explain performance optimization rationale for future maintainers.

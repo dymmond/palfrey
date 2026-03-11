@@ -28,7 +28,7 @@ from __future__ import annotations
 import asyncio
 import http
 import importlib
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from types import ModuleType
@@ -65,7 +65,7 @@ class HTTPRequest:
         method (str): The HTTP method (e.g., 'GET', 'POST').
         target (str): The full request URI or path.
         http_version (str): The protocol version (e.g., 'HTTP/1.1').
-        headers (list[tuple[str, str]]): List of header name-value pairs as strings.
+        headers (list[tuple[bytes, bytes]]): List of header name-value pairs as bytes.
         body (bytes): The complete request body as a single byte string.
         body_chunks (list[bytes]): The body split into chunks, as received from the wire.
     """
@@ -73,12 +73,22 @@ class HTTPRequest:
     method: str
     target: str
     http_version: str
-    headers: list[tuple[str, str]]
+    headers: list[tuple[bytes, bytes]]
     body: bytes
     body_chunks: list[bytes] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         """Synchronizes the body and body_chunks attributes after initialization."""
+        if self.headers:
+            if not all(
+                isinstance(name, bytes) and isinstance(value, bytes) and name == name.lower()
+                for name, value in self.headers
+            ):
+                self.headers = [
+                    (_coerce_header_bytes(name).lower(), _coerce_header_bytes(value))
+                    for name, value in self.headers
+                ]
+
         if self.body_chunks:
             self.body = b"".join(self.body_chunks)
             return
@@ -108,6 +118,28 @@ class HTTPResponse:
     suppress_body: bool = False
 
 
+# Pre-computed HTTP status lines for common response codes.
+# Avoids repeated string formatting and encoding on every response.
+_STATUS_LINES: dict[int, bytes] = {
+    200: b"HTTP/1.1 200 OK\r\n",
+    201: b"HTTP/1.1 201 Created\r\n",
+    204: b"HTTP/1.1 204 No Content\r\n",
+    301: b"HTTP/1.1 301 Moved Permanently\r\n",
+    302: b"HTTP/1.1 302 Found\r\n",
+    304: b"HTTP/1.1 304 Not Modified\r\n",
+    400: b"HTTP/1.1 400 Bad Request\r\n",
+    401: b"HTTP/1.1 401 Unauthorized\r\n",
+    403: b"HTTP/1.1 403 Forbidden\r\n",
+    404: b"HTTP/1.1 404 Not Found\r\n",
+    500: b"HTTP/1.1 500 Internal Server Error\r\n",
+    502: b"HTTP/1.1 502 Bad Gateway\r\n",
+    503: b"HTTP/1.1 503 Service Unavailable\r\n",
+}
+
+# Pre-computed Server header value to avoid repeated encoding
+_SERVER_HEADER_VALUE: bytes = b"palfrey"
+
+
 class _HTTPToolsParserProtocol:
     """
     Callback handler for the C-based httptools request parser.
@@ -124,7 +156,7 @@ class _HTTPToolsParserProtocol:
         self.method = ""
         self.target = ""
         self.http_version = "HTTP/1.1"
-        self.headers: list[tuple[str, str]] = []
+        self.headers: list[tuple[bytes, bytes]] = []
         self._parser: Any = None
 
     def bind_parser(self, parser: Any) -> None:
@@ -137,7 +169,7 @@ class _HTTPToolsParserProtocol:
 
     def on_header(self, name: bytes, value: bytes) -> None:
         """Captured for every header field."""
-        self.headers.append((name.decode("latin-1"), value.decode("latin-1")))
+        self.headers.append((name.lower(), value))
 
     def on_headers_complete(self) -> None:
         """Finalizes the request line and metadata once headers are finished."""
@@ -185,32 +217,32 @@ def _http_date_header() -> bytes:
     return cached_http_date_header()
 
 
-def _normalize_connection_value(headers: list[tuple[str, str]]) -> str:
+def _normalize_connection_value(headers: list[tuple[bytes, bytes]]) -> bytes:
     """Extracts and normalizes the 'Connection' header value from a list of headers."""
     for name, value in headers:
-        if name.lower() == "connection":
+        if name == b"connection":
             return value.lower()
-    return ""
+    return b""
 
 
-def _is_websocket_upgrade(headers: list[tuple[str, str]]) -> bool:
+def _is_websocket_upgrade(headers: list[tuple[bytes, bytes]]) -> bool:
     """Checks headers to determine if the client is requesting a WebSocket upgrade."""
-    upgrade = ""
-    connection = ""
+    upgrade = b""
+    connection = b""
     for name, value in headers:
-        lowered_name = name.lower()
         lowered_value = value.lower()
-        if lowered_name == "upgrade":
+        if name == b"upgrade":
             upgrade = lowered_value
-        elif lowered_name == "connection":
+        elif name == b"connection":
             connection = lowered_value
-    return "websocket" in upgrade and "upgrade" in connection
+    return b"websocket" in upgrade and b"upgrade" in connection
 
 
-def _header_lookup(headers: list[tuple[str, str]], key: str) -> str | None:
-    """Performs a case-insensitive search for a header value in a list of string tuples."""
+def _header_lookup(headers: list[tuple[bytes, bytes]], key: bytes) -> bytes | None:
+    """Performs a case-insensitive search for a header value in a bytes header list."""
+    key_lower = key.lower()
     for name, value in headers:
-        if name.lower() == key.lower():
+        if name == key_lower:
             return value
     return None
 
@@ -323,10 +355,11 @@ async def read_http_request(
     if len(head) > max_head_size:
         raise ValueError("HTTP head exceeds configured limit")
 
-    method, target, version, headers = _parse_request_head(head, parser_mode)
+    method, target, version, raw_headers = _parse_request_head(head, parser_mode)
+    headers = _normalize_header_items(raw_headers)
 
-    content_length_raw = _header_lookup(headers, "content-length")
-    transfer_encoding = (_header_lookup(headers, "transfer-encoding") or "").lower()
+    content_length_raw = _header_lookup(headers, b"content-length")
+    transfer_encoding = (_header_lookup(headers, b"transfer-encoding") or b"").lower()
 
     content_length = 0
     if content_length_raw is not None:
@@ -336,7 +369,7 @@ async def read_http_request(
             raise ValueError("Invalid Content-Length header") from exc
 
     body_chunks: list[bytes] = [b""]
-    if "chunked" in transfer_encoding:
+    if b"chunked" in transfer_encoding:
         body_chunks = await _read_chunked_body_chunks(reader, body_limit)
     else:
         body_chunks = await _read_content_length_body_chunks(reader, content_length, body_limit)
@@ -355,22 +388,21 @@ async def read_http_request(
 def _parse_request_head(
     head: bytes,
     parser_mode: str,
-) -> tuple[str, str, str, list[tuple[str, str]]]:
+) -> tuple[str, str, str, Sequence[tuple[str, str] | tuple[bytes, bytes]]]:
     """Dispatches request head parsing to the chosen backend."""
     if parser_mode == "h11":
         return _parse_request_head_h11(head)
     if parser_mode == "httptools":
         return _parse_request_head_httptools(head)
 
-    try:
-        return parse_request_head(head)
-    except ValueError:
-        with suppress(ValueError):
-            return _parse_request_head_httptools(head)
+    with suppress(ValueError):
+        return _parse_request_head_httptools(head)
+    with suppress(ValueError):
         return _parse_request_head_h11(head)
+    return parse_request_head(head)
 
 
-def _parse_request_head_h11(head: bytes) -> tuple[str, str, str, list[tuple[str, str]]]:
+def _parse_request_head_h11(head: bytes) -> tuple[str, str, str, list[tuple[bytes, bytes]]]:
     """Uses the pure-python h11 library to parse request headers."""
     try:
         h11 = cast(Any, importlib.import_module("h11"))
@@ -386,15 +418,13 @@ def _parse_request_head_h11(head: bytes) -> tuple[str, str, str, list[tuple[str,
     method = event.method.decode("latin-1")
     target = event.target.decode("latin-1")
     version = f"HTTP/{event.http_version.decode('latin-1')}"
-    headers = [
-        (name.decode("latin-1"), value.decode("latin-1")) for name, value in list(event.headers)
-    ]
+    headers = [(name.lower(), value) for name, value in list(event.headers)]
     return method, target, version, headers
 
 
 def _parse_request_head_httptools(
     head: bytes,
-) -> tuple[str, str, str, list[tuple[str, str]]]:
+) -> tuple[str, str, str, list[tuple[bytes, bytes]]]:
     """Uses the high-performance httptools library to parse request headers."""
     httptools, upgrade_exc_type = _get_httptools_backend()
     protocol = _HTTPToolsParserProtocol()
@@ -440,6 +470,13 @@ def build_http_scope(
     full_path = root_path + decoded_path
     full_raw_path = root_path_bytes + raw_path
 
+    headers = request.headers
+    scope_headers = (
+        headers
+        if all(name == name.lower() for name, _ in headers)
+        else [(name.lower(), value) for name, value in headers]
+    )
+
     return {
         "type": "http",
         "asgi": {"version": "3.0", "spec_version": "2.3"},
@@ -450,10 +487,7 @@ def build_http_scope(
         "raw_path": full_raw_path,
         "query_string": query.encode("latin-1"),
         "root_path": root_path,
-        "headers": [
-            (name.lower().encode("latin-1"), value.encode("latin-1"))
-            for name, value in request.headers
-        ],
+        "headers": scope_headers,
         "client": client,
         "server": server,
         "state": {},
@@ -655,6 +689,25 @@ def _coerce_header_bytes(value: object) -> bytes:
     return str(value).encode("latin-1")
 
 
+def _normalize_header_items(
+    headers: Iterable[tuple[str, str] | tuple[bytes, bytes]],
+) -> list[tuple[bytes, bytes]]:
+    header_list = list(headers)
+    if not header_list:
+        return []
+
+    if all(
+        isinstance(name, bytes) and isinstance(value, bytes) and name == name.lower()
+        for name, value in header_list
+    ):
+        return cast(list[tuple[bytes, bytes]], header_list)
+
+    return [
+        (_coerce_header_bytes(name).lower(), _coerce_header_bytes(value))
+        for name, value in header_list
+    ]
+
+
 def append_default_response_headers(
     response: HTTPResponse,
     config: PalfreyConfig,
@@ -688,7 +741,7 @@ def append_default_response_headers(
         and b"server" not in existing_headers
         and "server" not in configured_header_names
     ):
-        response.headers.append((b"server", b"palfrey"))
+        response.headers.append((b"server", _SERVER_HEADER_VALUE))
 
     if (
         config.date_header
@@ -702,12 +755,14 @@ def append_default_response_headers(
 
 
 def encode_http_response_chunks(response: HTTPResponse, keep_alive: bool) -> Iterable[bytes]:
-    try:
-        reason = http.HTTPStatus(response.status).phrase
-    except ValueError:
-        reason = ""
-
-    yield f"HTTP/1.1 {response.status} {reason}\r\n".encode("ascii")
+    if response.status in _STATUS_LINES:
+        yield _STATUS_LINES[response.status]
+    else:
+        try:
+            reason = http.HTTPStatus(response.status).phrase
+        except ValueError:
+            reason = ""
+        yield f"HTTP/1.1 {response.status} {reason}\r\n".encode("ascii")
 
     has_content_length = False
     has_transfer_encoding = False
@@ -781,16 +836,16 @@ def should_keep_alive(request: HTTPRequest, response: HTTPResponse) -> bool:
         bool: True if the connection should be kept alive, False to close.
     """
     request_connection = _normalize_connection_value(request.headers)
-    response_connection = ""
+    response_connection = b""
     for name, value in response.headers:
         if name.lower() == b"connection":
-            response_connection = value.decode("latin-1").lower()
+            response_connection = value.lower()
             break
 
-    if "close" in request_connection or "close" in response_connection:
+    if b"close" in request_connection or b"close" in response_connection:
         return False
 
-    if request.http_version == "HTTP/1.0" and "keep-alive" not in request_connection:
+    if request.http_version == "HTTP/1.0" and b"keep-alive" not in request_connection:
         return False
 
     return True
@@ -803,7 +858,7 @@ def is_websocket_upgrade(request: HTTPRequest) -> bool:
 
 def requires_100_continue(request: HTTPRequest) -> bool:
     """Verifies if the client is waiting for a '100 Continue' response before sending the body."""
-    expect = _header_lookup(request.headers, "expect")
+    expect = _header_lookup(request.headers, b"expect")
     if not expect:
         return False
-    return expect.lower() == "100-continue"
+    return expect.lower() == b"100-continue"

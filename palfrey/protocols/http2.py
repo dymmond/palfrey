@@ -151,6 +151,17 @@ def _encode_response_headers(response: HTTPResponse) -> tuple[list[tuple[bytes, 
 
 
 def _is_stream_closed_error(exc: Exception) -> bool:
+    """Checks if the exception indicates an HTTP/2 stream has been closed.
+
+    This is used to suppress errors when attempting to write to a stream
+    that the client has already reset or closed.
+
+    Args:
+        exc (Exception): The exception to check.
+
+    Returns:
+        bool: True if it is a stream closure error, False otherwise.
+    """
     name = exc.__class__.__name__
     if name in {"StreamClosedError", "NoSuchStreamError"}:
         return True
@@ -164,14 +175,16 @@ async def _send_h2_response(
     stream_id: int,
     response: HTTPResponse,
 ) -> None:
-    """
-    Send an HTTP/2 response on a specific stream.
+    """Sends an HTTP/2 response on a specific stream.
+
+    Handles header encoding, payload chunking, and flow control window
+    management to ensure compliant transmission.
 
     Args:
-        connection (Any): `h2.connection.H2Connection` instance.
-        writer (asyncio.StreamWriter): Stream writer for outbound bytes.
-        stream_id (int): HTTP/2 stream identifier.
-        response (HTTPResponse): Response to serialize.
+        connection (Any): The h2.connection.H2Connection instance.
+        writer (asyncio.StreamWriter): The destination for outbound bytes.
+        stream_id (int): The unique identifier for the HTTP/2 stream.
+        response (HTTPResponse): The response data to send.
     """
     headers, payload_length = _encode_response_headers(response)
     end_stream = payload_length == 0
@@ -226,17 +239,19 @@ async def serve_http2_connection(
     writer: asyncio.StreamWriter,
     request_handler: Callable[[HTTPRequest], Awaitable[HTTPResponse]],
 ) -> None:
-    """
-    Run an HTTP/2 connection loop and dispatch completed streams to an ASGI request handler.
+    """Manages an HTTP/2 connection lifecycle.
+
+    Reads frames from the reader, updates connection and stream state machines,
+    and dispatches completed requests to the provided handler.
 
     Args:
-        reader (asyncio.StreamReader): Source stream reader.
-        writer (asyncio.StreamWriter): Destination stream writer.
-        request_handler (Callable[[HTTPRequest], Awaitable[HTTPResponse]]):
-            Coroutine that receives parsed requests and returns a response.
+        reader (asyncio.StreamReader): The source for incoming frames.
+        writer (asyncio.StreamWriter): The destination for outgoing frames.
+        request_handler (Callable): A coroutine that processes HTTPRequest
+            and returns an HTTPResponse.
 
     Raises:
-        RuntimeError: If the `h2` dependency is not installed.
+        RuntimeError: If the 'h2' library is not available in the environment.
     """
     try:
         h2_config = importlib.import_module("h2.config")
@@ -264,6 +279,11 @@ async def serve_http2_connection(
     await writer.drain()
 
     async def process_stream(stream_id: int) -> None:
+        """Finalizes a stream and dispatches it to the request handler.
+
+        Args:
+            stream_id (int): The ID of the stream to process.
+        """
         stream_state = streams.pop(stream_id, None)
         if stream_state is None:
             return

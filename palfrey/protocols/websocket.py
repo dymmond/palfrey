@@ -222,6 +222,9 @@ def _build_handshake_response_for_key(
 def _http_date_header() -> bytes:
     """
     Retrieve the current cached HTTP date header value.
+
+    Returns:
+        bytes: The RFC 7231 formatted date string as bytes.
     """
     return cached_http_date_header()
 
@@ -230,11 +233,14 @@ def _default_websocket_headers(config: PalfreyConfig) -> list[tuple[bytes, bytes
     """
     Generate default server headers for a WebSocket handshake response.
 
+    Includes 'server' and 'date' headers if configured and not overridden
+    by the application.
+
     Args:
-        config (PalfreyConfig): Server configuration.
+        config (PalfreyConfig): Server configuration options.
 
     Returns:
-        list[tuple[bytes, bytes]]: List of byte-encoded header pairs.
+        list[tuple[bytes, bytes]]: A list of byte-encoded header pairs.
     """
     configured_headers = [
         (name.lower().encode("latin-1"), value.encode("latin-1"))
@@ -256,7 +262,14 @@ def _merge_websocket_accept_headers(
     message_headers: Any,
 ) -> list[tuple[bytes, bytes]]:
     """
-    Combine global default headers with message-specific headers.
+    Combine global default headers with message-specific headers for a handshake.
+
+    Args:
+        config (PalfreyConfig): The server configuration instance.
+        message_headers (Any): Raw headers provided in the ASGI 'websocket.accept' message.
+
+    Returns:
+        list[tuple[bytes, bytes]]: A merged list of byte-encoded header pairs.
     """
     return _default_websocket_headers(config) + _wsproto_extra_headers(message_headers)
 
@@ -268,18 +281,18 @@ def build_handshake_response(
     extra_headers: list[tuple[bytes, bytes]] | None = None,
 ) -> bytes:
     """
-    Extract the client key and build a full handshake response.
+    Extract the client key and build a full Switching Protocols handshake response.
 
     Args:
-        headers (list[tuple[str, str]]): Incoming request headers.
-        subprotocol (str | None): Selected subprotocol.
-        extra_headers (list[tuple[bytes, bytes]] | None): User headers.
+        headers (list[tuple[str, str]]): Incoming HTTP request headers.
+        subprotocol (str | None): The negotiated subprotocol to include in headers.
+        extra_headers (list[tuple[bytes, bytes]] | None): Additional server headers.
 
     Returns:
-        bytes: Serialized response bytes.
+        bytes: Serialized HTTP 101 response bytes.
 
     Raises:
-        ValueError: If the client key is missing.
+        ValueError: If the 'Sec-WebSocket-Key' header is missing from the request.
     """
     client_key = _header_value(headers, "sec-websocket-key")
     if not client_key:
@@ -294,7 +307,12 @@ def build_handshake_response(
 
 def _validate_handshake(headers: list[tuple[str, str]]) -> None:
     """
-    Perform a strict validation of the initial WebSocket upgrade headers.
+    Perform strict validation of initial WebSocket upgrade headers.
+
+    Checks for valid version (13) and a correctly formatted 16-byte base64 key.
+
+    Args:
+        headers (list[tuple[str, str]]): Incoming request headers to validate.
 
     Raises:
         ValueError: If headers do not conform to RFC 6455.
@@ -319,6 +337,15 @@ def _validate_handshake(headers: list[tuple[str, str]]) -> None:
 def _validate_handshake_from_map(headers_map: dict[str, str]) -> str:
     """
     Validate handshake metadata using a pre-mapped dictionary of headers.
+
+    Args:
+        headers_map (dict[str, str]): A dictionary of lowercase header names to values.
+
+    Returns:
+        str: The validated 'Sec-WebSocket-Key' value.
+
+    Raises:
+        ValueError: If the handshake metadata is invalid or missing required keys.
     """
     version = headers_map.get("sec-websocket-version")
     if version != "13":
@@ -480,6 +507,9 @@ def _try_parse_frame_from_buffer(
 def _bad_websocket_request_payload() -> bytes:
     """
     Return a 400 Bad Request HTTP response for invalid upgrade attempts.
+
+    Returns:
+        bytes: The raw HTTP 400 response with 'Bad WebSocket Request' body.
     """
     return (
         b"HTTP/1.1 400 Bad Request\r\n"
@@ -491,7 +521,13 @@ def _bad_websocket_request_payload() -> bytes:
 
 def _http_reason_phrase(status_code: int) -> str:
     """
-    Map common status codes to their HTTP reason phrases.
+    Map common HTTP status codes to their respective reason phrases.
+
+    Args:
+        status_code (int): The HTTP status code.
+
+    Returns:
+        str: The standard reason phrase (e.g., "Forbidden").
     """
     mapping = {
         400: "Bad Request",
@@ -504,7 +540,12 @@ def _http_reason_phrase(status_code: int) -> str:
 
 async def _write_bad_websocket_request(writer: asyncio.StreamWriter) -> None:
     """
-    Write a bad request payload to the stream and flush it.
+    Write a 400 Bad Request response to the stream and flush it.
+
+    Used when initial upgrade headers are malformed or missing.
+
+    Args:
+        writer (asyncio.StreamWriter): The target output stream.
     """
     writer.write(_bad_websocket_request_payload())
     await writer.drain()
@@ -599,6 +640,13 @@ async def _handle_websocket_core(
     high_watermark_bytes = 262_144
 
     async def _flush_if_needed(*, force: bool = False) -> None:
+        """Flushes the underlying stream writer if the buffer exceeds the watermark.
+
+        This provides backpressure and ensures data is actually sent to the wire.
+
+        Args:
+            force (bool): If True, performs an unconditional drain.
+        """
         if force:
             await writer.drain()
             return
@@ -609,6 +657,15 @@ async def _handle_websocket_core(
             await writer.drain()
 
     async def receive() -> Message:
+        """The ASGI receive channel for the WebSocket connection.
+
+        This coroutine continuously reads frames from the network,
+        handles control frames (ping/pong/close), and yields data messages
+        to the application.
+
+        Returns:
+            Message: An ASGI-compliant WebSocket message.
+        """
         nonlocal closed, close_disconnect_code, fragmented_opcode, connect_sent
 
         if not connect_sent:
@@ -696,6 +753,17 @@ async def _handle_websocket_core(
             return {"type": "websocket.disconnect", "code": 1002}
 
     async def send(message: Message) -> None:
+        """The ASGI send channel for the WebSocket connection.
+
+        Processes messages from the application and translates them into
+        WebSocket frames or HTTP responses (for early rejections).
+
+        Args:
+            message (Message): The message sent by the application.
+
+        Raises:
+            RuntimeError: If the application violates the ASGI WebSocket spec.
+        """
         nonlocal accepted, closed, close_disconnect_code, accept_subprotocol
         nonlocal http_response_started, http_response_status
         nonlocal http_response_headers, http_response_body_chunks
@@ -818,6 +886,23 @@ async def _handle_websocket_websockets_backend(
 ) -> None:
     """
     Handle the WebSocket connection using the 'websockets' asyncio-based backend.
+
+    This backend uses the standard 'websockets' library for high-performance
+    framing and flow control. It supports features like Per-Message Deflate.
+
+    Args:
+        app (ASGIApplication): The ASGI application to call.
+        config (PalfreyConfig): Global server configuration.
+        reader (asyncio.StreamReader): Network input stream.
+        writer (asyncio.StreamWriter): Network output stream.
+        headers (list[tuple[str, str]]): Initial HTTP upgrade headers.
+        target (str): Request target URL.
+        client (ClientAddress): Client IP and port.
+        server (ServerAddress): Server IP and port.
+        is_tls (bool): Whether the connection is encrypted.
+
+    Raises:
+        RuntimeError: If the 'websockets' package is missing but requested.
     """
     if config.loaded:
         await _handle_websocket_core(
@@ -876,16 +961,26 @@ async def _handle_websocket_websockets_backend(
             per_message_deflate_factory = permessage_module.ServerPerMessageDeflateFactory
 
     class _FakeWebSocketServer:
+        """
+        A mock server class to satisfy the 'websockets' ServerConnection interface.
+
+        Provides empty implementations of lifecycle management methods.
+        """
+
         def register(self, ws: Any) -> None:
+            """Register a connection (No-op)."""
             return None
 
         def unregister(self, ws: Any) -> None:
+            """Unregister a connection (No-op)."""
             return None
 
         def is_serving(self) -> bool:
+            """Checks if the server is active (Always True)."""
             return True
 
         def start_connection_handler(self, _connection: Any) -> None:
+            """Starts the connection handler (No-op)."""
             return None
 
     protocol_kwargs: dict[str, Any] = {
@@ -925,6 +1020,12 @@ async def _handle_websocket_websockets_backend(
     handshake_accepted = False
 
     async def asgi_receive() -> Message:
+        """The ASGI receive channel for the WebSocket connection.
+
+        Returns:
+            Message: A 'websocket.connect', 'websocket.receive', or
+                'websocket.disconnect' message.
+        """
         nonlocal connect_sent
         if not connect_sent:
             connect_sent = True
@@ -952,6 +1053,14 @@ async def _handle_websocket_websockets_backend(
         return {"type": "websocket.receive", "bytes": bytes(payload)}
 
     async def asgi_send(message: Message) -> None:
+        """The ASGI send channel for the WebSocket connection.
+
+        Args:
+            message (Message): The message sent by the application.
+
+        Raises:
+            RuntimeError: If the application violates the ASGI WebSocket spec.
+        """
         nonlocal accepted_subprotocol, accepted_headers, handshake_accepted
 
         message_type = message["type"]
@@ -1029,6 +1138,11 @@ async def _handle_websocket_websockets_backend(
         )
 
     async def run_asgi() -> None:
+        """Executes the ASGI application for the WebSocket connection.
+
+        Manages the handshake lifecycle and ensures proper error responses
+        if the application fails during initial startup.
+        """
         try:
             result = await app(scope, asgi_receive, asgi_send)
         except Exception:
@@ -1055,6 +1169,18 @@ async def _handle_websocket_websockets_backend(
             app_done.set()
 
     async def process_request(_conn: Any, _request: Any) -> Any:
+        """Processes the initial upgrade request for the 'websockets' backend.
+
+        This callback is used to inject the ASGI handshake logic into
+        the websockets library's upgrade flow.
+
+        Args:
+            _conn (Any): The websockets connection instance.
+            _request (Any): The incoming request metadata.
+
+        Returns:
+            Any: A response object if rejection is needed, otherwise None.
+        """
         await asyncio.wait(
             [
                 asyncio.create_task(handshake_started.wait()),
@@ -1074,6 +1200,16 @@ async def _handle_websocket_websockets_backend(
         return response
 
     async def process_response(_conn: Any, _request: Any, response: Any) -> Any:
+        """Updates the successful upgrade response with ASGI-provided headers.
+
+        Args:
+            _conn (Any): The websockets connection instance.
+            _request (Any): The incoming request metadata.
+            response (Any): The response object to update.
+
+        Returns:
+            Any: The updated response object.
+        """
         for name, value in accepted_headers:
             response.headers[name.decode("latin-1")] = value.decode("latin-1")
         if accepted_subprotocol:
@@ -1102,6 +1238,7 @@ async def _handle_websocket_websockets_backend(
         return
 
     async def pump_reader() -> None:
+        """Pumps data from the reader to the 'websockets' connection."""
         while not closed.is_set():
             chunk = await reader.read(65_536)
             if not chunk:
@@ -1141,6 +1278,24 @@ async def _handle_websocket_websockets_sansio_backend(
 ) -> None:
     """
     Handle the WebSocket connection using the 'websockets' sans-io implementation.
+
+    This backend uses the 'websockets' library in a synchronous I/O mode
+    (sans-io), where Palfrey manages the network transport and the library
+    handles protocol state and framing.
+
+    Args:
+        app (ASGIApplication): The ASGI application to call.
+        config (PalfreyConfig): Global server configuration.
+        reader (asyncio.StreamReader): Network input stream.
+        writer (asyncio.StreamWriter): Network output stream.
+        headers (list[tuple[str, str]]): Initial HTTP upgrade headers.
+        target (str): Request target URL.
+        client (ClientAddress): Client IP and port.
+        server (ServerAddress): Server IP and port.
+        is_tls (bool): Whether the connection is encrypted.
+
+    Raises:
+        RuntimeError: If the 'websockets' package is missing but requested.
     """
 
     if find_spec("websockets") is None:
@@ -1232,6 +1387,11 @@ async def _handle_websocket_websockets_sansio_backend(
     fragmented_payload = bytearray()
 
     async def send_500_response() -> None:
+        """
+        Send a synthetic 500 Internal Server Error response.
+
+        This is used when the ASGI application fails before completing the handshake.
+        """
         nonlocal close_sent, handshake_complete
         if initial_response is not None or handshake_complete:
             return
@@ -1242,6 +1402,14 @@ async def _handle_websocket_websockets_sansio_backend(
         handshake_complete = True
 
     async def process_frame(frame: Any) -> None:
+        """
+        Processes a single incoming WebSocket frame and updates the ASGI queue.
+
+        Handles control frames (Ping, Pong, Close) and message data (Text, Binary).
+
+        Args:
+            frame (Any): The decoded 'websockets' frame object.
+        """
         nonlocal close_sent, fragmented_type
 
         if frame.opcode == opcode_cls.PING:
@@ -1317,8 +1485,12 @@ async def _handle_websocket_websockets_sansio_backend(
         close_sent = True
 
     async def pump_reader() -> None:
-        nonlocal close_sent
+        """
+        Continuously read data from the network and feed it to the protocol engine.
 
+        This coroutine manages the data bridge between the asyncio StreamReader
+        and the websockets backend.
+        """
         while not close_sent:
             packet = await reader.read(65_536)
             if not packet:
@@ -1360,9 +1532,22 @@ async def _handle_websocket_websockets_sansio_backend(
                         return
 
     async def receive() -> Message:
+        """The ASGI receive channel for the 'websockets' backend.
+
+        Returns:
+            Message: An ASGI-compliant WebSocket message.
+        """
         return await queue.get()
 
     async def send(message: Message) -> None:
+        """The ASGI send channel for the 'websockets' backend.
+
+        Args:
+            message (Message): The message sent by the application.
+
+        Raises:
+            RuntimeError: If the application violates the ASGI WebSocket spec.
+        """
         nonlocal handshake_complete, close_sent, initial_response
 
         message_type = message["type"]
@@ -1475,6 +1660,12 @@ async def _handle_websocket_websockets_sansio_backend(
         )
 
     async def run_asgi() -> None:
+        """
+        Executes the ASGI application for the 'websockets' sans-io backend.
+
+        Manages the application lifecycle and handles unexpected errors during
+        the handshake or message exchange.
+        """
         try:
             result = await app(scope, receive, send)
         except Exception:
@@ -1502,7 +1693,15 @@ async def _handle_websocket_websockets_sansio_backend(
 
 
 def _build_wsproto_upgrade_request(target: str, headers: list[tuple[str, str]]) -> bytes:
-    """Build synthetic HTTP upgrade bytes for wsproto state initialization."""
+    """Builds synthetic HTTP upgrade bytes for wsproto state initialization.
+
+    Args:
+        target (str): The request target URI.
+        headers (list): The request headers.
+
+    Returns:
+        bytes: Raw HTTP request bytes.
+    """
 
     request_headers = [f"GET {target} HTTP/1.1"]
     request_headers.extend(f"{name}: {value}" for name, value in headers)
@@ -1513,7 +1712,14 @@ def _build_wsproto_upgrade_request(target: str, headers: list[tuple[str, str]]) 
 def _wsproto_extra_headers(
     message_headers: Any,
 ) -> list[tuple[bytes, bytes]]:
-    """Normalize ASGI websocket.accept headers to wsproto header tuples."""
+    """Normalizes ASGI websocket.accept headers to wsproto header tuples.
+
+    Args:
+        message_headers (Any): Raw headers from an ASGI message.
+
+    Returns:
+        list[tuple[bytes, bytes]]: Normalized byte-tuple headers.
+    """
 
     extra_headers: list[tuple[bytes, bytes]] = []
     for item in message_headers or []:
@@ -1544,8 +1750,24 @@ async def _handle_websocket_wsproto_backend(
     server: ServerAddress,
     is_tls: bool,
 ) -> None:
-    """
-    Handle the WebSocket connection using the 'wsproto' state-machine backend.
+    """Handles the WebSocket connection using the 'wsproto' state-machine backend.
+
+    This backend is pure-Python and provides a robust state machine for
+    managing WebSocket protocol transitions.
+
+    Args:
+        app (ASGIApplication): The ASGI application.
+        config (PalfreyConfig): Server configuration.
+        reader (asyncio.StreamReader): The source for incoming data.
+        writer (asyncio.StreamWriter): The destination for outgoing data.
+        headers (list): The initial upgrade headers.
+        target (str): The request target URI.
+        client (ClientAddress): The client address.
+        server (ServerAddress): The server address.
+        is_tls (bool): Whether the connection is encrypted.
+
+    Raises:
+        RuntimeError: If the 'wsproto' library is not available.
     """
 
     if find_spec("wsproto") is None:
@@ -1618,6 +1840,11 @@ async def _handle_websocket_wsproto_backend(
     http_response_body_chunks: list[bytes] = []
 
     async def receive() -> Message:
+        """The ASGI receive channel for the 'wsproto' backend.
+
+        Returns:
+            Message: An ASGI-compliant WebSocket message.
+        """
         nonlocal closed, close_disconnect_code
 
         async with receive_lock:
@@ -1698,6 +1925,14 @@ async def _handle_websocket_wsproto_backend(
                         return {"type": "websocket.disconnect", "code": code}
 
     async def send(message: Message) -> None:
+        """The ASGI send channel for the 'wsproto' backend.
+
+        Args:
+            message (Message): The message sent by the application.
+
+        Raises:
+            RuntimeError: If the application violates the ASGI WebSocket spec.
+        """
         nonlocal accepted, closed, close_disconnect_code
         nonlocal http_response_started, http_response_status
         nonlocal http_response_headers, http_response_body_chunks

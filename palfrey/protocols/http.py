@@ -78,7 +78,12 @@ class HTTPRequest:
     body_chunks: list[bytes] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        """Synchronizes the body and body_chunks attributes after initialization."""
+        """Synchronizes the body and body_chunks attributes after initialization.
+
+        Ensures that if body_chunks is provided, the body attribute reflects the
+        concatenated content. If only body is provided, body_chunks is populated
+        with a single-element list containing that body.
+        """
         if self.body_chunks:
             self.body = b"".join(self.body_chunks)
             return
@@ -142,7 +147,7 @@ class _HTTPToolsParserProtocol:
     __slots__ = ("method", "target", "http_version", "headers", "_parser")
 
     def __init__(self) -> None:
-        """Initializes the parser protocol state."""
+        """Initializes the parser protocol state with default HTTP values."""
         self.method = ""
         self.target = ""
         self.http_version = "HTTP/1.1"
@@ -150,25 +155,44 @@ class _HTTPToolsParserProtocol:
         self._parser: Any = None
 
     def bind_parser(self, parser: Any) -> None:
-        """Links the protocol to the specific parser instance for metadata extraction."""
+        """Links the protocol to the specific parser instance.
+
+        This allows for metadata extraction (like HTTP version and method)
+        during the parsing process.
+
+        Args:
+            parser (Any): The httptools.HttpRequestParser instance to bind.
+        """
         self._parser = parser
 
     def on_url(self, url: bytes) -> None:
-        """Captured during the request line parsing."""
+        """Processes the URL captured during request line parsing.
+
+        Args:
+            url (bytes): The raw URL bytes from the request line.
+        """
         self.target = url.decode("latin-1")
 
     def on_header(self, name: bytes, value: bytes) -> None:
-        """Captured for every header field."""
+        """Processes each header field and value as they are parsed.
+
+        Args:
+            name (bytes): The header name.
+        "    value (bytes): The header value.
+        """
         self.headers.append((name.lower(), value))
 
     def on_headers_complete(self) -> None:
-        """Finalizes the request line and metadata once headers are finished."""
+        """Finalizes the request line and metadata once all headers are received.
+
+        Extracts the normalized HTTP version and method from the bound parser.
+        """
         parser = self._parser
         self.http_version = f"HTTP/{parser.get_http_version()}"
         self.method = parser.get_method().decode("latin-1")
 
     def on_message_complete(self) -> None:
-        """Notification that the entire request head has been processed."""
+        """Signals that the entire request head has been successfully processed."""
         return None
 
 
@@ -203,14 +227,30 @@ def _get_httptools_backend() -> tuple[Any, type[BaseException] | None]:
 
 
 def _http_date_header() -> bytes:
-    """Retrieves a current HTTP-formatted date string for response headers."""
+    """Retrieves a current HTTP-formatted date string for response headers.
+
+    Uses a cached value that is updated periodically to improve performance.
+
+    Returns:
+        bytes: The current RFC 7231 formatted date string.
+    """
     return cached_http_date_header()
 
 
 def _normalize_connection_value(
     headers: Sequence[tuple[str, str] | tuple[bytes, bytes]],
 ) -> bytes:
-    """Extracts and normalizes the 'Connection' header value from a list of headers."""
+    """Extracts and normalizes the 'Connection' header value.
+
+    Searches the provided headers for a 'Connection' field and returns its
+    lowered, bytes-coerced value.
+
+    Args:
+        headers (Sequence): A list of (name, value) header tuples.
+
+    Returns:
+        bytes: The normalized Connection header value, or an empty string if not found.
+    """
     for raw_name, raw_value in headers:
         name = _coerce_header_bytes(raw_name).lower()
         if name == b"connection":
@@ -221,7 +261,17 @@ def _normalize_connection_value(
 def _is_websocket_upgrade(
     headers: Sequence[tuple[str, str] | tuple[bytes, bytes]],
 ) -> bool:
-    """Checks headers to determine if the client is requesting a WebSocket upgrade."""
+    """Checks headers for a WebSocket upgrade request.
+
+    Verifies both the 'Upgrade: websocket' and 'Connection: upgrade' (or similar)
+    headers according to the WebSocket protocol specification.
+
+    Args:
+        headers (Sequence): A list of (name, value) header tuples.
+
+    Returns:
+        bool: True if both required headers are present, False otherwise.
+    """
     upgrade = b""
     connection = b""
     for raw_name, raw_value in headers:
@@ -238,6 +288,17 @@ def _header_lookup(
     headers: Sequence[tuple[str, str] | tuple[bytes, bytes]],
     key: bytes,
 ) -> bytes | None:
+    """Efficiently looks up a header value by key.
+
+    Coerces keys and names to lowercase bytes for comparison.
+
+    Args:
+        headers (Sequence): A list of (name, value) header tuples.
+        key (bytes): The header name to search for.
+
+    Returns:
+        bytes | None: The header value if found, otherwise None.
+    """
     key_lower = key.lower()
     for raw_name, raw_value in headers:
         name = _coerce_header_bytes(raw_name).lower()
@@ -404,7 +465,18 @@ def _parse_request_head(
     head: bytes,
     parser_mode: str,
 ) -> tuple[str, str, str, Sequence[tuple[str, str] | tuple[bytes, bytes]]]:
-    """Dispatches request head parsing to the chosen backend."""
+    """Dispatches request head parsing to the chosen backend.
+
+    Attempts to use the optimized fast-path parser by default, falling back
+    to available library backends if needed.
+
+    Args:
+        head (bytes): The raw HTTP request head bytes.
+        parser_mode (str): The parser selection strategy ('h11', 'httptools', or 'auto').
+
+    Returns:
+        tuple: (method, target, version, raw_headers).
+    """
     if parser_mode == "h11":
         return _parse_request_head_h11(head)
     if parser_mode == "httptools":
@@ -419,7 +491,20 @@ def _parse_request_head(
 
 
 def _parse_request_head_h11(head: bytes) -> tuple[str, str, str, list[tuple[bytes, bytes]]]:
-    """Uses the pure-python h11 library to parse request headers."""
+    """Uses the pure-python h11 library to parse request headers.
+
+    This backend is used as a fallback when C-based parsers are unavailable
+    or when explicitly requested.
+
+    Args:
+        head (bytes): The raw HTTP request head bytes.
+
+    Returns:
+        tuple: (method, target, version, headers).
+
+    Raises:
+        ValueError: If the request line or headers are malformed.
+    """
     try:
         h11 = cast(Any, importlib.import_module("h11"))
     except ImportError as exc:
@@ -444,7 +529,19 @@ def _parse_request_head_h11(head: bytes) -> tuple[str, str, str, list[tuple[byte
 def _parse_request_head_httptools(
     head: bytes,
 ) -> tuple[str, str, str, list[tuple[bytes, bytes]]]:
-    """Uses the high-performance httptools library to parse request headers."""
+    """Uses the high-performance httptools library to parse request headers.
+
+    This is the preferred high-speed backend for request parsing.
+
+    Args:
+        head (bytes): The raw HTTP request head bytes.
+
+    Returns:
+        tuple: (method, target, version, headers).
+
+    Raises:
+        ValueError: If the request line is invalid.
+    """
     httptools, upgrade_exc_type = _get_httptools_backend()
     protocol = _HTTPToolsParserProtocol()
     parser = httptools.HttpRequestParser(protocol)
@@ -569,6 +666,11 @@ async def run_http_asgi(
     expected_content_length = 0
 
     async def _send_internal_server_error() -> None:
+        """Sends a standard 500 Internal Server Error response.
+
+        This is used as a safety mechanism when an ASGI application fails
+        to start a response or crashes during its initial execution.
+        """
         nonlocal response_started, response_complete, chunked_encoding, expected_content_length
         response_started = True
         response_complete = True
@@ -586,6 +688,11 @@ async def run_http_asgi(
         message_complete.set()
 
     async def receive() -> Message:
+        """The ASGI receive channel for the application.
+
+        Returns:
+            Message: An 'http.request' or 'http.disconnect' message.
+        """
         nonlocal waiting_for_100_continue, body_index
         if waiting_for_100_continue:
             waiting_for_100_continue = False
@@ -605,6 +712,15 @@ async def run_http_asgi(
         return {"type": "http.disconnect"}
 
     async def send(message: Message) -> None:
+        """The ASGI send channel for the application.
+
+        Args:
+            message (Message): The message sent by the ASGI application.
+
+        Raises:
+            RuntimeError: If the application sends invalid message sequences
+                or violates the ASGI HTTP specification.
+        """
         nonlocal response_started, response_complete, waiting_for_100_continue
         nonlocal chunked_encoding, expected_content_length
 
@@ -717,6 +833,14 @@ def _coerce_header_bytes(value: object) -> bytes:
 def _normalize_header_items(
     headers: Iterable[tuple[str, str] | tuple[bytes, bytes]],
 ) -> list[tuple[bytes, bytes]]:
+    """Normalizes a collection of headers into lowercase byte tuples.
+
+    Args:
+        headers (Iterable): Input headers as strings or bytes.
+
+    Returns:
+        list[tuple[bytes, bytes]]: Normalized headers (lowercase names).
+    """
     header_list = list(headers)
     if not header_list:
         return []
@@ -739,13 +863,14 @@ def append_default_response_headers(
     *,
     default_headers: list[tuple[bytes, bytes]] | None = None,
 ) -> None:
-    """
-    Applies configured default headers (like 'Server' or 'Date') to the response.
+    """Applies configured default headers to the response.
+
+    Injects headers like 'Server' and 'Date' if enabled and not already present.
 
     Args:
-        response (HTTPResponse): The HTTPResponse object to modify in-place.
+        response (HTTPResponse): The response object to update.
         config (PalfreyConfig): Application configuration.
-        default_headers (list[tuple[bytes, bytes]] | None): Cached list of headers for fast-path insertion.
+        default_headers (list | None): Cached list of headers for fast-path insertion.
     """
     existing_headers = {name.lower() for name, _ in response.headers}
 
@@ -780,6 +905,17 @@ def append_default_response_headers(
 
 
 def encode_http_response_chunks(response: HTTPResponse, keep_alive: bool) -> Iterable[bytes]:
+    """Serializes the HTTPResponse into a sequence of bytes chunks.
+
+    Handles status line, headers, and body encoding including chunked transfer.
+
+    Args:
+        response (HTTPResponse): The response to serialize.
+        keep_alive (bool): Whether the connection should be kept alive.
+
+    Yields:
+        bytes: Serialized fragments of the HTTP response.
+    """
     if response.status in _STATUS_LINES:
         yield _STATUS_LINES[response.status]
     else:

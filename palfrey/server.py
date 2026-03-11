@@ -639,12 +639,19 @@ class PalfreyServer:
                             writer=writer,
                         )
                     else:
+                        websocket_headers = [
+                            (
+                                name.decode("latin-1") if isinstance(name, bytes) else str(name),
+                                value.decode("latin-1") if isinstance(value, bytes) else str(value),
+                            )
+                            for name, value in request.headers
+                        ]
                         await handle_websocket(
                             self._resolved_app.app,
                             self.config,
                             reader=reader,
                             writer=writer,
-                            headers=cast("list[tuple[str, str]]", request.headers),
+                            headers=websocket_headers,
                             target=request.target,
                             client=context.client,
                             server=context.server,

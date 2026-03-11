@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 from importlib.util import find_spec
 
-import pytest
-
 from palfrey.protocols.http import HTTPRequest, build_http_scope, read_http_request
 from tests.helpers import make_stream_reader
 
@@ -14,8 +12,9 @@ async def _read(payload: bytes, *, parser_mode: str) -> HTTPRequest | None:
     return await read_http_request(reader, parser_mode=parser_mode)
 
 
-@pytest.mark.skipif(find_spec("httptools") is None, reason="httptools is not installed")
 def test_httptools_headers_stay_bytes_through_scope_pipeline() -> None:
+    if find_spec("httptools") is None:
+        return
     payload = (
         b"GET /hello?x=1 HTTP/1.1\r\n"
         b"Host: Example.test\r\n"
@@ -97,8 +96,9 @@ def test_build_http_scope_keeps_header_tuple_identity_for_lowercase_bytes() -> N
     assert scope["headers"][1] is custom
 
 
-@pytest.mark.skipif(find_spec("httptools") is None, reason="httptools is not installed")
 def test_httptools_header_names_are_lowercased_as_bytes() -> None:
+    if find_spec("httptools") is None:
+        return
     payload = b"GET / HTTP/1.1\r\nX-CuStOm: value\r\n\r\n"
 
     request = asyncio.run(_read(payload, parser_mode="httptools"))

@@ -73,7 +73,7 @@ class HTTPRequest:
     method: str
     target: str
     http_version: str
-    headers: list[tuple[str, str] | tuple[bytes, bytes]]
+    headers: Sequence[tuple[str, str] | tuple[bytes, bytes]]
     body: bytes
     body_chunks: list[bytes] = field(default_factory=list)
 

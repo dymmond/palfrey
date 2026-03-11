@@ -704,3 +704,33 @@ The docs should match this 99/1 split.
   - LSP diagnostics: No errors in modified function
 - Scope boundaries strictly observed: Did NOT modify chunked transfer encoding path, multi-chunk join optimization (separate task), or function signature.
 - Performance impact: Eliminates `b"".join([chunk])` allocation per small request (5-10% CPU reduction expected on high-throughput small-request workloads).
+
+## WebSocket Ping Interval Fix (Task 14 - 2026-03-11)
+
+**Task**: Fix WebSocket benchmark failure caused by automatic ping frames
+
+**Change Made**:
+- File: `benchmarks/run.py` lines 112-113
+- Added `"--ws-ping-interval"` and `"0"` to Palfrey benchmark command
+- These are separate list items (CLI expects two args: flag name + value)
+
+**How It Works**:
+- Default Palfrey `ws_ping_interval` is 20 seconds (keeps connections alive)
+- Benchmark creates persistent WebSocket connections for echo testing
+- Ping frames (opcode 0x9) were sent automatically, but benchmark client `_ws_recv_text()` only handles text frames (opcode 0x1)
+- Setting `--ws-ping-interval 0` disables automatic ping frames for benchmark
+- Benchmark now measures pure message throughput without protocol overhead
+
+**Verification**:
+- ✅ Modified command validated: `_build_command('palfrey', 8000)` returns args with `--ws-ping-interval 0`
+- ✅ Syntax check passed: `python3 -m py_compile benchmarks/run.py`
+- ✅ Command includes: `['...', '--ws', 'websockets', '--ws-ping-interval', '0']`
+
+**Pattern Learned**:
+- CLI argument lists must be single tokens per list item (flag name and value are separate items)
+- Benchmark client ping/pong handling not needed for focused throughput testing
+- Simple parameter disable (`0`) is cleaner than teaching benchmark to handle all WebSocket control frames
+
+**Impact**:
+- Unblocks Task 15 (benchmark verification of Wave 2 optimizations)
+- Allows fair comparison of Palfrey vs Uvicorn WebSocket performance

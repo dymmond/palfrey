@@ -109,6 +109,8 @@ def _build_command(server: str, port: int) -> list[str]:
             "uvloop",
             "--ws",
             "websockets",
+            "--ws-ping-interval",
+            "0",
         ]
     return [
         python,

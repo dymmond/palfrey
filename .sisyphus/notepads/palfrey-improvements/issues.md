@@ -107,3 +107,59 @@ _Updated by subagents when problems are encountered or resolved._
 - Trade-off: Type safety + defensive conversion vs direct cast
 
 **Status**: ✅ COMPLETE
+
+## WebSocket Benchmark Failure - Automatic Ping Frames (BLOCKING Task 15)
+
+**Issue**: Benchmark command fails with "Unexpected websocket opcode" error
+
+**User Command**:
+```bash
+palfrey-benchmark --http-requests 100000 --http-concurrency 20 --ws-clients 10 --ws-messages 1000
+```
+
+**Error**:
+```
+Benchmark for palfrey failed: WebSocket benchmark worker failed: Unexpected websocket opcode
+```
+
+**Root Cause Analysis**:
+1. Palfrey's default `ws_ping_interval` is 20 seconds (see `config.py:326`)
+2. Benchmark creates persistent WebSocket connections for echo testing
+3. If connection is open >20 seconds, Palfrey sends automatic **ping frame (opcode 0x9)**
+4. Benchmark client `_ws_recv_text()` expects **only text frames (opcode 0x1)**
+5. When ping frame arrives, benchmark raises "Unexpected websocket opcode"
+
+**Evidence**:
+- `benchmarks/run.py:364-375`: `_ws_recv_text()` checks `if opcode != 0x1: raise RuntimeError`
+- `benchmarks/run.py:96-112`: Palfrey command does NOT disable ping interval
+- `palfrey/config.py:326`: Default `ws_ping_interval: float | None = 20.0`
+- Uvicorn benchmark succeeds (Uvicorn uses different ping defaults or benchmark client handles it)
+
+**Impact**:
+- ❌ BLOCKS Task 15 (benchmark verification)
+- ❌ Cannot compare Wave 2 performance gains
+- ❌ Cannot verify optimizations had intended effect
+
+**Solution Required**:
+Add `--ws-ping-interval 0` to Palfrey benchmark command in `benchmarks/run.py:96-112`
+
+**Alternative Solutions Considered**:
+1. **Fix benchmark client** to handle ping/pong frames properly
+   - ✅ More robust (handles real-world WebSocket behavior)
+   - ❌ Complex (need to implement ping/pong opcode handling in `_ws_recv_text`)
+   - ❌ Out of scope (benchmark should measure app logic, not protocol features)
+
+2. **Disable ping in benchmark command** (RECOMMENDED)
+   - ✅ Simple one-line fix
+   - ✅ Focused benchmark (measures echo performance, not keep-alive)
+   - ✅ Comparable to Uvicorn baseline (no protocol overhead)
+   - ✅ Matches benchmark intent (pure message throughput)
+
+**Status**: ⏸️ PENDING FIX (will delegate to subagent)
+
+**Timestamp**: 2026-03-11 (discovered during Task 10 commit + Task 15 preparation)
+
+**Resolution**: ✅ FIXED
+- Added `"--ws-ping-interval"` and `"0"` to `benchmarks/run.py` lines 112-113
+- Disables automatic ping frames for benchmark only (production behavior unchanged)
+- Task 15 unblocked

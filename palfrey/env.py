@@ -1,3 +1,11 @@
+"""Environment file loading utilities for configuration management.
+
+This module provides load_env_file() to parse .env-style files and populate the
+process environment. It attempts to use python-dotenv for robust parsing (handling
+quotes, escapes, comments), and falls back to a simple manual parser if dotenv is
+unavailable. Existing environment variables take precedence and are never overwritten.
+"""
+
 from __future__ import annotations
 
 import os

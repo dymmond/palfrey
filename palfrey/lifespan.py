@@ -1,3 +1,12 @@
+"""ASGI lifespan protocol management and application lifecycle coordination.
+
+This module implements LifespanManager, which orchestrates startup and shutdown
+events per the ASGI lifespan specification. It handles the request-response protocol
+between the server and application during initialization and graceful shutdown,
+tracking state transitions and signaling errors to ensure safe, ordered lifecycle
+management across distributed connections.
+"""
+
 from __future__ import annotations
 
 import asyncio

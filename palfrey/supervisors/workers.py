@@ -1,3 +1,10 @@
+"""Multi-process worker pool supervisor with signal routing and health monitoring.
+
+This module provides WorkerSupervisor and WorkerProcess for spawning and managing
+a pool of worker processes, coordinating graceful shutdown via signals, health
+checks via bi-directional pipes (ping/pong), and socket sharing for load balancing.
+"""
+
 from __future__ import annotations
 
 import contextlib

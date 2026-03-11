@@ -1,3 +1,34 @@
+"""WebSocket protocol implementation with dual backend support (wsproto/websockets).
+
+This module handles WebSocket upgrade negotiation from HTTP, frame parsing/encoding,
+and full-duplex message exchange. The module supports two backends: wsproto
+(pure Python, ASGI-native) and websockets (C extension fallback for speed).
+
+Backend selection is automatic: the module tries to import the Rust-accelerated
+websockets library first, falls back to wsproto if unavailable. Each backend
+provides frame masking/unmasking, frame opcode handling (text, binary, close,
+ping, pong), and payload reassembly from fragmented frames. Backpressure is managed
+via write buffers and read timeout logic to prevent unbounded accumulation.
+
+Key Design Decisions:
+- WebSocket upgrade detection leverages existing HTTP request headers (Upgrade,
+  Connection, Sec-WebSocket-Key) parsed by the HTTP module.
+- Frame payload unmasking uses accelerated palfrey_rust.unmask_websocket_payload
+  when available (Rust extension) or falls back to pure Python bitwise operations.
+- The module enforces RFC 6455 semantics: client frames must be masked,
+  server frames must not; close frames carry status codes and optional reasons.
+- Backpressure is signaled via asyncio.Event when write buffer exceeds thresholds,
+  preventing unlimited memory growth under slow client conditions.
+
+Key Classes:
+    - WebSocketFrame: Decoded frame structure (fin, opcode, payload).
+
+Key Functions:
+    - handle_websocket: Main coroutine managing upgrade, frame I/O, and app delegation.
+    - _read_frame, _write_frame: Low-level frame encoding/decoding.
+    - _header_value, _header_map: Helper functions for HTTP header lookup.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -496,7 +527,7 @@ async def _flush_websockets_output(
         high_watermark_bytes (int): Threshold for backpressure.
     """
     output = connection.data_to_send()
-    if isinstance(output, (bytes, bytearray)):
+    if isinstance(output, bytes | bytearray):
         payload = bytes(output)
     else:
         payload = b"".join(cast("list[bytes]", output))

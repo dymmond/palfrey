@@ -1,17 +1,47 @@
+"""HTTP/1.1 request parsing and response encoding with multiple backend support.
+
+This module implements HTTP/1.1 protocol handling including request parsing via httptools
+(C-based, preferred) or h11 (pure Python fallback), ASGI scope construction, request body
+streaming, and response encoding with keep-alive decision logic. The module provides
+building blocks for keep-alive detection, 100-continue handling, chunked transfer encoding,
+and content-length calculations required for standards-compliant HTTP/1.1 message framing.
+
+Key Design Decisions:
+- Dual-backend parser selection: httptools by default (fast C library) falls back to h11
+  for compatibility or when C extensions are unavailable.
+- Request/Response dataclasses normalize heterogeneous wire formats into consistent,
+  Python-friendly structures (bytes for headers, chunks for body).
+- Keep-alive is determined by HTTP version and Connection header, not by response body
+  completion—allowing pipelined requests to be queued immediately.
+- 100-continue handling is async-callback-driven for proper backpressure integration.
+
+Key Functions:
+    - build_http_scope: Constructs ASGI scope dict from HTTPRequest and metadata.
+    - run_http_asgi: Main coroutine cycling through request/response pairs.
+    - encode_http_response: Serializes HTTPResponse to wire bytes with chunking.
+    - read_http_request: Parses wire bytes into HTTPRequest dataclass.
+    - should_keep_alive: Determines if connection should remain open after response.
+"""
+
 from __future__ import annotations
 
 import asyncio
 import http
+import importlib
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from types import ModuleType
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import unquote
 
 from palfrey.acceleration import parse_request_head
 from palfrey.http_date import cached_http_date_header
 
 if TYPE_CHECKING:
+    h11_module = ModuleType
+    httptools_module = ModuleType
+
     from palfrey.config import PalfreyConfig
     from palfrey.types import (
         ASGIApplication,
@@ -136,7 +166,7 @@ def _get_httptools_backend() -> tuple[Any, type[BaseException] | None]:
         return _HTTPTOOLS_MODULE, _HTTPTOOLS_UPGRADE_EXC_TYPE
 
     try:
-        import httptools
+        httptools = cast(Any, importlib.import_module("httptools"))
     except ImportError as exc:
         raise ValueError("httptools parser is unavailable") from exc
 
@@ -343,7 +373,7 @@ def _parse_request_head(
 def _parse_request_head_h11(head: bytes) -> tuple[str, str, str, list[tuple[str, str]]]:
     """Uses the pure-python h11 library to parse request headers."""
     try:
-        import h11
+        h11 = cast(Any, importlib.import_module("h11"))
     except ImportError as exc:
         raise ValueError("h11 parser is unavailable") from exc
 

@@ -1,3 +1,11 @@
+"""ASGI message logging middleware for low-level protocol debugging.
+
+This module provides MessageLoggerMiddleware which intercepts all incoming and outgoing
+ASGI messages (receive/send channels) and logs them at TRACE level with sanitized
+placeholders for large fields (bodies, headers), enabling granular visibility into
+protocol execution for debugging custom ASGI implementations.
+"""
+
 from __future__ import annotations
 
 import logging

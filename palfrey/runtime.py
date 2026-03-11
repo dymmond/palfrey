@@ -1,3 +1,12 @@
+"""Server runtime startup, process supervision, and shutdown coordination.
+
+This module provides the run() function which acts as Palfrey's main entry point,
+orchestrating event loop configuration, application loading, lifespan management,
+and process supervisors (reload, workers). It handles signal interception for graceful
+shutdown and coordinates between the CLI layer and the low-level PalfreyServer
+implementation to start, monitor, and cleanly stop the server process.
+"""
+
 from __future__ import annotations
 
 import contextlib

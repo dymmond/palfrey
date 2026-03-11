@@ -1,3 +1,30 @@
+"""HTTP/2 protocol implementation with stream multiplexing and flow control via h2 library.
+
+This module handles HTTP/2 connection management, request/response multiplexing over
+virtual streams, header compression via HPACK, flow control, and server push mechanics.
+The module uses the h2 library (pure Python hyperframe/hpack implementation) to manage
+the binary framing layer, stream state machines, and priority windows. A per-stream
+state object accumulates pseudo-headers and body chunks before constructing an HTTPRequest.
+
+Key Design Decisions:
+- Streams are multiplexed concurrently, each with independent request/response cycles.
+- Connection-specific headers (e.g., Connection, Transfer-Encoding) are stripped per
+  HTTP/2 spec since the protocol handles framing and keep-alive at the connection level.
+- Each stream is mapped to an ASGI scope; multiple requests on one connection are
+  independent from the server's application perspective but share TCP buffering.
+- Flow control windows are respected to avoid overwhelming the client; the h2 library
+  tracks remote and local window sizes automatically.
+
+Key Classes:
+    - _HTTP2StreamState: Accumulates method, target, headers, and body chunks per stream.
+
+Key Functions:
+    - serve_http2_connection: Main event loop reading frames, routing to streams,
+      managing flow control, and dispatching ASGI app calls.
+    - _decode_request_headers: Extracts pseudo-headers and normalizes to HTTPRequest.
+    - _to_text: Decodes header bytes to text with latin-1 semantics.
+"""
+
 from __future__ import annotations
 
 import asyncio

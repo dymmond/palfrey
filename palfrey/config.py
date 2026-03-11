@@ -1,6 +1,17 @@
+"""Configuration management and CLI option parsing for Palfrey.
+
+This module provides the central configuration system for Palfrey, integrating
+environment variables, CLI arguments (via Click), and configuration files into
+a unified Config dataclass. It defines type aliases and validation sets for all
+configurable parameters (loop type, HTTP backend, WebSocket mode, etc.) and
+includes helper functions for path resolution, SSL setup, and application loading.
+The module bridges Palfrey's command-line interface with its runtime behavior.
+"""
+
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
 import os
 import socket
@@ -13,12 +24,36 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from importlib.util import find_spec
 from pathlib import Path
-from typing import IO, Any, Literal, cast
+from typing import IO, TYPE_CHECKING, Any, Literal, cast
 
-import click
+if TYPE_CHECKING:
+    from typing import Protocol
+
+    class _UVLoopModule(Protocol):
+        def new_event_loop(self) -> asyncio.AbstractEventLoop: ...
+
+    class _ClickModule(Protocol):
+        def style(self, text: object, **styles: object) -> str: ...
+
+else:
+    _UVLoopModule = Any
+    _ClickModule = Any
+
 
 from palfrey.acceleration import parse_header_items
 from palfrey.types import AppType
+
+
+def _load_uvloop() -> _UVLoopModule:
+    return cast("_UVLoopModule", importlib.import_module("uvloop"))
+
+
+def _load_click() -> _ClickModule:
+    return cast("_ClickModule", importlib.import_module("click"))
+
+
+_CLICK_MODULE = _load_click()
+
 
 # Ensure AF_UNIX is defined for cross-platform compatibility where possible
 SOCKET_AF_UNIX = getattr(socket, "AF_UNIX", socket.AF_INET)
@@ -242,7 +277,7 @@ def _uvloop_loop_factory(
     Returns:
         Callable[[], asyncio.AbstractEventLoop]: The uvloop loop factory.
     """
-    import uvloop
+    uvloop = _load_uvloop()
 
     return uvloop.new_event_loop
 
@@ -262,7 +297,7 @@ def _auto_loop_factory(
         Callable[[], asyncio.AbstractEventLoop]: The chosen loop factory.
     """
     try:
-        import uvloop  # noqa: F401
+        importlib.import_module("uvloop")
     except ImportError:
         return _asyncio_loop_factory(use_subprocess=use_subprocess)
     return _uvloop_loop_factory(use_subprocess=use_subprocess)
@@ -494,7 +529,7 @@ class PalfreyConfig:
         if self.http == "auto":
             return "httptools" if _module_available("httptools") else "h11"
         if self.http in KNOWN_HTTP_TYPES:
-            return self.http  # type: ignore[return-value]
+            return cast(KnownHTTPType, self.http)
         return "h11"
 
     @property
@@ -522,7 +557,7 @@ class PalfreyConfig:
                 return "wsproto"
             return "none"
         if self.ws in KNOWN_WS_TYPES:
-            return self.ws  # type: ignore[return-value]
+            return cast(KnownWSType, self.ws)
         if _module_available("websockets"):
             return "websockets"
         if _module_available("wsproto"):
@@ -598,7 +633,7 @@ class PalfreyConfig:
             socket_name_format = "%s"
             color_message = (
                 "Palfrey running on "
-                + click.style(socket_name_format, bold=True)
+                + _CLICK_MODULE.style(socket_name_format, bold=True)
                 + " (Press CTRL+C to quit)"
             )
             logger_args = [self.uds]
@@ -608,7 +643,7 @@ class PalfreyConfig:
             socket_name_format = "%s"
             color_message = (
                 "Palfrey running on "
-                + click.style(socket_name_format, bold=True)
+                + _CLICK_MODULE.style(socket_name_format, bold=True)
                 + " (Press CTRL+C to quit)"
             )
             logger_args = [sock.getsockname()]
@@ -631,7 +666,7 @@ class PalfreyConfig:
             message = f"Palfrey running on {address_format} (Press CTRL+C to quit)"
             color_message = (
                 "Palfrey running on "
-                + click.style(address_format, bold=True)
+                + _CLICK_MODULE.style(address_format, bold=True)
                 + " (Press CTRL+C to quit)"
             )
             logger_args = [protocol_name, self.host, bound_port]

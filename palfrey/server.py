@@ -1,3 +1,24 @@
+"""Core ASGI server implementation managing connection lifecycle and protocol handoff.
+
+This module implements PalfreyServer, the main async server orchestrating TCP/UNIX socket
+listening, connection state tracking, and HTTP/1.1→HTTP/2→HTTP/3 protocol negotiation.
+Key responsibilities include: accepting connections, applying SSL/TLS encryption,
+managing concurrent request pipelining via the httptools parser, handling connection
+keep-alive and timeouts, and graceful shutdown coordination with the lifespan manager.
+
+The module tracks active connections via _ConnectionState and _TrackedConnection,
+enforces PIPELINE_QUEUE_LIMIT to bound concurrent streams per connection, and delegates
+protocol-specific handling to run_http_asgi, serve_http2_connection, handle_websocket,
+and create_http3_server based on ALPN negotiation or HTTP upgrade headers.
+
+Key Classes:
+    - PalfreyServer: Main async server orchestrating listening, protocol selection,
+      and request/response cycling.
+    - _ConnectionState: Tracks per-connection state (request queue, trailers, timeouts).
+    - _TrackedConnection: Wrapper for stream writers with backpressure tracking.
+    - ConnectionContext: Metadata container for client/server addresses and TLS status.
+"""
+
 from __future__ import annotations
 
 import asyncio

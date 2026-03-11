@@ -1,3 +1,10 @@
+"""Cached HTTP date header generation for response headers.
+
+This module provides cached_http_date_header() which returns RFC 9110-compliant
+HTTP date strings with per-second caching to minimize allocations in high-throughput
+request paths. Uses double-checked locking for thread-safe cache invalidation.
+"""
+
 from __future__ import annotations
 
 import datetime as dt

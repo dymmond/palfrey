@@ -1,3 +1,32 @@
+"""Acceleration shim pattern: optional Rust extension with pure Python fallbacks.
+
+This module implements a graceful degradation pattern for performance-critical functions.
+The module attempts to import pre-compiled Rust accelerators from palfrey_rust and uses
+them if available; otherwise, it provides pure Python implementations ensuring the server
+runs without compiled dependencies.
+
+Accelerated Functions (with Python fallback):
+    - parse_request_head: Parse HTTP/1.1 request line and headers to (method, target,
+      http_version, headers) tuple. Used by HTTP/1.1 parsing pipeline.
+    - parse_header_items: Parse CLI header arguments ('name:value' format) into tuples.
+    - split_csv_values: Split comma-separated strings into normalized value lists.
+    - unmask_websocket_payload: Unmask WebSocket frame payloads (XOR with 4-byte mask).
+      Used for every client-to-server WebSocket frame per RFC 6455.
+
+The module provides a HAS_RUST_EXTENSION flag indicating whether Rust libraries are
+available, allowing diagnostics and logging. Each function gracefully falls back to
+Python if the Rust version fails at import time or at call time.
+
+Import Error Handling:
+    - If palfrey_rust is not found (no compiled binary), use Python implementations.
+    - If individual Rust functions fail at runtime, caught exceptions preserve function
+      availability while logging the failure for diagnostic purposes.
+
+Key Functions:
+    - All public functions (parse_request_head, parse_header_items, etc.) abstract
+      the backend selection; call sites never need to know which implementation runs.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence

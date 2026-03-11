@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-import pytest
-
 import palfrey.protocols.http2 as http2_module
 from palfrey.protocols.http import HTTPRequest, HTTPResponse
 from tests.helpers import make_stream_reader
@@ -51,16 +49,16 @@ def test_encode_response_headers_filters_connection_specific_values() -> None:
         body_chunks=[b"payload"],
     )
 
-    headers, body = http2_module._encode_response_headers(response)
+    headers, payload_length = http2_module._encode_response_headers(response)
     assert headers[0] == (b":status", b"201")
     assert (b"x-result", b"ok") in headers
     assert (b"connection", b"close") not in headers
     assert (b"transfer-encoding", b"chunked") not in headers
     assert (b"content-length", b"7") in headers
-    assert body == b"payload"
+    assert payload_length == len(b"payload")
 
 
-def test_serve_http2_connection_requires_h2_dependency(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_serve_http2_connection_requires_h2_dependency(monkeypatch) -> None:
     monkeypatch.setattr(
         http2_module.importlib,
         "import_module",
@@ -72,7 +70,7 @@ def test_serve_http2_connection_requires_h2_dependency(monkeypatch: pytest.Monke
     async def handler(_request: HTTPRequest) -> HTTPResponse:
         return HTTPResponse(status=200, headers=[], body_chunks=[b"ok"])
 
-    with pytest.raises(RuntimeError, match="requires the 'h2' package"):
+    try:
         asyncio.run(
             http2_module.serve_http2_connection(
                 reader=reader,
@@ -80,10 +78,14 @@ def test_serve_http2_connection_requires_h2_dependency(monkeypatch: pytest.Monke
                 request_handler=handler,
             )
         )
+    except RuntimeError as exc:
+        assert "requires the 'h2' package" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError when h2 dependency is missing")
 
 
 def test_serve_http2_connection_processes_request_and_sends_response(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch,
 ) -> None:
     class RequestReceived:
         def __init__(self, stream_id: int, headers, stream_ended: bool = False) -> None:
@@ -232,7 +234,7 @@ def test_serve_http2_connection_processes_request_and_sends_response(
 
 
 def test_serve_http2_connection_closes_on_protocol_error(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch,
 ) -> None:
     class RequestReceived:
         def __init__(self, stream_id: int, headers, stream_ended: bool = False) -> None:

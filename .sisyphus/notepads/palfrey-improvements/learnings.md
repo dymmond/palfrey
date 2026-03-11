@@ -803,3 +803,17 @@ if HAS_RUST_EXTENSION and _unmask_websocket_payload is not None:
 - When using `&[u8]` in Rust + PyO3, must pre-convert `memoryview` in Python
 - Place conversion BEFORE Rust function call (not after)
 - This pattern applies to any PyO3 function accepting `&[u8]`
+
+## Task 16 HTTP/2 Streaming Response Optimization Learnings (2026-03-11)
+
+- HTTP/2 response serialization previously buffered full payload with `b"".join(response.body_chunks)` before framing DATA; replacing this with per-chunk streaming removed full-body coalescing from the response path.
+- `_encode_response_headers()` now computes `payload_length` from chunk lengths and emits `content-length` from that scalar, preserving header correctness and HPACK behavior while avoiding body materialization.
+- Flow-control-safe sending pattern for h2 path:
+  - read `local_flow_control_window(stream_id)` when available,
+  - bound each DATA frame by `min(remaining_in_chunk, max_outbound_frame_size, window, remaining_total)`,
+  - when window is exhausted (`<=0`), flush and yield (`await writer.drain(); await asyncio.sleep(0)`) before retrying.
+- Stream termination/error handling during outbound send should treat stream-closure exceptions as non-fatal for connection lifecycle; swallowing stream-closed/no-such-stream errors avoids crashing the connection loop on peer `RST_STREAM`/`GOAWAY` mid-response.
+- TDD additions in `tests/protocols/test_http2_streaming.py` validate:
+  - 1 MiB body is emitted in original chunk boundaries (no aggregate DATA send),
+  - flow-control window segmentation behavior (`5,5,2` split under a mocked 5-byte window),
+  - graceful handling when outbound stream closes during send.

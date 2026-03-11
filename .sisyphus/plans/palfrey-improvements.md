@@ -1002,7 +1002,7 @@ Max Concurrent: 7 (Waves 1 & 2)
   - Files: `palfrey/protocols/http.py`, `tests/protocols/test_http_header_bytes.py`
   - Pre-commit: `task lint && task test`
 
-- [ ] 10. Eliminate Unconditional Body b"".join in read_http_request
+- [x] 10. Eliminate Unconditional Body b"".join in read_http_request
 
   **What to do**:
   - The `read_http_request` function (and helpers `_read_chunked_body_chunks`, `_read_content_length_body_chunks`) currently collect all body chunks into a list and then `b"".join()` them, even for single-chunk bodies:
@@ -1082,7 +1082,7 @@ Max Concurrent: 7 (Waves 1 & 2)
   - Files: `palfrey/protocols/http.py`, `tests/protocols/test_http_body_opt.py`
   - Pre-commit: `task lint && task test`
 
-- [ ] 11. Socket Tuning — TCP_NODELAY, SO_REUSEPORT, Backlog
+- [x] 11. Socket Tuning — TCP_NODELAY, SO_REUSEPORT, Backlog
 
   **What to do**:
   - Audit and optimize socket-level settings for HTTP performance:
@@ -1170,7 +1170,7 @@ Max Concurrent: 7 (Waves 1 & 2)
   - Files: `palfrey/server.py`, `palfrey/config.py`, `tests/server/test_socket_options.py`
   - Pre-commit: `task lint && task test`
 
-- [ ] 12. Pre-Computed Status Lines + Cached Headers
+- [x] 12. Pre-Computed Status Lines + Cached Headers
 
   **What to do**:
   - Reduce per-response overhead by pre-computing common HTTP response components:
@@ -1449,7 +1449,7 @@ Max Concurrent: 7 (Waves 1 & 2)
   - Files: `rust/palfrey_rust/src/lib.rs`, `palfrey_rust.pyi`, `palfrey/acceleration.py`, `tests/unit/test_acceleration.py`
   - Pre-commit: `task lint && task test`
 
-- [ ] 15. Benchmark Each Optimization Individually
+- [x] 15. Benchmark Each Optimization Individually
 
   **What to do**:
   - After Wave 2 optimizations are complete, measure the individual impact of each change:
@@ -1526,7 +1526,7 @@ Max Concurrent: 7 (Waves 1 & 2)
 
   **Commit**: NO (evidence only)
 
-- [ ] 16. HTTP/2 Streaming Response Optimization
+- [x] 16. HTTP/2 Streaming Response Optimization
 
   **What to do**:
   - Apply similar streaming optimizations from Task 8 to the HTTP/2 path:

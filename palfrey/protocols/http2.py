@@ -118,17 +118,19 @@ def _decode_request_headers(
     return method, target, parsed_headers
 
 
-def _encode_response_headers(response: HTTPResponse) -> tuple[list[tuple[bytes, bytes]], bytes]:
+def _encode_response_headers(response: HTTPResponse) -> tuple[list[tuple[bytes, bytes]], int]:
     """
-    Convert an HTTP response object into HTTP/2-compliant headers and body bytes.
+    Convert an HTTP response object into HTTP/2-compliant headers and body metadata.
 
     Args:
         response (HTTPResponse): ASGI response accumulator.
 
     Returns:
-        tuple[list[tuple[bytes, bytes]], bytes]: Header block and payload bytes.
+        tuple[list[tuple[bytes, bytes]], int]: Header block and payload length.
     """
-    body = b"" if response.suppress_body else b"".join(response.body_chunks)
+    payload_length = (
+        0 if response.suppress_body else sum(len(chunk) for chunk in response.body_chunks)
+    )
     header_block: list[tuple[bytes, bytes]] = [
         (b":status", str(response.status).encode("ascii")),
     ]
@@ -143,9 +145,16 @@ def _encode_response_headers(response: HTTPResponse) -> tuple[list[tuple[bytes, 
         header_block.append((normalized_name, value))
 
     if not has_content_length and not response.chunked_encoding:
-        header_block.append((b"content-length", str(len(body)).encode("ascii")))
+        header_block.append((b"content-length", str(payload_length).encode("ascii")))
 
-    return header_block, body
+    return header_block, payload_length
+
+
+def _is_stream_closed_error(exc: Exception) -> bool:
+    name = exc.__class__.__name__
+    if name in {"StreamClosedError", "NoSuchStreamError"}:
+        return True
+    return exc.__class__.__module__.startswith("h2.") and "stream" in str(exc).lower()
 
 
 async def _send_h2_response(
@@ -164,18 +173,46 @@ async def _send_h2_response(
         stream_id (int): HTTP/2 stream identifier.
         response (HTTPResponse): Response to serialize.
     """
-    headers, body = _encode_response_headers(response)
-    end_stream = len(body) == 0
+    headers, payload_length = _encode_response_headers(response)
+    end_stream = payload_length == 0
     connection.send_headers(stream_id=stream_id, headers=headers, end_stream=end_stream)
 
-    if body:
+    remaining = payload_length
+    if remaining:
         max_frame_size = int(getattr(connection, "max_outbound_frame_size", 16_384))
-        offset = 0
-        length = len(body)
-        while offset < length:
-            chunk = body[offset : offset + max_frame_size]
-            offset += len(chunk)
-            connection.send_data(stream_id, chunk, end_stream=offset >= length)
+        for body_chunk in response.body_chunks:
+            if not body_chunk:
+                continue
+
+            view = memoryview(body_chunk)
+            offset = 0
+            chunk_length = len(body_chunk)
+            while offset < chunk_length and remaining > 0:
+                local_flow_control_window = getattr(connection, "local_flow_control_window", None)
+                window = (
+                    int(local_flow_control_window(stream_id))
+                    if callable(local_flow_control_window)
+                    else max_frame_size
+                )
+                if window <= 0:
+                    await writer.drain()
+                    await asyncio.sleep(0)
+                    continue
+
+                send_size = min(chunk_length - offset, max_frame_size, window, remaining)
+                if send_size <= 0:
+                    await asyncio.sleep(0)
+                    continue
+
+                part = bytes(view[offset : offset + send_size])
+                offset += send_size
+                remaining -= send_size
+                try:
+                    connection.send_data(stream_id, part, end_stream=remaining == 0)
+                except Exception as exc:
+                    if _is_stream_closed_error(exc):
+                        return
+                    raise
 
     payload = connection.data_to_send()
     if payload:

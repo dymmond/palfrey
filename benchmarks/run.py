@@ -7,9 +7,12 @@ import base64
 import errno
 import hashlib
 import json
+import math
 import os
+import platform
 import random
 import socket
+import statistics
 import struct
 import subprocess
 import sys
@@ -17,6 +20,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = "benchmarks.apps:app"
@@ -490,6 +494,123 @@ def _relative_ratio(results: list[ScenarioResult], scenario: str) -> float | Non
     return palfrey.ops_per_second / uvicorn.ops_per_second
 
 
+def _capture_metadata() -> dict[str, str]:
+    try:
+        loop_type = "uvloop" if "uvloop" in sys.modules else "asyncio"
+    except Exception:  # noqa: BLE001
+        loop_type = "unknown"
+
+    try:
+        cpu_info = platform.processor() or platform.machine() or "unknown"
+    except Exception:  # noqa: BLE001
+        cpu_info = "unknown"
+
+    return {
+        "python_version": platform.python_version(),
+        "os": platform.system(),
+        "cpu": cpu_info,
+        "loop_type": loop_type,
+    }
+
+
+def _compute_statistics(samples: list[float]) -> dict[str, float]:
+    if not samples:
+        return {
+            "mean": 0.0,
+            "median": 0.0,
+            "p99": 0.0,
+            "stddev": 0.0,
+            "ci_lower": 0.0,
+            "ci_upper": 0.0,
+        }
+
+    mean_val = statistics.mean(samples)
+    median_val = statistics.median(samples)
+
+    if len(samples) < 2:
+        stddev_val = 0.0
+        p99_val = samples[0]
+    else:
+        stddev_val = statistics.stdev(samples)
+        quantiles = statistics.quantiles(samples, n=100)
+        p99_val = quantiles[-1] if quantiles else samples[-1]
+
+    n = len(samples)
+    stderr = stddev_val / math.sqrt(n) if n > 0 else 0.0
+    margin = 1.96 * stderr
+
+    return {
+        "mean": mean_val,
+        "median": median_val,
+        "p99": p99_val,
+        "stddev": stddev_val,
+        "ci_lower": mean_val - margin,
+        "ci_upper": mean_val + margin,
+    }
+
+
+def _save_json_output(data: dict[str, Any], output_path: Path) -> None:
+    output_path.write_text(
+        json.dumps(data, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _run_benchmark_phases(
+    server: str,
+    port: int,
+    http_requests: int,
+    http_concurrency: int,
+    ws_clients: int,
+    ws_messages: int,
+) -> dict[str, Any]:
+    primer_requests = min(1000, http_requests // 10)
+    warmup_requests = min(5000, http_requests // 2)
+
+    primer_ws_messages = min(100, ws_messages // 10) if ws_clients > 0 else 0
+    warmup_ws_messages = min(500, ws_messages // 2) if ws_clients > 0 else 0
+
+    results: dict[str, Any] = {
+        "measure_samples": [],
+        "http": None,
+        "websocket": None,
+    }
+
+    if http_requests > 0:
+        print(f"Phase: PRIMER (HTTP {primer_requests} requests)")
+        _run_http(port, primer_requests, http_concurrency)
+
+        print(f"Phase: WARMUP (HTTP {warmup_requests} requests)")
+        _run_http(port, warmup_requests, http_concurrency)
+
+        print(f"Phase: MEASURE (HTTP {http_requests} requests)")
+        http_ops, http_duration = _run_http(port, http_requests, http_concurrency)
+        results["http"] = {
+            "operations": http_ops,
+            "duration_seconds": http_duration,
+            "ops_per_second": http_ops / http_duration if http_duration > 0 else 0.0,
+        }
+        results["measure_samples"].append(http_ops / http_duration if http_duration > 0 else 0.0)
+
+    if ws_clients > 0 and ws_messages > 0:
+        print(f"Phase: PRIMER (WS {primer_ws_messages} messages)")
+        _run_ws(port, ws_clients, primer_ws_messages)
+
+        print(f"Phase: WARMUP (WS {warmup_ws_messages} messages)")
+        _run_ws(port, ws_clients, warmup_ws_messages)
+
+        print(f"Phase: MEASURE (WS {ws_messages} messages)")
+        ws_ops, ws_duration = _run_ws(port, ws_clients, ws_messages)
+        results["websocket"] = {
+            "operations": ws_ops,
+            "duration_seconds": ws_duration,
+            "ops_per_second": ws_ops / ws_duration if ws_duration > 0 else 0.0,
+        }
+        results["measure_samples"].append(ws_ops / ws_duration if ws_duration > 0 else 0.0)
+
+    return results
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--http-requests", type=int, default=2000)
@@ -497,24 +618,75 @@ def main() -> None:
     parser.add_argument("--ws-clients", type=int, default=1)
     parser.add_argument("--ws-messages", type=int, default=1000)
     parser.add_argument("--json-output", type=Path, default=None)
+    parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument("--enable-phases", action="store_true", default=False)
     args = parser.parse_args()
 
+    output_path = args.output or args.json_output
+    metadata = _capture_metadata()
+
+    if args.enable_phases:
+        print("\n=== 3-Phase Benchmark Mode ===")
+        print(f"Python: {metadata['python_version']}")
+        print(f"OS: {metadata['os']}")
+        print(f"CPU: {metadata['cpu']}")
+        print(f"Loop: {metadata['loop_type']}\n")
+
     results: list[ScenarioResult] = []
+    all_phase_results: dict[str, dict[str, Any]] = {}
+
     for server in ("uvicorn", "palfrey"):
         try:
-            results.extend(
-                _benchmark_server(
-                    server,
-                    http_requests=args.http_requests,
-                    http_concurrency=args.http_concurrency,
-                    ws_clients=args.ws_clients,
-                    ws_messages=args.ws_messages,
+            if args.enable_phases:
+                port = _available_port()
+                process = _spawn_server(server, port)
+                try:
+                    print(f"\n--- {server.upper()} ---")
+                    phase_results = _run_benchmark_phases(
+                        server=server,
+                        port=port,
+                        http_requests=args.http_requests,
+                        http_concurrency=args.http_concurrency,
+                        ws_clients=args.ws_clients,
+                        ws_messages=args.ws_messages,
+                    )
+                    all_phase_results[server] = phase_results
+
+                    if phase_results["http"]:
+                        results.append(
+                            ScenarioResult(
+                                server=server,
+                                scenario="http",
+                                operations=phase_results["http"]["operations"],
+                                duration_seconds=phase_results["http"]["duration_seconds"],
+                            )
+                        )
+
+                    if phase_results["websocket"]:
+                        results.append(
+                            ScenarioResult(
+                                server=server,
+                                scenario="websocket",
+                                operations=phase_results["websocket"]["operations"],
+                                duration_seconds=phase_results["websocket"]["duration_seconds"],
+                            )
+                        )
+                finally:
+                    _stop_server(process)
+            else:
+                results.extend(
+                    _benchmark_server(
+                        server,
+                        http_requests=args.http_requests,
+                        http_concurrency=args.http_concurrency,
+                        ws_clients=args.ws_clients,
+                        ws_messages=args.ws_messages,
+                    )
                 )
-            )
         except Exception as exc:  # noqa: BLE001
             print(f"Benchmark for {server} failed: {exc}")
 
-    print("| Scenario | Server | Operations | Duration (s) | Ops/s |")
+    print("\n| Scenario | Server | Operations | Duration (s) | Ops/s |")
     print("| --- | --- | ---: | ---: | ---: |")
     for result in sorted(results, key=lambda entry: (entry.scenario, entry.server)):
         print(
@@ -529,23 +701,50 @@ def main() -> None:
         else:
             print(f"- {scenario}: {ratio:.3f}x (Palfrey / Uvicorn)")
 
-    if args.json_output is not None:
-        args.json_output.write_text(
-            json.dumps(
-                [
-                    {
-                        "server": result.server,
-                        "scenario": result.scenario,
-                        "operations": result.operations,
-                        "duration_seconds": result.duration_seconds,
-                        "ops_per_second": result.ops_per_second,
+    if args.enable_phases and all_phase_results:
+        print("\n=== Statistical Summary ===")
+        for server, phase_data in all_phase_results.items():
+            print(f"\n{server.upper()}:")
+            for scenario in ("http", "websocket"):
+                if phase_data.get(scenario):
+                    data = phase_data[scenario]
+                    ops_s = data["ops_per_second"]
+                    samples = [ops_s]
+                    stats = _compute_statistics(samples)
+                    print(f"  {scenario}:")
+                    print(f"    ops/s: {ops_s:.2f}")
+                    print(f"    stddev: {stats['stddev']:.2f}")
+
+    if output_path is not None:
+        if args.enable_phases:
+            output_data = {
+                "metadata": metadata,
+                "results": {
+                    server: {
+                        "http": phase_data.get("http"),
+                        "websocket": phase_data.get("websocket"),
                     }
-                    for result in results
-                ],
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
+                    for server, phase_data in all_phase_results.items()
+                },
+            }
+            _save_json_output(output_data, output_path)
+        else:
+            output_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "server": result.server,
+                            "scenario": result.scenario,
+                            "operations": result.operations,
+                            "duration_seconds": result.duration_seconds,
+                            "ops_per_second": result.ops_per_second,
+                        }
+                        for result in results
+                    ],
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
 
 
 if __name__ == "__main__":

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import importlib
 import random
-
-import pytest
+from typing import Any
 
 import palfrey.acceleration as acceleration
 
+pytest = importlib.import_module("pytest")
 
-def test_parse_header_items_python_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+
+def test_parse_header_items_python_fallback(monkeypatch: Any) -> None:
     monkeypatch.setattr(acceleration, "HAS_RUST_EXTENSION", False)
     assert acceleration.parse_header_items(["x-a: 1", "x-b: two"]) == [
         ("x-a", "1"),
@@ -15,13 +17,13 @@ def test_parse_header_items_python_fallback(monkeypatch: pytest.MonkeyPatch) -> 
     ]
 
 
-def test_parse_header_items_rejects_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_parse_header_items_rejects_invalid(monkeypatch: Any) -> None:
     monkeypatch.setattr(acceleration, "HAS_RUST_EXTENSION", False)
     with pytest.raises(acceleration.HeaderParseError):
         acceleration.parse_header_items(["missing-colon"])
 
 
-def test_parse_request_head_python_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_parse_request_head_python_fallback(monkeypatch: Any) -> None:
     monkeypatch.setattr(acceleration, "HAS_RUST_EXTENSION", False)
     request_head = b"GET /health HTTP/1.1\r\nhost: example.com\r\nx-test: yes\r\n\r\n"
     method, target, version, headers = acceleration.parse_request_head(request_head)
@@ -31,9 +33,7 @@ def test_parse_request_head_python_fallback(monkeypatch: pytest.MonkeyPatch) -> 
     assert headers == [("host", "example.com"), ("x-test", "yes")]
 
 
-def test_unmask_websocket_payload_python_fallback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_unmask_websocket_payload_python_fallback(monkeypatch: Any) -> None:
     monkeypatch.setattr(acceleration, "HAS_RUST_EXTENSION", False)
     payload = bytes([0x10, 0x20, 0x30, 0x40, 0x50])
     mask = bytes([0x01, 0x02, 0x03, 0x04])
@@ -53,14 +53,14 @@ def test_unmask_websocket_payload_rejects_invalid_mask_length() -> None:
         acceleration.unmask_websocket_payload(b"abc", b"\x01\x02\x03")
 
 
-def test_split_csv_values_edge_cases(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_split_csv_values_edge_cases(monkeypatch: Any) -> None:
     monkeypatch.setattr(acceleration, "HAS_RUST_EXTENSION", False)
     assert acceleration.split_csv_values("") == []
     assert acceleration.split_csv_values("gzip") == ["gzip"]
     assert acceleration.split_csv_values("gzip,  deflate ,, br,") == ["gzip", "deflate", "br"]
 
 
-def test_parse_header_items_common_formats(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_parse_header_items_common_formats(monkeypatch: Any) -> None:
     monkeypatch.setattr(acceleration, "HAS_RUST_EXTENSION", False)
     assert acceleration.parse_header_items(
         [
@@ -89,7 +89,7 @@ def test_rust_parse_request_head_returns_bytes() -> None:
 
 
 def test_unmask_websocket_payload_matches_python_fallback_randomized(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: Any,
 ) -> None:
     rng = random.Random(7)
     original_has = acceleration.HAS_RUST_EXTENSION
@@ -106,7 +106,7 @@ def test_unmask_websocket_payload_matches_python_fallback_randomized(
 
 
 def test_all_acceleration_functions_match_python_fallback_randomized(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: Any,
 ) -> None:
     if not acceleration.HAS_RUST_EXTENSION:
         pytest.skip("Rust extension not available")

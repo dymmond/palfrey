@@ -2,6 +2,7 @@ use std::borrow::Cow;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::PyBytes;
 
 #[pyfunction]
 fn parse_header_items(headers: Vec<String>) -> PyResult<Vec<(String, String)>> {
@@ -114,7 +115,11 @@ fn parse_request_head<'a>(
 }
 
 #[pyfunction]
-fn unmask_websocket_payload(payload: &[u8], masking_key: &[u8]) -> PyResult<Vec<u8>> {
+fn unmask_websocket_payload<'py>(
+    py: Python<'py>,
+    payload: &[u8],
+    masking_key: &[u8],
+) -> PyResult<Bound<'py, PyBytes>> {
     if masking_key.len() != 4 {
         return Err(PyValueError::new_err(
             "WebSocket masking key must be exactly 4 bytes",
@@ -125,7 +130,7 @@ fn unmask_websocket_payload(payload: &[u8], masking_key: &[u8]) -> PyResult<Vec<
     for (index, byte) in payload.iter().enumerate() {
         output.push(byte ^ masking_key[index & 0b11]);
     }
-    Ok(output)
+    Ok(PyBytes::new_bound(py, &output))
 }
 
 #[pymodule]

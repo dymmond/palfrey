@@ -29,31 +29,37 @@ Key Functions:
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Sequence
+from typing import cast
 
 ParseHeaderItemsFn = Callable[[list[str]], list[tuple[str, str]]]
 ParseRequestHeadFn = Callable[[bytes], tuple[str, str, str, list[tuple[str, str]]]]
+ParseRequestHeadRustFn = Callable[[bytes], tuple[bytes, bytes, bytes, list[tuple[bytes, bytes]]]]
 SplitCSVValuesFn = Callable[[str], list[str]]
 WebSocketPayloadBuffer = bytes | bytearray | memoryview
 UnmaskWebSocketPayloadFn = Callable[[WebSocketPayloadBuffer, bytes], bytes]
 
 # Placeholders for the Rust extension functions
 _parse_header_items: ParseHeaderItemsFn | None = None
-_parse_request_head: ParseRequestHeadFn | None = None
+_parse_request_head: ParseRequestHeadFn | ParseRequestHeadRustFn | None = None
 _split_csv_values: SplitCSVValuesFn | None = None
 _unmask_websocket_payload: UnmaskWebSocketPayloadFn | None = None
 
-try:
-    from palfrey_rust import (
-        parse_header_items as _parse_header_items,
-        parse_request_head as _parse_request_head,
-        split_csv_values as _split_csv_values,
-        unmask_websocket_payload as _unmask_websocket_payload,
-    )
-
-    HAS_RUST_EXTENSION = True
-except ImportError:
+if os.getenv("PALFREY_NO_RUST"):
     HAS_RUST_EXTENSION = False
+else:
+    try:
+        from palfrey_rust import (
+            parse_header_items as _parse_header_items,
+            parse_request_head as _parse_request_head,
+            split_csv_values as _split_csv_values,
+            unmask_websocket_payload as _unmask_websocket_payload,
+        )
+
+        HAS_RUST_EXTENSION = True
+    except ImportError:
+        HAS_RUST_EXTENSION = False
 
 
 class HeaderParseError(ValueError):
@@ -142,7 +148,21 @@ def parse_request_head(data: bytes) -> tuple[str, str, str, list[tuple[str, str]
             not correctly formatted.
     """
     if HAS_RUST_EXTENSION and _parse_request_head is not None:
-        return _parse_request_head(data)
+        rust_result = _parse_request_head(data)
+
+        if isinstance(rust_result[0], bytes):
+            rust_method, rust_target, rust_version, rust_headers = cast(
+                "tuple[bytes, bytes, bytes, list[tuple[bytes, bytes]]]", rust_result
+            )
+            method = rust_method.decode("latin-1")
+            target = rust_target.decode("latin-1")
+            version = rust_version.decode("latin-1")
+            headers = [
+                (name.decode("latin-1"), value.decode("latin-1")) for name, value in rust_headers
+            ]
+            return method, target, version, headers
+
+        return cast("tuple[str, str, str, list[tuple[str, str]]]", rust_result)
 
     # Use latin-1 decoding to preserve the original byte values as per HTTP specs
     decoded = data.decode("latin-1")

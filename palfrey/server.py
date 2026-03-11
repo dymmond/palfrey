@@ -541,6 +541,19 @@ class PalfreyServer:
         if self._resolved_app is None:
             return
 
+        # Set TCP_NODELAY to disable Nagle algorithm (reduces latency for small packets)
+        transport = getattr(writer, "transport", None) or getattr(writer, "_transport", None)
+        if transport is not None:
+            sock = (
+                transport.get_extra_info("socket") if hasattr(transport, "get_extra_info") else None
+            )
+            if sock is not None and hasattr(socket, "TCP_NODELAY"):
+                try:
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                except (OSError, AttributeError):
+                    # Socket may not support TCP options (e.g., Unix domain socket)
+                    pass
+
         peername = writer.get_extra_info("peername")
         sockname = writer.get_extra_info("sockname")
         ssl_object = writer.get_extra_info("ssl_object")
@@ -631,7 +644,7 @@ class PalfreyServer:
                             self.config,
                             reader=reader,
                             writer=writer,
-                            headers=request.headers,
+                            headers=cast("list[tuple[str, str]]", request.headers),
                             target=request.target,
                             client=context.client,
                             server=context.server,
@@ -887,12 +900,40 @@ class PalfreyServer:
         Serializes and writes the HTTP response to the stream.
         """
         payload_chunks = encode_http_response_chunks(response, keep_alive=keep_alive)
+        transport = getattr(writer, "transport", None) or getattr(writer, "_transport", None)
+        get_write_buffer_size = (
+            getattr(transport, "get_write_buffer_size", None) if transport is not None else None
+        )
+        high_watermark_bytes = 262_144
+        pending_bytes = 0
+
+        async def drain_if_needed() -> None:
+            nonlocal pending_bytes
+
+            if not callable(get_write_buffer_size) or pending_bytes < high_watermark_bytes:
+                return
+
+            if int(get_write_buffer_size()) >= high_watermark_bytes:
+                await writer.drain()
+                pending_bytes = 0
+
         writelines = getattr(writer, "writelines", None)
         if callable(writelines):
-            writelines(payload_chunks)
+            batch: list[bytes] = []
+            for chunk in payload_chunks:
+                batch.append(chunk)
+                pending_bytes += len(chunk)
+                if pending_bytes >= high_watermark_bytes:
+                    writelines(batch)
+                    batch = []
+                    await drain_if_needed()
+            if batch:
+                writelines(batch)
         else:
             for chunk in payload_chunks:
                 writer.write(chunk)
+                pending_bytes += len(chunk)
+                await drain_if_needed()
         await writer.drain()
 
     def _service_unavailable_response(self) -> HTTPResponse:

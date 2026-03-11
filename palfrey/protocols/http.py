@@ -65,7 +65,7 @@ class HTTPRequest:
         method (str): The HTTP method (e.g., 'GET', 'POST').
         target (str): The full request URI or path.
         http_version (str): The protocol version (e.g., 'HTTP/1.1').
-        headers (list[tuple[bytes, bytes]]): List of header name-value pairs as bytes.
+        headers (list[tuple[str, str] | tuple[bytes, bytes]]): Header pairs.
         body (bytes): The complete request body as a single byte string.
         body_chunks (list[bytes]): The body split into chunks, as received from the wire.
     """
@@ -73,22 +73,12 @@ class HTTPRequest:
     method: str
     target: str
     http_version: str
-    headers: list[tuple[bytes, bytes]]
+    headers: list[tuple[str, str] | tuple[bytes, bytes]]
     body: bytes
     body_chunks: list[bytes] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         """Synchronizes the body and body_chunks attributes after initialization."""
-        if self.headers:
-            if not all(
-                isinstance(name, bytes) and isinstance(value, bytes) and name == name.lower()
-                for name, value in self.headers
-            ):
-                self.headers = [
-                    (_coerce_header_bytes(name).lower(), _coerce_header_bytes(value))
-                    for name, value in self.headers
-                ]
-
         if self.body_chunks:
             self.body = b"".join(self.body_chunks)
             return
@@ -217,20 +207,26 @@ def _http_date_header() -> bytes:
     return cached_http_date_header()
 
 
-def _normalize_connection_value(headers: list[tuple[bytes, bytes]]) -> bytes:
+def _normalize_connection_value(
+    headers: Sequence[tuple[str, str] | tuple[bytes, bytes]],
+) -> bytes:
     """Extracts and normalizes the 'Connection' header value from a list of headers."""
-    for name, value in headers:
+    for raw_name, raw_value in headers:
+        name = _coerce_header_bytes(raw_name).lower()
         if name == b"connection":
-            return value.lower()
+            return _coerce_header_bytes(raw_value).lower()
     return b""
 
 
-def _is_websocket_upgrade(headers: list[tuple[bytes, bytes]]) -> bool:
+def _is_websocket_upgrade(
+    headers: Sequence[tuple[str, str] | tuple[bytes, bytes]],
+) -> bool:
     """Checks headers to determine if the client is requesting a WebSocket upgrade."""
     upgrade = b""
     connection = b""
-    for name, value in headers:
-        lowered_value = value.lower()
+    for raw_name, raw_value in headers:
+        name = _coerce_header_bytes(raw_name).lower()
+        lowered_value = _coerce_header_bytes(raw_value).lower()
         if name == b"upgrade":
             upgrade = lowered_value
         elif name == b"connection":
@@ -238,12 +234,15 @@ def _is_websocket_upgrade(headers: list[tuple[bytes, bytes]]) -> bool:
     return b"websocket" in upgrade and b"upgrade" in connection
 
 
-def _header_lookup(headers: list[tuple[bytes, bytes]], key: bytes) -> bytes | None:
-    """Performs a case-insensitive search for a header value in a bytes header list."""
+def _header_lookup(
+    headers: Sequence[tuple[str, str] | tuple[bytes, bytes]],
+    key: bytes,
+) -> bytes | None:
     key_lower = key.lower()
-    for name, value in headers:
+    for raw_name, raw_value in headers:
+        name = _coerce_header_bytes(raw_name).lower()
         if name == key_lower:
-            return value
+            return _coerce_header_bytes(raw_value)
     return None
 
 
@@ -375,11 +374,18 @@ async def read_http_request(
         body_chunks = await _read_content_length_body_chunks(reader, content_length, body_limit)
     body = b"".join(body_chunks)
 
+    if _is_websocket_upgrade(headers):
+        request_headers: list[tuple[str, str] | tuple[bytes, bytes]] = [
+            (name.decode("latin-1"), value.decode("latin-1")) for name, value in headers
+        ]
+    else:
+        request_headers = cast(list[tuple[str, str] | tuple[bytes, bytes]], headers)
+
     return HTTPRequest(
         method=method,
         target=target,
         http_version=version,
-        headers=headers,
+        headers=request_headers,
         body=body,
         body_chunks=body_chunks,
     )
@@ -395,11 +401,12 @@ def _parse_request_head(
     if parser_mode == "httptools":
         return _parse_request_head_httptools(head)
 
-    with suppress(ValueError):
-        return _parse_request_head_httptools(head)
-    with suppress(ValueError):
+    try:
+        return parse_request_head(head)
+    except ValueError:
+        with suppress(ValueError):
+            return _parse_request_head_httptools(head)
         return _parse_request_head_h11(head)
-    return parse_request_head(head)
 
 
 def _parse_request_head_h11(head: bytes) -> tuple[str, str, str, list[tuple[bytes, bytes]]]:
@@ -410,8 +417,11 @@ def _parse_request_head_h11(head: bytes) -> tuple[str, str, str, list[tuple[byte
         raise ValueError("h11 parser is unavailable") from exc
 
     connection = h11.Connection(h11.SERVER)
-    connection.receive_data(head)
-    event = connection.next_event()
+    try:
+        connection.receive_data(head)
+        event = connection.next_event()
+    except Exception as exc:
+        raise ValueError("Invalid HTTP request line") from exc
     if not isinstance(event, h11.Request):
         raise ValueError("Invalid HTTP request line")
 
@@ -472,9 +482,15 @@ def build_http_scope(
 
     headers = request.headers
     scope_headers = (
-        headers
-        if all(name == name.lower() for name, _ in headers)
-        else [(name.lower(), value) for name, value in headers]
+        cast(list[tuple[bytes, bytes]], headers)
+        if all(
+            isinstance(name, bytes) and isinstance(value, bytes) and name == name.lower()
+            for name, value in headers
+        )
+        else [
+            (_coerce_header_bytes(name).lower(), _coerce_header_bytes(value))
+            for name, value in headers
+        ]
     )
 
     return {

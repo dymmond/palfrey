@@ -409,7 +409,7 @@ Max Concurrent: 7 (Waves 1 & 2)
   - Files: `palfrey/server.py`, `palfrey/protocols/websocket.py`, `palfrey/protocols/http.py`, `palfrey/loops/uvloop.py`, `palfrey/config.py`, `tests/`
   - Pre-commit: `task lint && task test`
 
-- [ ] 3. Audit & Fix Missing Tests / Test Gaps
+- [x] 3. Audit & Fix Missing Tests / Test Gaps
 
   **What to do**:
   - Run `task test` and review coverage report to identify modules/functions below 85%
@@ -806,7 +806,7 @@ Max Concurrent: 7 (Waves 1 & 2)
 
   **Commit**: NO (evidence files only, no code changes)
 
-- [ ] 8. Streaming HTTP Response Writer (Eliminate Full-Body b"".join)
+- [x] 8. Streaming HTTP Response Writer (Eliminate Full-Body b"".join)
 
   **What to do**:
   - Replace `encode_http_response` in `protocols/http.py` which currently builds a single `bytes` object via `b"".join(parts)` (copying headers + entire body into one allocation) with a streaming writer that writes headers and body separately:

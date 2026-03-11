@@ -21,6 +21,14 @@ This notepad records problems encountered, gotchas discovered, and workarounds a
 
 _(To be populated as issues are encountered)_
 
+## Task 8 Streaming Writer Gotchas (RESOLVED)
+
+- Initial `_write_response` switch to `writer.writelines(...)` broke server tests using dummy writers without a `writelines` method.
+- Resolution: Added runtime compatibility fallback in `_write_response`:
+  - use `writelines(payload_chunks)` when callable,
+  - otherwise iterate chunks and call `writer.write(chunk)`.
+- This preserved production streaming behavior while keeping test doubles and custom writer implementations compatible.
+
 ---
 
 _Updated by subagents when problems are encountered or resolved._

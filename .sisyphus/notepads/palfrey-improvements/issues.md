@@ -24,3 +24,29 @@ _(To be populated as issues are encountered)_
 ---
 
 _Updated by subagents when problems are encountered or resolved._
+
+## E402 Fix - test_server_edge_cases.py (RESOLVED)
+
+**Issue**: E402 (module level import not at top of file) violations in test_server_edge_cases.py
+
+**Root Cause**: Line 7 had `pytest = __import__("pytest")` which flagged subsequent imports as E402
+
+**Solution Implemented**:
+1. Replaced `pytest = __import__("pytest")` with normal `import pytest`
+2. Reorganized imports following standard order:
+   - `__future__` imports
+   - Standard library (asyncio, types, typing, collections.abc)
+   - Third-party (pytest)
+   - First-party (palfrey imports)
+
+**Changes Made**:
+- Lines 1-13 reordered
+- All test logic unchanged (15 tests remain functional)
+- Import structure now clean per ruff standards
+
+**Verification**:
+- Lint check: All checks passed
+- Test suite: 660 passed, 11 skipped (includes 15 from test_server_edge_cases.py)
+- No E402 errors
+
+**Status**: ✅ COMPLETE

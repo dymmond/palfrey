@@ -230,3 +230,11 @@ Palfrey vs Uvicorn:
   - runtime lazy import inside helper (`_load_uvloop`, `_load_click`) or call sites,
   - `cast(...)` at the helper boundary to keep call sites clean and preserve runtime behavior.
 - This preserves optional-dependency semantics (no hard import at module import time) while producing clean `hatch run lint` type output.
+
+## Task 3b Server Coverage Edge-Case Patterns (2026-03-11)
+
+- Server edge-case tests can cover complex protocol handoff paths without network sockets by stubbing `serve_http2_connection` and `create_http3_server` and invoking captured request handlers directly.
+- `_queue_with_backpressure` is straightforward to unit-test using a fake queue with `full() == True` plus a fake reader transport counting `pause_reading`/`resume_reading` calls.
+- Signal-capture non-main-thread branch can be deterministically tested by monkeypatching `threading.current_thread` and `threading.main_thread` to distinct sentinel objects.
+- For logger assertions in this suite, replacing `server_module.logger.info` with a temporary capture callable is more reliable than relying on global caplog plumbing.
+- HTTP/3 guard paths (`sockets`, `fd`, `uds`, unresolved app) and request-handler error fallbacks (503/500) are testable in isolation by calling `_serve_http3` with monkeypatched `_main_loop`/`_shutdown` and then exercising the captured request handler.

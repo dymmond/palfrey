@@ -20,10 +20,6 @@
 <a href="https://pypi.org/project/palfrey" target="_blank">
     <img src="https://img.shields.io/pypi/pyversions/palfrey.svg?color=%2334D058" alt="Supported Python versions">
 </a>
-
-<a href="https://codspeed.io/dymmond/palfrey?utm_source=badge" target="_blank">
-    <img src="https://img.shields.io/endpoint?url=https://codspeed.io/badge/dymmond/palfrey" alt="CodSpeed">
-</a>
 </p>
 
 ---

@@ -388,7 +388,7 @@ async def _read_content_length_body_chunks(
         chunks.append(chunk)
         remaining -= len(chunk)
 
-    # Optimization: Single-chunk bodies return directly (no b"".join([chunk]) allocation)
+    # Early return for single-chunk bodies avoids b"".join([chunk]) allocation overhead
     if len(chunks) == 1:
         return chunks
 
@@ -482,6 +482,7 @@ def _parse_request_head(
     if parser_mode == "httptools":
         return _parse_request_head_httptools(head)
 
+    # Try Rust extension first (fast-path), then httptools, then h11 for maximum compatibility
     try:
         return parse_request_head(head)
     except ValueError:
@@ -750,7 +751,7 @@ async def run_http_asgi(
                     chunked_encoding = True
                     expected_content_length = 0
 
-            # Default to chunked if no length is provided (Parity with Uvicorn)
+            # Default to chunked if no explicit length/encoding (allows apps to stream without Content-Length)
             if (
                 chunked_encoding is None
                 and not response.suppress_body

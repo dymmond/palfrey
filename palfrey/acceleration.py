@@ -99,6 +99,7 @@ def parse_header_items(headers: Sequence[str]) -> list[tuple[str, str]]:
         except ValueError as exc:
             raise HeaderParseError(str(exc)) from exc
 
+    # Pure-Python fallback when Rust extension is unavailable or disabled
     parsed: list[tuple[str, str]] = []
     for item in headers:
         # Partition splits the string at the first occurrence of the separator

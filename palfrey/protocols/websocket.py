@@ -494,6 +494,7 @@ def _try_parse_frame_from_buffer(
         raise ValueError("Client websocket frames must be masked")
 
     total_size = offset + 4 + payload_length
+    # Only unmask if the full frame is already buffered (avoid memcpy on partial frames)
     if len(buffer) < total_size:
         return None
 

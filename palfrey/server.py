@@ -592,6 +592,7 @@ class PalfreyServer:
 
         keep_processing = True
         keep_alive_timeout = self.config.timeout_keep_alive
+        # Use a bounded queue to enforce backpressure: when full, pauses socket reads to prevent unbounded memory
         request_queue: asyncio.Queue[_QueuedRequest] = asyncio.Queue(maxsize=PIPELINE_QUEUE_LIMIT)
 
         # Start the pipelining reader task
@@ -681,7 +682,7 @@ class PalfreyServer:
                     )
                     break
 
-                # Concurrency limit checks
+                # Check concurrency limits to ensure fair resource distribution across connections
                 acquired = self._enter_request_slot()
                 if not acquired:
                     await self._write_response(
@@ -832,6 +833,7 @@ class PalfreyServer:
         """
         paused = False
         if queue.full():
+            # Pause socket reads to prevent CPU-wasting busy loops while app processes slow requests
             self._pause_stream_reader(reader)
             paused = True
         try:

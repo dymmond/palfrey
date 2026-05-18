@@ -1,6 +1,23 @@
+"""uvloop event loop policy installation for high-performance I/O.
+
+This module provides uvloop_setup() which installs uvloop's EventLoopPolicy,
+enabling libuv-backed async I/O for faster network and file handling. Intended
+for POSIX systems (Linux, macOS); fails gracefully on unsupported platforms.
+"""
+
 from __future__ import annotations
 
 import asyncio
+import importlib
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from types import ModuleType
+
+    _UVLoopModule = ModuleType
+
+else:
+    _UVLoopModule = Any
 
 
 def uvloop_setup() -> None:
@@ -23,7 +40,8 @@ def uvloop_setup() -> None:
     """
 
     # Local import to prevent hard dependency if the user only wants asyncio
-    import uvloop
+    uvloop: _UVLoopModule = importlib.import_module("uvloop")
+    policy_factory: Any = uvloop.EventLoopPolicy
 
     # Replace the standard asyncio policy with the libuv-backed implementation
-    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    asyncio.set_event_loop_policy(policy_factory())

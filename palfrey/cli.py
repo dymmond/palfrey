@@ -1,3 +1,12 @@
+"""Command-line interface definition and argument parsing for Palfrey.
+
+This module defines the Click-based CLI with all Palfrey runtime options: server
+address/port, application import path, worker/reload configuration, logging levels,
+and protocol backends (HTTP/1.1, HTTP/2, HTTP/3, WebSocket). It also handles
+environment variable mirroring (UVICORN_ to PALFREY_) for compatibility and
+integrates with PalfreyConfig to unify CLI, environment, and configuration file sources.
+"""
+
 from __future__ import annotations
 
 import os

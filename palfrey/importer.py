@@ -1,3 +1,12 @@
+"""Application import, instantiation, and middleware wrapping utilities.
+
+This module provides dynamic application loading from import strings (e.g., 'myapp:app')
+and normalizes different application types (ASGI3, ASGI2, WSGI, factory functions) into
+a canonical ASGIApplication. It also applies configured middleware (message logging,
+proxy header handling) and adapters for legacy protocols, ensuring all apps run under
+a unified asynchronous interface.
+"""
+
 from __future__ import annotations
 
 import importlib

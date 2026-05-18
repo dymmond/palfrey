@@ -1,30 +1,65 @@
+"""Acceleration shim pattern: optional Rust extension with pure Python fallbacks.
+
+This module implements a graceful degradation pattern for performance-critical functions.
+The module attempts to import pre-compiled Rust accelerators from palfrey_rust and uses
+them if available; otherwise, it provides pure Python implementations ensuring the server
+runs without compiled dependencies.
+
+Accelerated Functions (with Python fallback):
+    - parse_request_head: Parse HTTP/1.1 request line and headers to (method, target,
+      http_version, headers) tuple. Used by HTTP/1.1 parsing pipeline.
+    - parse_header_items: Parse CLI header arguments ('name:value' format) into tuples.
+    - split_csv_values: Split comma-separated strings into normalized value lists.
+    - unmask_websocket_payload: Unmask WebSocket frame payloads (XOR with 4-byte mask).
+      Used for every client-to-server WebSocket frame per RFC 6455.
+
+The module provides a HAS_RUST_EXTENSION flag indicating whether Rust libraries are
+available, allowing diagnostics and logging. Each function gracefully falls back to
+Python if the Rust version fails at import time or at call time.
+
+Import Error Handling:
+    - If palfrey_rust is not found (no compiled binary), use Python implementations.
+    - If individual Rust functions fail at runtime, caught exceptions preserve function
+      availability while logging the failure for diagnostic purposes.
+
+Key Functions:
+    - All public functions (parse_request_head, parse_header_items, etc.) abstract
+      the backend selection; call sites never need to know which implementation runs.
+"""
+
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Sequence
+from typing import cast
 
 ParseHeaderItemsFn = Callable[[list[str]], list[tuple[str, str]]]
 ParseRequestHeadFn = Callable[[bytes], tuple[str, str, str, list[tuple[str, str]]]]
+ParseRequestHeadRustFn = Callable[[bytes], tuple[bytes, bytes, bytes, list[tuple[bytes, bytes]]]]
 SplitCSVValuesFn = Callable[[str], list[str]]
 WebSocketPayloadBuffer = bytes | bytearray | memoryview
 UnmaskWebSocketPayloadFn = Callable[[WebSocketPayloadBuffer, bytes], bytes]
 
 # Placeholders for the Rust extension functions
 _parse_header_items: ParseHeaderItemsFn | None = None
-_parse_request_head: ParseRequestHeadFn | None = None
+_parse_request_head: ParseRequestHeadFn | ParseRequestHeadRustFn | None = None
 _split_csv_values: SplitCSVValuesFn | None = None
 _unmask_websocket_payload: UnmaskWebSocketPayloadFn | None = None
 
-try:
-    from palfrey_rust import (
-        parse_header_items as _parse_header_items,
-        parse_request_head as _parse_request_head,
-        split_csv_values as _split_csv_values,
-        unmask_websocket_payload as _unmask_websocket_payload,
-    )
-
-    HAS_RUST_EXTENSION = True
-except ImportError:
+if os.getenv("PALFREY_NO_RUST"):
     HAS_RUST_EXTENSION = False
+else:
+    try:
+        from palfrey_rust import (
+            parse_header_items as _parse_header_items,
+            parse_request_head as _parse_request_head,
+            split_csv_values as _split_csv_values,
+            unmask_websocket_payload as _unmask_websocket_payload,
+        )
+
+        HAS_RUST_EXTENSION = True
+    except ImportError:
+        HAS_RUST_EXTENSION = False
 
 
 class HeaderParseError(ValueError):
@@ -64,6 +99,7 @@ def parse_header_items(headers: Sequence[str]) -> list[tuple[str, str]]:
         except ValueError as exc:
             raise HeaderParseError(str(exc)) from exc
 
+    # Pure-Python fallback when Rust extension is unavailable or disabled
     parsed: list[tuple[str, str]] = []
     for item in headers:
         # Partition splits the string at the first occurrence of the separator
@@ -113,7 +149,21 @@ def parse_request_head(data: bytes) -> tuple[str, str, str, list[tuple[str, str]
             not correctly formatted.
     """
     if HAS_RUST_EXTENSION and _parse_request_head is not None:
-        return _parse_request_head(data)
+        rust_result = _parse_request_head(data)
+
+        if isinstance(rust_result[0], bytes):
+            rust_method, rust_target, rust_version, rust_headers = cast(
+                "tuple[bytes, bytes, bytes, list[tuple[bytes, bytes]]]", rust_result
+            )
+            method = rust_method.decode("latin-1")
+            target = rust_target.decode("latin-1")
+            version = rust_version.decode("latin-1")
+            headers = [
+                (name.decode("latin-1"), value.decode("latin-1")) for name, value in rust_headers
+            ]
+            return method, target, version, headers
+
+        return cast("tuple[str, str, str, list[tuple[str, str]]]", rust_result)
 
     # Use latin-1 decoding to preserve the original byte values as per HTTP specs
     decoded = data.decode("latin-1")
@@ -160,6 +210,10 @@ def unmask_websocket_payload(payload: WebSocketPayloadBuffer, masking_key: bytes
     """
     if len(masking_key) != 4:
         raise ValueError("WebSocket masking key must be exactly 4 bytes")
+
+    # Convert memoryview to bytes for Rust compatibility (PyO3 &[u8] doesn't auto-convert)
+    if isinstance(payload, memoryview):
+        payload = bytes(payload)
 
     if HAS_RUST_EXTENSION and _unmask_websocket_payload is not None:
         return _unmask_websocket_payload(payload, masking_key)

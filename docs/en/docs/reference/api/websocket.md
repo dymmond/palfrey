@@ -1,0 +1,3 @@
+# WebSocket
+
+::: palfrey.protocols.websocket

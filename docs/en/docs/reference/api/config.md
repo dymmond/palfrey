@@ -1,0 +1,3 @@
+# Configuration
+
+::: palfrey.config

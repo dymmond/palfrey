@@ -1,3 +1,10 @@
+"""Utility functions for extracting network and connection information from asyncio transports.
+
+This module provides helper functions for resolving local/remote addresses, SSL status,
+and scope-based client formatting used by protocol handlers to normalize transport
+metadata into ASGI scope dictionaries.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -38,7 +45,7 @@ def get_remote_addr(transport: asyncio.Transport) -> tuple[str, int] | None:
 
     # Fallback to standard transport peername if socket object is inaccessible
     info = transport.get_extra_info("peername")
-    if isinstance(info, (list, tuple)) and len(info) == 2:
+    if isinstance(info, list | tuple) and len(info) == 2:
         return str(info[0]), int(info[1])
     return None
 
@@ -69,7 +76,7 @@ def get_local_addr(transport: asyncio.Transport) -> tuple[str, int | None] | Non
         return None
 
     info = transport.get_extra_info("sockname")
-    if isinstance(info, (list, tuple)) and len(info) == 2:
+    if isinstance(info, list | tuple) and len(info) == 2:
         return str(info[0]), int(info[1])
     if isinstance(info, str):
         return info, None

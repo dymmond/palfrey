@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: palfrey-app
+  labels:
+    app: palfrey-app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: palfrey-app
+  template:
+    metadata:
+      labels:
+        app: palfrey-app
+    spec:
+      containers:
+      - name: palfrey
+        image: your-registry/palfrey-app:latest
+        args:
+        - palfrey
+        - main:app
+        - --host
+        - 0.0.0.0
+        - --port
+        - "8000"
+        - --proxy-headers
+        ports:
+        - containerPort: 8000
+          name: http
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          initialDelaySeconds: 2
+          periodSeconds: 5
+        envFrom:
+        - configMapRef:
+            name: palfrey-config
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sleep", "5"]
+      terminationGracePeriodSeconds: 30

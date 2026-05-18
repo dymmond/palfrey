@@ -1,3 +1,35 @@
+"""HTTP/3 protocol integration via QUIC transport using aioquic library.
+
+This module implements HTTP/3 request/response handling layered over QUIC-capable
+connections provided by the aioquic library. HTTP/3 multiplexes bidirectional
+streams over a single QUIC connection, inheriting QUIC's properties: connection
+migration, 0-RTT resumption, encrypted headers, and improved loss recovery.
+
+The module manages per-stream state objects (_HTTP3StreamState) accumulating pseudo-headers
+and body chunks, normalizes addresses from QUIC transport metadata, constructs ASGI scopes,
+and orchestrates concurrent ASGI app invocations for independent streams. Connection-specific
+headers are filtered per HTTP/3 spec since QUIC/HTTP/3 handle frame boundaries differently
+from HTTP/1.1.
+
+Key Design Decisions:
+- Stream-level request/response multiplexing allows many concurrent requests over one QUIC
+  connection with independent flow control.
+- QUIC handles congestion control, retransmission, and encryption; this module focuses on
+  HTTP/3 request/response parsing and ASGI integration.
+- Address normalization handles edge cases where QUIC transport extra info may be incomplete
+  or unavailable, falling back to configured defaults.
+- Stream termination via RESET_STREAM or FIN is propagated to the application as proper
+  connection closes or error states.
+
+Key Classes:
+    - _HTTP3StreamState: Per-stream accumulator for method, target, headers, and body chunks.
+
+Key Functions:
+    - create_http3_server: Main factory creating an aioquic-backed HTTP/3 listener.
+    - _decode_request_headers: Extracts pseudo-headers from HTTP/3 header block.
+    - _normalize_address: Normalizes transport endpoints to (host, port) tuples.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -202,22 +234,41 @@ async def create_http3_server(
     )
 
     class _PalfreyHTTP3Protocol(quic_connection_protocol_cls):
-        """
-        QUIC protocol adapter that translates HTTP/3 frames into ASGI requests.
+        """QUIC protocol adapter that translates HTTP/3 frames into ASGI requests.
+
+        This protocol handler manages the lifecycle of a QUIC connection,
+        negotiating HTTP/3 via ALPN and dispatching stream events to
+        the underlying H3 connection state machine.
         """
 
         def __init__(self, *args: Any, **kwargs: Any) -> None:
+            """Initializes the HTTP/3 protocol state.
+
+            Args:
+                *args: Positional arguments for the base QuicConnectionProtocol.
+                **kwargs: Keyword arguments for the base QuicConnectionProtocol.
+            """
             super().__init__(*args, **kwargs)
             self._http: Any | None = None
             self._streams: dict[int, _HTTP3StreamState] = {}
             self._tasks: set[asyncio.Task[None]] = set()
 
         def connection_lost(self, exc: Exception | None) -> None:
+            """Cleans up active tasks when the QUIC connection is closed.
+
+            Args:
+                exc (Exception | None): The reason for connection loss, if any.
+            """
             for task in list(self._tasks):
                 task.cancel()
             super().connection_lost(exc)
 
         def quic_event_received(self, event: Any) -> None:
+            """Handles incoming QUIC events and routes them to HTTP/3 logic.
+
+            Args:
+                event (Any): The QUIC event (e.g., DataReceived, ProtocolNegotiated).
+            """
             if isinstance(event, protocol_negotiated_event) and event.alpn_protocol in h3_alpn:
                 self._http = h3_connection_cls(self._quic)
 
@@ -244,11 +295,24 @@ async def create_http3_server(
             self.transmit()
 
         def _schedule_request(self, stream_id: int) -> None:
+            """Schedules the asynchronous dispatch of a completed request.
+
+            Args:
+                stream_id (int): The ID of the completed stream.
+            """
             task = asyncio.create_task(self._dispatch_request(stream_id))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
 
         async def _dispatch_request(self, stream_id: int) -> None:
+            """Processes a completed stream and sends the response.
+
+            Extracts request data, calls the request handler, and serializes
+            the resulting HTTPResponse back to the QUIC stream.
+
+            Args:
+                stream_id (int): The ID of the stream to dispatch.
+            """
             if self._http is None:
                 return
 

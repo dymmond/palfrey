@@ -1,3 +1,24 @@
+"""Core ASGI server implementation managing connection lifecycle and protocol handoff.
+
+This module implements PalfreyServer, the main async server orchestrating TCP/UNIX socket
+listening, connection state tracking, and HTTP/1.1→HTTP/2→HTTP/3 protocol negotiation.
+Key responsibilities include: accepting connections, applying SSL/TLS encryption,
+managing concurrent request pipelining via the httptools parser, handling connection
+keep-alive and timeouts, and graceful shutdown coordination with the lifespan manager.
+
+The module tracks active connections via _ConnectionState and _TrackedConnection,
+enforces PIPELINE_QUEUE_LIMIT to bound concurrent streams per connection, and delegates
+protocol-specific handling to run_http_asgi, serve_http2_connection, handle_websocket,
+and create_http3_server based on ALPN negotiation or HTTP upgrade headers.
+
+Key Classes:
+    - PalfreyServer: Main async server orchestrating listening, protocol selection,
+      and request/response cycling.
+    - _ConnectionState: Tracks per-connection state (request queue, trailers, timeouts).
+    - _TrackedConnection: Wrapper for stream writers with backpressure tracking.
+    - ConnectionContext: Metadata container for client/server addresses and TLS status.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -11,21 +32,22 @@ import threading
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from email.utils import formatdate
 from importlib.util import find_spec
 from types import FrameType
 from typing import TYPE_CHECKING, Any, cast
 
 from palfrey.config import PalfreyConfig, create_ssl_context
+from palfrey.http_date import cached_http_date_header
 from palfrey.importer import ResolvedApp, resolve_application as _resolve_application
 from palfrey.lifespan import LifespanManager
 from palfrey.logging_config import configure_logging, get_logger
 from palfrey.protocols.http import (
+    _STATUS_LINES,
     HTTPRequest,
     HTTPResponse,
     append_default_response_headers,
     build_http_scope,
-    encode_http_response,
+    encode_http_response_chunks,
     is_websocket_upgrade,
     read_http_request,
     requires_100_continue,
@@ -173,7 +195,7 @@ class PalfreyServer:
     _lifespan: LifespanManager | None = None
     _max_requests_before_exit: int | None = None
     _base_default_headers: list[tuple[bytes, bytes]] = field(default_factory=list)
-    _last_notified: float = 0.0
+    _last_notified: float = field(default_factory=time.time)
     _force_exit: bool = False
     _started: bool = False
     _captured_signals: list[int] = field(default_factory=list)
@@ -417,7 +439,7 @@ class PalfreyServer:
             if not self._base_default_headers:
                 self._base_default_headers = self._build_static_default_headers()
             current_time = time.time()
-            current_date = formatdate(current_time, usegmt=True).encode("ascii")
+            current_date = cached_http_date_header()
             current_headers = list(self._base_default_headers)
             header_names = {name for name, _ in current_headers}
             if self.config.date_header and b"date" not in header_names:
@@ -520,6 +542,19 @@ class PalfreyServer:
         if self._resolved_app is None:
             return
 
+        # Set TCP_NODELAY to disable Nagle algorithm (reduces latency for small packets)
+        transport = getattr(writer, "transport", None) or getattr(writer, "_transport", None)
+        if transport is not None:
+            sock = (
+                transport.get_extra_info("socket") if hasattr(transport, "get_extra_info") else None
+            )
+            if sock is not None and hasattr(socket, "TCP_NODELAY"):
+                try:
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                except (OSError, AttributeError):
+                    # Socket may not support TCP options (e.g., Unix domain socket)
+                    pass
+
         peername = writer.get_extra_info("peername")
         sockname = writer.get_extra_info("sockname")
         ssl_object = writer.get_extra_info("ssl_object")
@@ -558,6 +593,7 @@ class PalfreyServer:
 
         keep_processing = True
         keep_alive_timeout = self.config.timeout_keep_alive
+        # Use a bounded queue to enforce backpressure: when full, pauses socket reads to prevent unbounded memory
         request_queue: asyncio.Queue[_QueuedRequest] = asyncio.Queue(maxsize=PIPELINE_QUEUE_LIMIT)
 
         # Start the pipelining reader task
@@ -570,6 +606,9 @@ class PalfreyServer:
         )
 
         async def stop_request_reader() -> None:
+            """
+            Cancels and waits for the request reader task to terminate.
+            """
             if request_reader_task.done():
                 return
             request_reader_task.cancel()
@@ -605,12 +644,19 @@ class PalfreyServer:
                             writer=writer,
                         )
                     else:
+                        websocket_headers = [
+                            (
+                                name.decode("latin-1") if isinstance(name, bytes) else str(name),
+                                value.decode("latin-1") if isinstance(value, bytes) else str(value),
+                            )
+                            for name, value in request.headers
+                        ]
                         await handle_websocket(
                             self._resolved_app.app,
                             self.config,
                             reader=reader,
                             writer=writer,
-                            headers=request.headers,
+                            headers=websocket_headers,
                             target=request.target,
                             client=context.client,
                             server=context.server,
@@ -622,7 +668,7 @@ class PalfreyServer:
                 if requires_100_continue(request):
 
                     async def send_continue() -> None:
-                        writer.write(b"HTTP/1.1 100 Continue\r\n\r\n")
+                        writer.write(_STATUS_LINES[100])
                         await writer.drain()
 
                     context.on_100_continue = send_continue
@@ -637,7 +683,7 @@ class PalfreyServer:
                     )
                     break
 
-                # Concurrency limit checks
+                # Check concurrency limits to ensure fair resource distribution across connections
                 acquired = self._enter_request_slot()
                 if not acquired:
                     await self._write_response(
@@ -697,6 +743,15 @@ class PalfreyServer:
         """
 
         async def request_handler(request: HTTPRequest) -> HTTPResponse:
+            """
+            Bridge to handle incoming HTTP/2 requests via the ASGI application.
+
+            Args:
+                request (HTTPRequest): The parsed HTTP request.
+
+            Returns:
+                HTTPResponse: The response generated by the application.
+            """
             if self._is_concurrency_limit_exceeded():
                 return self._service_unavailable_response()
 
@@ -779,6 +834,7 @@ class PalfreyServer:
         """
         paused = False
         if queue.full():
+            # Pause socket reads to prevent CPU-wasting busy loops while app processes slow requests
             self._pause_stream_reader(reader)
             paused = True
         try:
@@ -865,8 +921,49 @@ class PalfreyServer:
         """
         Serializes and writes the HTTP response to the stream.
         """
-        payload = encode_http_response(response, keep_alive=keep_alive)
-        writer.write(payload)
+        payload_chunks = encode_http_response_chunks(response, keep_alive=keep_alive)
+        transport = getattr(writer, "transport", None) or getattr(writer, "_transport", None)
+        get_write_buffer_size = (
+            getattr(transport, "get_write_buffer_size", None) if transport is not None else None
+        )
+        high_watermark_bytes = 262_144
+        if hasattr(transport, "get_write_buffer_limits"):
+            try:
+                high_watermark_bytes, _ = transport.get_write_buffer_limits()
+            except (ValueError, TypeError):
+                pass
+        pending_bytes = 0
+
+        async def drain_if_needed() -> None:
+            """
+            Checks the transport write buffer and drains if it exceeds the high watermark.
+            """
+            nonlocal pending_bytes
+
+            if not callable(get_write_buffer_size) or pending_bytes < high_watermark_bytes:
+                return
+
+            if int(get_write_buffer_size()) >= high_watermark_bytes:
+                await writer.drain()
+                pending_bytes = 0
+
+        writelines = getattr(writer, "writelines", None)
+        if callable(writelines):
+            batch: list[bytes] = []
+            for chunk in payload_chunks:
+                batch.append(chunk)
+                pending_bytes += len(chunk)
+                if pending_bytes >= high_watermark_bytes:
+                    writelines(batch)
+                    batch = []
+                    await drain_if_needed()
+            if batch:
+                writelines(batch)
+        else:
+            for chunk in payload_chunks:
+                writer.write(chunk)
+                pending_bytes += len(chunk)
+                await drain_if_needed()
         await writer.drain()
 
     def _service_unavailable_response(self) -> HTTPResponse:
@@ -1075,6 +1172,17 @@ class PalfreyServer:
             client: ClientAddress,
             server: ServerAddress,
         ) -> HTTPResponse:
+            """
+            Bridge to handle incoming HTTP/3 requests via the ASGI application.
+
+            Args:
+                request (HTTPRequest): The parsed HTTP request.
+                client (ClientAddress): The client address.
+                server (ServerAddress): The server address.
+
+            Returns:
+                HTTPResponse: The response generated by the application.
+            """
             context = ConnectionContext(client=client, server=server, is_tls=True)
 
             if self._is_concurrency_limit_exceeded():
@@ -1174,6 +1282,15 @@ class PalfreyServer:
         def create_protocol(
             _loop: asyncio.AbstractEventLoop | None = None,
         ) -> asyncio.Protocol:
+            """
+            Factory function to instantiate the configured protocol class.
+
+            Args:
+                _loop (asyncio.AbstractEventLoop | None): The event loop to use.
+
+            Returns:
+                asyncio.Protocol: An instance of the configured protocol class.
+            """
             return protocol_constructor(
                 config=self.config,
                 server_state=self.server_state,

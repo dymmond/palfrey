@@ -1,3 +1,9 @@
+"""No-op event loop setup strategy for externally-managed event loops.
+
+This module provides none_loop_setup() which performs no configuration, preserving
+any event loop policy set by parent processes or third-party frameworks.
+"""
+
 from __future__ import annotations
 
 

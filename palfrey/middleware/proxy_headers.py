@@ -1,3 +1,10 @@
+"""ASGI middleware for restoring client IP from proxy headers.
+
+This module provides ProxyHeadersMiddleware which processes X-Forwarded-For and
+X-Forwarded-Proto headers to restore the original client IP address and connection
+scheme when running behind HTTP proxies, with configurable trusted proxy validation.
+"""
+
 from __future__ import annotations
 
 import ipaddress

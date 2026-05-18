@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: palfrey-config
+data:
+  WEB_CONCURRENCY: "1"
+  FORWARDED_ALLOW_IPS: "10.0.0.0/8,127.0.0.1"
+  LOG_LEVEL: "info"

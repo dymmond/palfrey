@@ -1,0 +1,3 @@
+# Acceleration
+
+::: palfrey.acceleration

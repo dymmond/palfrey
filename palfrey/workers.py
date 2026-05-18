@@ -1,3 +1,10 @@
+"""Gunicorn worker integration for running Palfrey under Gunicorn process supervision.
+
+This module provides PalfreyWorker (a Gunicorn base Worker subclass) enabling Palfrey
+to run as a drop-in Gunicorn worker, handling arbiter signals (HUP, TERM, etc.) and
+coordinating graceful restarts through Gunicorn's multi-process worker pool.
+"""
+
 from __future__ import annotations
 
 import asyncio

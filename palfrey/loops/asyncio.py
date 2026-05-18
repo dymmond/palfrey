@@ -1,3 +1,10 @@
+"""Default asyncio event loop policy setup with explicit entry point.
+
+This module provides asyncio_setup() as a standardized entry point for initializing
+the standard Python asyncio event loop, maintaining parity with alternative loop
+implementations (like uvloop) that require explicit policy installation.
+"""
+
 from __future__ import annotations
 
 

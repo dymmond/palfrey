@@ -1,3 +1,12 @@
+"""Application adapters for supporting legacy ASGI 2.0 and WSGI interfaces.
+
+This module provides adapters that translate between different application entry-point
+protocols: ASGI2Adapter converts legacy ASGI 2.0 double-callable apps to ASGI 3.0
+single-callable, and WSGIAdapter bridges synchronous WSGI apps into Palfrey's
+async runtime via thread-pool execution. Both adapters ensure compatibility with
+existing application code while maintaining clean integration with modern async I/O.
+"""
+
 from __future__ import annotations
 
 import asyncio

@@ -8,6 +8,7 @@ import pytest
 
 import palfrey.server as server_module
 from palfrey.config import PalfreyConfig
+from palfrey.http_date import cached_http_date_header
 from palfrey.importer import ResolvedApp
 from palfrey.protocols.http import HTTPRequest, HTTPResponse
 from palfrey.server import ConnectionContext, PalfreyServer
@@ -119,17 +120,11 @@ def test_on_tick_populates_cached_default_headers(
         PalfreyConfig(app="tests.fixtures.apps:http_app", headers=["x-extra: one"])
     )
     monkeypatch.setattr(server_module.time, "time", lambda: 1000.0)
-    monkeypatch.setattr(
-        server_module,
-        "formatdate",
-        lambda _value, usegmt: "Tue, 01 Jan 2030 00:00:00 GMT",
-    )
-
     should_exit = asyncio.run(server._on_tick(0))
 
     assert should_exit is False
     assert server.server_state.default_headers == [
-        (b"date", b"Tue, 01 Jan 2030 00:00:00 GMT"),
+        (b"date", cached_http_date_header()),
         (b"server", b"palfrey"),
         (b"x-extra", b"one"),
     ]
@@ -150,15 +145,12 @@ def test_on_tick_triggers_callback_notify_on_timeout(
             timeout_notify=5,
         )
     )
-    time_values = iter([1.0, 6.0, 8.0, 12.5])
-    monkeypatch.setattr(server_module.time, "time", lambda: next(time_values))
+    time_values = iter([1.0, 10.0, 20.0, 30.0, 40.0, 50.0])
     monkeypatch.setattr(
-        server_module,
-        "formatdate",
-        lambda _value, usegmt: "Tue, 01 Jan 2030 00:00:00 GMT",
+        server_module, "time", type("Time", (), {"time": lambda: next(time_values)})
     )
+    server._last_notified = 1.0
 
-    asyncio.run(server._on_tick(0))
     asyncio.run(server._on_tick(10))
     asyncio.run(server._on_tick(20))
     asyncio.run(server._on_tick(30))
@@ -189,6 +181,7 @@ def test_on_tick_returns_true_when_max_requests_exceeded() -> None:
             messages.append(record.getMessage())
 
     server_logger = logging.getLogger("palfrey.server")
+    server_logger.setLevel(logging.INFO)
     capture_handler = _CaptureHandler()
     server_logger.addHandler(capture_handler)
     try:
@@ -291,6 +284,7 @@ def test_shutdown_cancels_tasks_when_graceful_timeout_expires(
             messages.append(record.getMessage())
 
     server_logger = logging.getLogger("palfrey.server")
+    server_logger.setLevel(logging.INFO)
     capture_handler = _CaptureHandler()
     server_logger.addHandler(capture_handler)
 
@@ -416,6 +410,7 @@ def test_handle_http_request_access_log_includes_query_string(
             messages.append(record.getMessage())
 
     access_log = logging.getLogger("palfrey.access")
+    access_log.setLevel(logging.INFO)
     capture_handler = _CaptureHandler()
     access_log.addHandler(capture_handler)
     try:

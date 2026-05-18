@@ -1,3 +1,10 @@
+"""Public API entrypoints and backward compatibility shim for Palfrey.
+
+This module re-exports the CLI entrypoint, configuration, and server/runtime APIs
+while maintaining backward compatibility for deprecated module paths (e.g., ServerState).
+It uses PEP 562 dynamic imports to issue deprecation warnings when old paths are accessed.
+"""
+
 from __future__ import annotations
 
 import warnings

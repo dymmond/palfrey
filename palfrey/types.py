@@ -1,3 +1,12 @@
+"""Shared type definitions and type aliases used across Palfrey modules.
+
+This module provides canonical TypeAlias definitions for all ASGI-related types
+(Scope, Message, ReceiveCallable, SendCallable), application entry points (ASGI3,
+ASGI2, WSGI), and network primitives (Headers, ClientAddress, ServerAddress).
+By centralizing these definitions, the module ensures type consistency across
+protocol implementations, middleware, and configuration code.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable

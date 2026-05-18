@@ -1,3 +1,10 @@
+"""Automatic event loop selection strategy with graceful fallback.
+
+This module provides auto_loop_setup() which attempts to install uvloop for
+high-performance I/O handling and automatically falls back to asyncio if uvloop
+is unavailable or unsupported on the current platform.
+"""
+
 from __future__ import annotations
 
 from palfrey.loops.uvloop import uvloop_setup

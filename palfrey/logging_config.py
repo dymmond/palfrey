@@ -1,3 +1,11 @@
+"""Logging setup, formatters, and output configuration for Palfrey.
+
+This module provides ColourizedFormatter and AccessFormatter for ANSI-colored console
+output, TRACE-level logging support, and helper functions to configure the Python logging
+system. It integrates with PalfreyConfig to apply custom logging levels, formats, and
+handlers (stderr for default, stdout for access logs) across the Palfrey runtime.
+"""
+
 from __future__ import annotations
 
 import http

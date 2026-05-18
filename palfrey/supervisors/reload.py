@@ -1,3 +1,11 @@
+"""File system monitoring and process reload supervisor.
+
+This module provides ReloadSupervisor which monitors specified directories for file
+changes and automatically restarts the server process when modifications are detected,
+enabling rapid development iteration. It uses fnmatch patterns for inclusion/exclusion
+and debounces rapid file changes to avoid thrashing.
+"""
+
 from __future__ import annotations
 
 import fnmatch

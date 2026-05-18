@@ -51,6 +51,16 @@ plugins:
     min_length: 50
     max_length: 160
     trim: false
+- mkdocstrings:
+    handlers:
+      python:
+        options:
+          show_source: true
+          show_root_heading: true
+          docstring_style: google
+          show_if_no_docstring: false
+          members_order: source
+          docstring_section_style: spacy
 nav:
 - Introduction: index.md
 - Getting Started:
@@ -72,11 +82,22 @@ nav:
   - Protocols: reference/protocols.md
   - Logging: reference/logging.md
   - Error Catalog: reference/error-catalog.md
-- Guides:
-  - Zero to Production: guides/from-zero-to-production.md
-  - Reverse Proxy (Nginx): guides/reverse-proxy-nginx.md
+  - API Reference:
+    - reference/api/index.md
+    - Server: reference/api/server.md
+    - HTTP/1.1: reference/api/http.md
+    - HTTP/2: reference/api/http2.md
+    - HTTP/3: reference/api/http3.md
+    - WebSocket: reference/api/websocket.md
+    - Configuration: reference/api/config.md
+    - Acceleration: reference/api/acceleration.md
+  - Guides:
+      - Zero to Production: guides/from-zero-to-production.md
+      - Migrating from Uvicorn: guides/migrating-from-uvicorn.md
+      - Reverse Proxy (Nginx): guides/reverse-proxy-nginx.md
   - HTTPS and TLS: guides/https-tls.md
   - Security Hardening: guides/security-hardening.md
+  - Custom Protocols: guides/custom-protocols.md
   - Troubleshooting: guides/troubleshooting.md
   - FAQ: guides/faq.md
 - Operations:
@@ -88,6 +109,7 @@ nav:
   - Capacity Planning: operations/capacity-planning.md
   - Platform Notes: operations/platform-notes.md
   - Benchmarks: operations/benchmarks.md
+  - Benchmark Playbook: operations/benchmark-playbook.md
   - Release Process: operations/release-process.md
 - Project:
   - Contributing: contributing.md

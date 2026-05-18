@@ -18,6 +18,7 @@ site/
 site_lang/
 docs/generated/
 target/
+.sisyphus/
 
 # files
 par.md
@@ -31,3 +32,6 @@ par.md
 .python-version
 coverage.*
 example.sqlite
+
+# sisyphus
+.sisyphus/

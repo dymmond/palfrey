@@ -116,23 +116,32 @@ class HTTPResponse:
 # Pre-computed HTTP status lines for common response codes.
 # Avoids repeated string formatting and encoding on every response.
 _STATUS_LINES: dict[int, bytes] = {
+    100: b"HTTP/1.1 100 Continue\r\n\r\n",
     200: b"HTTP/1.1 200 OK\r\n",
     201: b"HTTP/1.1 201 Created\r\n",
+    202: b"HTTP/1.1 202 Accepted\r\n",
     204: b"HTTP/1.1 204 No Content\r\n",
     301: b"HTTP/1.1 301 Moved Permanently\r\n",
     302: b"HTTP/1.1 302 Found\r\n",
     304: b"HTTP/1.1 304 Not Modified\r\n",
+    307: b"HTTP/1.1 307 Temporary Redirect\r\n",
+    308: b"HTTP/1.1 308 Permanent Redirect\r\n",
     400: b"HTTP/1.1 400 Bad Request\r\n",
     401: b"HTTP/1.1 401 Unauthorized\r\n",
     403: b"HTTP/1.1 403 Forbidden\r\n",
     404: b"HTTP/1.1 404 Not Found\r\n",
+    405: b"HTTP/1.1 405 Method Not Allowed\r\n",
     500: b"HTTP/1.1 500 Internal Server Error\r\n",
     502: b"HTTP/1.1 502 Bad Gateway\r\n",
     503: b"HTTP/1.1 503 Service Unavailable\r\n",
 }
 
-# Pre-computed Server header value to avoid repeated encoding
 _SERVER_HEADER_VALUE: bytes = b"palfrey"
+
+_CONNECTION_KEEP_ALIVE: bytes = b"connection: keep-alive\r\n"
+_CONNECTION_CLOSE: bytes = b"connection: close\r\n"
+_HEADER_SEPARATOR: bytes = b": "
+_CRLF: bytes = b"\r\n"
 
 
 class _HTTPToolsParserProtocol:
@@ -940,27 +949,27 @@ def encode_http_response_chunks(response: HTTPResponse, keep_alive: bool) -> Ite
             has_connection = True
 
         yield name
-        yield b": "
+        yield _HEADER_SEPARATOR
         yield value
-        yield b"\r\n"
+        yield _CRLF
 
     if not has_content_length and not has_transfer_encoding:
         payload_len = 0 if response.suppress_body else sum(len(c) for c in response.body_chunks)
         yield b"content-length: "
         yield str(payload_len).encode("ascii")
-        yield b"\r\n"
+        yield _CRLF
 
     if not has_connection:
-        yield b"connection: keep-alive\r\n" if keep_alive else b"connection: close\r\n"
+        yield _CONNECTION_KEEP_ALIVE if keep_alive else _CONNECTION_CLOSE
 
-    yield b"\r\n"
+    yield _CRLF
 
     if response.chunked_encoding:
         for chunk in response.body_chunks:
             if chunk:
                 yield f"{len(chunk):x}\r\n".encode("ascii")
                 yield chunk
-                yield b"\r\n"
+                yield _CRLF
         yield b"0\r\n\r\n"
     elif not response.suppress_body:
         yield from response.body_chunks

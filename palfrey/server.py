@@ -32,16 +32,17 @@ import threading
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from email.utils import formatdate
 from importlib.util import find_spec
 from types import FrameType
 from typing import TYPE_CHECKING, Any, cast
 
 from palfrey.config import PalfreyConfig, create_ssl_context
+from palfrey.http_date import cached_http_date_header
 from palfrey.importer import ResolvedApp, resolve_application as _resolve_application
 from palfrey.lifespan import LifespanManager
 from palfrey.logging_config import configure_logging, get_logger
 from palfrey.protocols.http import (
+    _STATUS_LINES,
     HTTPRequest,
     HTTPResponse,
     append_default_response_headers,
@@ -194,7 +195,7 @@ class PalfreyServer:
     _lifespan: LifespanManager | None = None
     _max_requests_before_exit: int | None = None
     _base_default_headers: list[tuple[bytes, bytes]] = field(default_factory=list)
-    _last_notified: float = 0.0
+    _last_notified: float = field(default_factory=time.time)
     _force_exit: bool = False
     _started: bool = False
     _captured_signals: list[int] = field(default_factory=list)
@@ -438,7 +439,7 @@ class PalfreyServer:
             if not self._base_default_headers:
                 self._base_default_headers = self._build_static_default_headers()
             current_time = time.time()
-            current_date = formatdate(current_time, usegmt=True).encode("ascii")
+            current_date = cached_http_date_header()
             current_headers = list(self._base_default_headers)
             header_names = {name for name, _ in current_headers}
             if self.config.date_header and b"date" not in header_names:
@@ -667,7 +668,7 @@ class PalfreyServer:
                 if requires_100_continue(request):
 
                     async def send_continue() -> None:
-                        writer.write(b"HTTP/1.1 100 Continue\r\n\r\n")
+                        writer.write(_STATUS_LINES[100])
                         await writer.drain()
 
                     context.on_100_continue = send_continue
@@ -926,6 +927,11 @@ class PalfreyServer:
             getattr(transport, "get_write_buffer_size", None) if transport is not None else None
         )
         high_watermark_bytes = 262_144
+        if hasattr(transport, "get_write_buffer_limits"):
+            try:
+                high_watermark_bytes, _ = transport.get_write_buffer_limits()
+            except (ValueError, TypeError):
+                pass
         pending_bytes = 0
 
         async def drain_if_needed() -> None:

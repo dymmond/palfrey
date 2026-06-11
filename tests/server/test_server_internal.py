@@ -517,6 +517,54 @@ async def test_handle_connection_sends_100_continue_and_respects_max_requests(
 
 
 @pytest.mark.asyncio
+async def test_handle_connection_streams_asgi_body_before_app_completion(
+    monkeypatch,
+) -> None:
+    config = PalfreyConfig(
+        app="tests.fixtures.apps:http_app",
+        timeout_keep_alive=1,
+    )
+    server = PalfreyServer(config)
+    writer = DummyWriter()
+
+    async def app(scope, receive, send):
+        await receive()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"first", "more_body": True})
+        assert b"first" in b"".join(writer.writes)
+        await send({"type": "http.response.body", "body": b"second", "more_body": False})
+
+    server._resolved_app = ResolvedApp(app=app, interface="asgi3")
+    request = HTTPRequest(
+        method="POST",
+        target="/stream",
+        http_version="HTTP/1.1",
+        headers=[],
+        body=b"hello",
+    )
+    calls = {"count": 0}
+
+    async def fake_read_request(reader, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return request
+        return None
+
+    monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
+    monkeypatch.setattr(server_module, "should_keep_alive", lambda request, response: False)
+
+    await server._handle_connection(asyncio.StreamReader(), writer)
+
+    assert b"200 OK" in writer.writes[0]
+    assert b"first" in writer.writes[0]
+    payload = b"".join(writer.writes)
+    assert b"200 OK" in payload
+    assert b"first" in payload
+    assert b"second" in payload
+    assert payload.count(b"200 OK") == 1
+
+
+@pytest.mark.asyncio
 async def test_handle_connection_returns_503_when_concurrency_limit_reached(
     monkeypatch,
 ) -> None:

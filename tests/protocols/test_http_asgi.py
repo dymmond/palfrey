@@ -64,6 +64,49 @@ def test_run_http_asgi_collects_response_body_chunks() -> None:
     assert response.body_chunks == [b"hello ", b"world"]
 
 
+def test_run_http_asgi_stream_callbacks_are_awaited_in_send_order() -> None:
+    events: list[str] = []
+
+    async def on_response_start(response: HTTPResponse) -> None:
+        events.append(f"start:{response.status}")
+
+    async def on_response_body(
+        _response: HTTPResponse,
+        body: bytes,
+        more_body: bool,
+    ) -> None:
+        events.append(f"body:{body.decode()}:{more_body}")
+
+    async def app(scope, receive, send):
+        await receive()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        events.append("after-start")
+        await send({"type": "http.response.body", "body": b"first", "more_body": True})
+        events.append("after-first")
+        await send({"type": "http.response.body", "body": b"second", "more_body": False})
+        events.append("after-second")
+
+    response = asyncio.run(
+        run_http_asgi(
+            app,
+            {"type": "http", "headers": [], "path": "/", "method": "GET", "state": {}},
+            b"",
+            on_response_start=on_response_start,
+            on_response_body=on_response_body,
+        )
+    )
+
+    assert response.streamed is True
+    assert events == [
+        "start:200",
+        "after-start",
+        "body:first:True",
+        "after-first",
+        "body:second:False",
+        "after-second",
+    ]
+
+
 def test_run_http_asgi_uses_chunked_default_for_single_body_without_headers() -> None:
     async def app(scope, receive, send):
         await receive()

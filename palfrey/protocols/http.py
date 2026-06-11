@@ -111,6 +111,7 @@ class HTTPResponse:
     body_chunks: list[bytes] = field(default_factory=list)
     chunked_encoding: bool = False
     suppress_body: bool = False
+    streamed: bool = False
 
 
 # Pre-computed HTTP status lines for common response codes.
@@ -633,6 +634,8 @@ async def run_http_asgi(
     *,
     expect_100_continue: bool = False,
     on_100_continue: Callable[[], Awaitable[None]] | None = None,
+    on_response_start: Callable[[HTTPResponse], Awaitable[None]] | None = None,
+    on_response_body: Callable[[HTTPResponse, bytes, bool], Awaitable[None]] | None = None,
 ) -> HTTPResponse:
     """
     Orchestrates the ASGI request/response lifecycle with high-performance formatting.
@@ -775,6 +778,9 @@ async def run_http_asgi(
             if response.suppress_body:
                 expected_content_length = 0
 
+            if on_response_start is not None:
+                await on_response_start(response)
+                response.streamed = True
             return
 
         elif msg_type == "http.response.body":
@@ -802,6 +808,9 @@ async def run_http_asgi(
                     raise RuntimeError("Response content longer than Content-Length")
                 expected_content_length -= body_size
                 response.body_chunks.append(body)
+
+            if response.streamed and on_response_body is not None:
+                await on_response_body(response, body, more_body)
 
             if not more_body:
                 if not chunked_encoding and expected_content_length != 0:
@@ -914,17 +923,18 @@ def append_default_response_headers(
         response.headers.append((name.encode("latin-1"), value.encode("latin-1")))
 
 
-def encode_http_response_chunks(response: HTTPResponse, keep_alive: bool) -> Iterable[bytes]:
-    """Serializes the HTTPResponse into a sequence of bytes chunks.
+def encode_http_response_head(response: HTTPResponse, keep_alive: bool) -> Iterable[bytes]:
+    """Serializes the HTTP response status line and headers.
 
-    Handles status line, headers, and body encoding including chunked transfer.
+    Handles status line and headers while preserving chunked transfer metadata
+    for callers that stream body chunks separately.
 
     Args:
         response (HTTPResponse): The response to serialize.
         keep_alive (bool): Whether the connection should be kept alive.
 
     Yields:
-        bytes: Serialized fragments of the HTTP response.
+        bytes: Serialized status and header fragments.
     """
     if response.status in _STATUS_LINES:
         yield _STATUS_LINES[response.status]
@@ -964,13 +974,50 @@ def encode_http_response_chunks(response: HTTPResponse, keep_alive: bool) -> Ite
 
     yield _CRLF
 
+
+def encode_http_response_body_chunk(
+    response: HTTPResponse,
+    body: bytes,
+    *,
+    more_body: bool,
+) -> Iterable[bytes]:
+    """Serializes a single ASGI response body event into wire bytes."""
+    if response.suppress_body:
+        return
     if response.chunked_encoding:
-        for chunk in response.body_chunks:
-            if chunk:
-                yield f"{len(chunk):x}\r\n".encode("ascii")
-                yield chunk
-                yield _CRLF
-        yield b"0\r\n\r\n"
+        if body:
+            yield f"{len(body):x}\r\n".encode("ascii")
+            yield body
+            yield _CRLF
+        if not more_body:
+            yield b"0\r\n\r\n"
+        return
+    if body:
+        yield body
+
+
+def encode_http_response_chunks(response: HTTPResponse, keep_alive: bool) -> Iterable[bytes]:
+    """Serializes the HTTPResponse into a sequence of bytes chunks.
+
+    Handles status line, headers, and body encoding including chunked transfer.
+
+    Args:
+        response (HTTPResponse): The response to serialize.
+        keep_alive (bool): Whether the connection should be kept alive.
+
+    Yields:
+        bytes: Serialized fragments of the HTTP response.
+    """
+    yield from encode_http_response_head(response, keep_alive=keep_alive)
+    if response.chunked_encoding:
+        chunks = response.body_chunks or [b""]
+        for index, chunk in enumerate(chunks):
+            yield from encode_http_response_body_chunk(
+                response,
+                chunk,
+                more_body=index < len(chunks) - 1,
+            )
+        return
     elif not response.suppress_body:
         yield from response.body_chunks
 

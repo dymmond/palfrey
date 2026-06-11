@@ -5,6 +5,18 @@ hide:
 
 # Release Notes
 
+## 0.1.4
+
+### Fixed
+
+- HTTP/1.1 ASGI responses now flush response headers and body chunks as the application sends them instead of buffering the full response until completion.
+- Streaming responses keep Palfrey's existing chunked transfer framing while preserving the collected response metadata used by server logging and compatibility tests.
+
+### Operational impact
+
+- Long-running NDJSON, SSE, and incremental provider/tool streams reach clients progressively instead of appearing as one completed response.
+- Existing non-streaming response behavior, default headers, access logging, and keep-alive handling remain unchanged.
+
 ## 0.1.3
 
 #### Added

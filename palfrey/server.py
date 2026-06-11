@@ -47,7 +47,9 @@ from palfrey.protocols.http import (
     HTTPResponse,
     append_default_response_headers,
     build_http_scope,
+    encode_http_response_body_chunk,
     encode_http_response_chunks,
+    encode_http_response_head,
     is_websocket_upgrade,
     read_http_request,
     requires_100_continue,
@@ -692,12 +694,13 @@ class PalfreyServer:
                     break
 
                 try:
-                    response = await self._handle_http_request(request, context)
+                    response = await self._handle_http_request(request, context, writer=writer)
                 finally:
                     self._leave_request_slot()
 
                 keep_processing = should_keep_alive(request, response)
-                await self._write_response(writer, response, keep_alive=keep_processing)
+                if not response.streamed:
+                    await self._write_response(writer, response, keep_alive=keep_processing)
 
                 self.server_state.total_requests += 1
                 if self._max_requests_before_exit is None:
@@ -869,6 +872,7 @@ class PalfreyServer:
         self,
         request: HTTPRequest,
         context: ConnectionContext,
+        writer: asyncio.StreamWriter | None = None,
     ) -> HTTPResponse:
         """
         Converts a parsed HTTP request into an ASGI scope and runs the application.
@@ -887,29 +891,105 @@ class PalfreyServer:
         body_input: bytes | list[bytes] = (
             request.body_chunks if request.body_chunks else request.body
         )
+        streamed_head_sent = False
+
+        async def on_response_start(response: HTTPResponse) -> None:
+            default_headers = self.server_state.default_headers or None
+            append_default_response_headers(response, self.config, default_headers=default_headers)
+            self._log_access(scope, response)
+
+        async def on_response_body(
+            response: HTTPResponse,
+            body: bytes,
+            more_body: bool,
+        ) -> None:
+            nonlocal streamed_head_sent
+            if not streamed_head_sent:
+                await self._write_response_head_and_body_chunk(
+                    writer,
+                    response,
+                    body,
+                    keep_alive=should_keep_alive(request, response),
+                    more_body=more_body,
+                )
+                streamed_head_sent = True
+                return
+            await self._write_response_body_chunk(writer, response, body, more_body=more_body)
+
         response = await run_http_asgi(
             self._resolved_app.app,
             scope,
             body_input,
             expect_100_continue=requires_100_continue(request),
             on_100_continue=context.on_100_continue,
+            on_response_start=on_response_start if writer is not None else None,
+            on_response_body=on_response_body if writer is not None else None,
         )
 
-        default_headers = self.server_state.default_headers or None
-        append_default_response_headers(response, self.config, default_headers=default_headers)
-
-        if self.config.access_log:
-            request_path = get_path_with_query_string(scope)
-            access_logger.info(
-                '%s - "%s %s HTTP/%s" %s',
-                scope["client"][0],
-                scope["method"],
-                request_path,
-                scope["http_version"],
-                response.status,
-            )
+        if not response.streamed:
+            default_headers = self.server_state.default_headers or None
+            append_default_response_headers(response, self.config, default_headers=default_headers)
+            self._log_access(scope, response)
 
         return response
+
+    def _log_access(self, scope: dict[str, Any], response: HTTPResponse) -> None:
+        """
+        Emits a configured access-log entry for one HTTP response.
+        """
+        if not self.config.access_log:
+            return
+        request_path = get_path_with_query_string(scope)
+        access_logger.info(
+            '%s - "%s %s HTTP/%s" %s',
+            scope["client"][0],
+            scope["method"],
+            request_path,
+            scope["http_version"],
+            response.status,
+        )
+
+    async def _write_response_head_and_body_chunk(
+        self,
+        writer: asyncio.StreamWriter | None,
+        response: HTTPResponse,
+        body: bytes,
+        *,
+        keep_alive: bool,
+        more_body: bool,
+    ) -> None:
+        """
+        Writes response status, headers, and first body event together.
+        """
+        if writer is None:
+            return
+        payload = b"".join(
+            (
+                *encode_http_response_head(response, keep_alive=keep_alive),
+                *encode_http_response_body_chunk(response, body, more_body=more_body),
+            )
+        )
+        if payload:
+            writer.write(payload)
+        await writer.drain()
+
+    async def _write_response_body_chunk(
+        self,
+        writer: asyncio.StreamWriter | None,
+        response: HTTPResponse,
+        body: bytes,
+        *,
+        more_body: bool,
+    ) -> None:
+        """
+        Writes one ASGI body event immediately for streaming responses.
+        """
+        if writer is None:
+            return
+        payload = b"".join(encode_http_response_body_chunk(response, body, more_body=more_body))
+        if payload:
+            writer.write(payload)
+        await writer.drain()
 
     async def _write_response(
         self,

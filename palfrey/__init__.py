@@ -8,7 +8,7 @@ Palfrey is built with source-traceable parity mapping and focuses on:
 This module exports the public API including configuration, server, and runtime utilities.
 """
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 from palfrey.config import Config, PalfreyConfig
 from palfrey.main import main, run

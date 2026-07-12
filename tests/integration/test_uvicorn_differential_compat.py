@@ -276,6 +276,21 @@ def _http_expect_continue_exchange(
         return responses
 
 
+def _http_chunked_request_exchange(port: int) -> tuple[int, dict[str, str], bytes]:
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as conn:
+        request = (
+            "POST / HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{port}\r\n"
+            "Transfer-Encoding: chunked\r\n"
+            "Connection: close\r\n\r\n"
+        )
+        conn.sendall(request.encode("ascii"))
+        conn.sendall(b"6\r\nfirst-\r\n")
+        time.sleep(0.02)
+        conn.sendall(b"6\r\nsecond\r\n0\r\n\r\n")
+        return _read_http_response(conn)
+
+
 def _ws_send_text(sock: socket.socket, text: str) -> None:
     payload = text.encode("utf-8")
     header = bytearray([0x81])
@@ -719,6 +734,34 @@ def test_http_expect_continue_not_sent_when_body_not_consumed_matches_uvicorn() 
         == _decode_http_body(uvicorn_responses[0][1], uvicorn_responses[0][2])
         == b"ok"
     )
+
+
+def test_http_chunked_request_body_matches_uvicorn() -> None:
+    uvicorn_pythonpath = _uvicorn_pythonpath()
+    if uvicorn_pythonpath is None and importlib.util.find_spec("uvicorn") is None:
+        pytest.skip("uvicorn is not installed and local uvicorn repo is unavailable")
+
+    with _spawn_server(
+        "uvicorn",
+        "tests.fixtures.apps:http_expect_continue_body_app",
+        pythonpath=uvicorn_pythonpath,
+    ) as (_uvicorn_process, uvicorn_port):
+        uvicorn_status, uvicorn_headers, uvicorn_body = _http_chunked_request_exchange(uvicorn_port)
+
+    with _spawn_server(
+        "palfrey",
+        "tests.fixtures.apps:http_expect_continue_body_app",
+    ) as (_palfrey_process, palfrey_port):
+        palfrey_status, palfrey_headers, palfrey_body = _http_chunked_request_exchange(palfrey_port)
+
+    assert palfrey_status == uvicorn_status == 200
+    assert (
+        _decode_http_body(palfrey_headers, palfrey_body)
+        == _decode_http_body(uvicorn_headers, uvicorn_body)
+        == b"Body: first-second"
+    )
+    assert palfrey_headers.get("content-length") == uvicorn_headers.get("content-length")
+    assert palfrey_headers.get("transfer-encoding") == uvicorn_headers.get("transfer-encoding")
 
 
 def test_http_no_response_matches_uvicorn() -> None:

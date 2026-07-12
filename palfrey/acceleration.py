@@ -36,6 +36,21 @@ from typing import cast
 ParseHeaderItemsFn = Callable[[list[str]], list[tuple[str, str]]]
 ParseRequestHeadFn = Callable[[bytes], tuple[str, str, str, list[tuple[str, str]]]]
 ParseRequestHeadRustFn = Callable[[bytes], tuple[bytes, bytes, bytes, list[tuple[bytes, bytes]]]]
+ParseRequestHeadBytesFn = Callable[[bytes], tuple[bytes, bytes, bytes, list[tuple[bytes, bytes]]]]
+ParseRequestHeadNormalizedFn = Callable[
+    [bytes],
+    tuple[
+        bytes,
+        bytes,
+        bytes,
+        list[tuple[bytes, bytes]],
+        bytes | None,
+        bytes,
+        bytes,
+        bytes,
+        bool,
+    ],
+]
 SplitCSVValuesFn = Callable[[str], list[str]]
 WebSocketPayloadBuffer = bytes | bytearray | memoryview
 UnmaskWebSocketPayloadFn = Callable[[WebSocketPayloadBuffer, bytes], bytes]
@@ -43,6 +58,7 @@ UnmaskWebSocketPayloadFn = Callable[[WebSocketPayloadBuffer, bytes], bytes]
 # Placeholders for the Rust extension functions
 _parse_header_items: ParseHeaderItemsFn | None = None
 _parse_request_head: ParseRequestHeadFn | ParseRequestHeadRustFn | None = None
+_parse_request_head_normalized: ParseRequestHeadNormalizedFn | None = None
 _split_csv_values: SplitCSVValuesFn | None = None
 _unmask_websocket_payload: UnmaskWebSocketPayloadFn | None = None
 
@@ -50,12 +66,17 @@ if os.getenv("PALFREY_NO_RUST"):
     HAS_RUST_EXTENSION = False
 else:
     try:
-        from palfrey_rust import (
-            parse_header_items as _parse_header_items,
-            parse_request_head as _parse_request_head,
-            split_csv_values as _split_csv_values,
-            unmask_websocket_payload as _unmask_websocket_payload,
+        import palfrey_rust
+
+        _parse_header_items = palfrey_rust.parse_header_items
+        _parse_request_head = palfrey_rust.parse_request_head
+        _parse_request_head_normalized = getattr(
+            palfrey_rust,
+            "parse_request_head_normalized",
+            None,
         )
+        _split_csv_values = palfrey_rust.split_csv_values
+        _unmask_websocket_payload = palfrey_rust.unmask_websocket_payload
 
         HAS_RUST_EXTENSION = True
     except ImportError:
@@ -189,6 +210,94 @@ def parse_request_head(data: bytes) -> tuple[str, str, str, list[tuple[str, str]
         headers.append((name.strip(), value.lstrip()))
 
     return method, target, version, headers
+
+
+def parse_request_head_bytes(data: bytes) -> tuple[bytes, bytes, bytes, list[tuple[bytes, bytes]]]:
+    """
+    Parses raw HTTP request head bytes without decoding Rust results to strings.
+
+    This is intended for internal protocol hot paths that immediately need header bytes.
+    The existing parse_request_head() function keeps its string-returning compatibility
+    contract for callers that use the public acceleration shim directly.
+    """
+    if HAS_RUST_EXTENSION and _parse_request_head is not None:
+        rust_result = _parse_request_head(data)
+        if isinstance(rust_result[0], bytes):
+            return cast("tuple[bytes, bytes, bytes, list[tuple[bytes, bytes]]]", rust_result)
+
+        method, target, version, headers = cast(
+            "tuple[str, str, str, list[tuple[str, str]]]",
+            rust_result,
+        )
+        return (
+            method.encode("latin-1"),
+            target.encode("latin-1"),
+            version.encode("latin-1"),
+            [(name.encode("latin-1"), value.encode("latin-1")) for name, value in headers],
+        )
+
+    method, target, version, headers = parse_request_head(data)
+    return (
+        method.encode("latin-1"),
+        target.encode("latin-1"),
+        version.encode("latin-1"),
+        [(name.encode("latin-1"), value.encode("latin-1")) for name, value in headers],
+    )
+
+
+def parse_request_head_normalized(
+    data: bytes,
+) -> tuple[
+    bytes,
+    bytes,
+    bytes,
+    list[tuple[bytes, bytes]],
+    bytes | None,
+    bytes,
+    bytes,
+    bytes,
+    bool,
+]:
+    """
+    Parses request head bytes into normalized header bytes and common metadata.
+    """
+    if HAS_RUST_EXTENSION and _parse_request_head_normalized is not None:
+        return _parse_request_head_normalized(data)
+
+    method, target, version, headers = parse_request_head_bytes(data)
+    normalized_headers: list[tuple[bytes, bytes]] = []
+    content_length: bytes | None = None
+    transfer_encoding = b""
+    connection = b""
+    expect = b""
+    upgrade = b""
+
+    for raw_name, value in headers:
+        name = raw_name.lower()
+        normalized_headers.append((name, value))
+        if name == b"content-length":
+            content_length = value
+        elif name == b"transfer-encoding":
+            transfer_encoding = value.lower()
+        elif name == b"connection":
+            connection = value.lower()
+        elif name == b"expect":
+            expect = value.lower()
+        elif name == b"upgrade":
+            upgrade = value.lower()
+
+    websocket_upgrade = b"websocket" in upgrade and b"upgrade" in connection
+    return (
+        method,
+        target,
+        version,
+        normalized_headers,
+        content_length,
+        transfer_encoding,
+        connection,
+        expect,
+        websocket_upgrade,
+    )
 
 
 def unmask_websocket_payload(payload: WebSocketPayloadBuffer, masking_key: bytes) -> bytes:

@@ -3,13 +3,13 @@
 This module implements PalfreyServer, the main async server orchestrating TCP/UNIX socket
 listening, connection state tracking, and HTTP/1.1→HTTP/2→HTTP/3 protocol negotiation.
 Key responsibilities include: accepting connections, applying SSL/TLS encryption,
-managing concurrent request pipelining via the httptools parser, handling connection
-keep-alive and timeouts, and graceful shutdown coordination with the lifespan manager.
+parsing HTTP requests, handling connection keep-alive and timeouts, and graceful
+shutdown coordination with the lifespan manager.
 
 The module tracks active connections via _ConnectionState and _TrackedConnection,
-enforces PIPELINE_QUEUE_LIMIT to bound concurrent streams per connection, and delegates
-protocol-specific handling to run_http_asgi, serve_http2_connection, handle_websocket,
-and create_http3_server based on ALPN negotiation or HTTP upgrade headers.
+and delegates protocol-specific handling to run_http_asgi, serve_http2_connection,
+handle_websocket, and create_http3_server based on ALPN negotiation or HTTP upgrade
+headers.
 
 Key Classes:
     - PalfreyServer: Main async server orchestrating listening, protocol selection,
@@ -51,7 +51,6 @@ from palfrey.protocols.http import (
     encode_http_response_body_chunk,
     encode_http_response_chunks,
     encode_http_response_head,
-    is_websocket_upgrade,
     read_http_request,
     requires_100_continue,
     run_http_asgi,
@@ -533,6 +532,41 @@ class PalfreyServer:
             while self.server_state.tasks and not self._force_exit:
                 await asyncio.sleep(0.1)
 
+    async def _await_keep_alive_read(
+        self,
+        request_coro: Awaitable[HTTPRequest | None],
+        timeout: float,
+    ) -> HTTPRequest | None:
+        """
+        Wait for a keep-alive request without wrapping the read in a new task.
+        """
+        if timeout <= 0:
+            return await asyncio.wait_for(request_coro, timeout=timeout)
+
+        current_task = asyncio.current_task()
+        if current_task is None:
+            return await asyncio.wait_for(request_coro, timeout=timeout)
+
+        timed_out = False
+
+        def cancel_on_timeout() -> None:
+            nonlocal timed_out
+            timed_out = True
+            current_task.cancel()
+
+        handle = asyncio.get_running_loop().call_later(timeout, cancel_on_timeout)
+        try:
+            return await request_coro
+        except asyncio.CancelledError:
+            if not timed_out:
+                raise
+            uncancel = getattr(current_task, "uncancel", None)
+            if callable(uncancel):
+                uncancel()
+            raise asyncio.TimeoutError from None
+        finally:
+            handle.cancel()
+
     async def _handle_connection(
         self,
         reader: asyncio.StreamReader,
@@ -595,31 +629,37 @@ class PalfreyServer:
 
         keep_processing = True
         keep_alive_timeout = self.config.timeout_keep_alive
-        # Use a bounded queue to enforce backpressure: when full, pauses socket reads to prevent unbounded memory
-        request_queue: asyncio.Queue[_QueuedRequest] = asyncio.Queue(maxsize=PIPELINE_QUEUE_LIMIT)
+        parser_mode = "auto" if self.config.http == "auto" else self.config.effective_http
+        max_head_size = self.config.h11_max_incomplete_event_size or 1_048_576
+        first_request = True
 
-        # Start the pipelining reader task
-        request_reader_task = asyncio.create_task(
-            self._queue_connection_requests(
-                reader=reader,
-                queue=request_queue,
-                keep_alive_timeout=keep_alive_timeout,
+        async def read_next_request() -> _QueuedRequest:
+            nonlocal first_request
+            request_coro = read_http_request(
+                reader,
+                max_head_size=max_head_size,
+                parser_mode=parser_mode,
+                stream_body=True,
             )
-        )
+            try:
+                if first_request and keep_alive_timeout > 0:
+                    request = await request_coro
+                else:
+                    request = await self._await_keep_alive_read(
+                        request_coro,
+                        keep_alive_timeout,
+                    )
+            except asyncio.TimeoutError:
+                return _QueuedRequest(request=None)
+            except Exception as exc:
+                return _QueuedRequest(error=exc)
 
-        async def stop_request_reader() -> None:
-            """
-            Cancels and waits for the request reader task to terminate.
-            """
-            if request_reader_task.done():
-                return
-            request_reader_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await request_reader_task
+            first_request = False
+            return _QueuedRequest(request=request)
 
         try:
             while keep_processing:
-                queued_request = await request_queue.get()
+                queued_request = await read_next_request()
                 if queued_request.error is not None:
                     raise queued_request.error
 
@@ -628,8 +668,7 @@ class PalfreyServer:
                     break
 
                 # WebSocket Upgrade handling
-                if is_websocket_upgrade(request):
-                    await stop_request_reader()
+                if request.is_websocket_upgrade:
                     if self.config.effective_ws == "none":
                         error_response = HTTPResponse(
                             status=400,
@@ -675,7 +714,8 @@ class PalfreyServer:
                     break
 
                 # HTTP 100-Continue handshake
-                if requires_100_continue(request):
+                expect_100_continue = requires_100_continue(request)
+                if expect_100_continue:
 
                     async def send_continue() -> None:
                         writer.write(_STATUS_LINES[100])
@@ -702,12 +742,21 @@ class PalfreyServer:
                     break
 
                 try:
-                    response = await self._handle_http_request(request, context, writer=writer)
+                    response = await self._handle_http_request(
+                        request,
+                        context,
+                        writer=writer,
+                        expect_100_continue=expect_100_continue,
+                    )
                 finally:
                     self._leave_request_slot()
 
                 keep_processing = (
-                    False if response.close_after_response else should_keep_alive(request, response)
+                    False
+                    if response.close_after_response
+                    else response.connection_keep_alive
+                    if response.connection_keep_alive is not None
+                    else should_keep_alive(request, response)
                 )
                 if not response.streamed:
                     await self._write_response(writer, response, keep_alive=keep_processing)
@@ -737,7 +786,6 @@ class PalfreyServer:
             error_response.body_chunks = [b"Internal Server Error"]
             await self._write_response(writer, error_response, keep_alive=False)
         finally:
-            await stop_request_reader()
             self.server_state.connections.discard(tracked_connection)
             if current_task is not None:
                 self.server_state.tasks.discard(current_task)
@@ -892,6 +940,7 @@ class PalfreyServer:
         request: HTTPRequest,
         context: ConnectionContext,
         writer: asyncio.StreamWriter | None = None,
+        expect_100_continue: bool | None = None,
     ) -> HTTPResponse:
         """
         Converts a parsed HTTP request into an ASGI scope and runs the application.
@@ -919,6 +968,7 @@ class PalfreyServer:
             else request.body
         )
         streamed_head_sent = False
+        response_keep_alive: bool | None = None
 
         async def on_response_start(response: HTTPResponse) -> None:
             default_headers = self.server_state.default_headers or None
@@ -930,13 +980,15 @@ class PalfreyServer:
             body: bytes,
             more_body: bool,
         ) -> None:
-            nonlocal streamed_head_sent
+            nonlocal response_keep_alive, streamed_head_sent
             if not streamed_head_sent:
+                response_keep_alive = should_keep_alive(request, response)
+                response.connection_keep_alive = response_keep_alive
                 await self._write_response_head_and_body_chunk(
                     writer,
                     response,
                     body,
-                    keep_alive=should_keep_alive(request, response),
+                    keep_alive=response_keep_alive,
                     more_body=more_body,
                 )
                 streamed_head_sent = True
@@ -948,7 +1000,11 @@ class PalfreyServer:
                 self._resolved_app.app,
                 scope,
                 body_input,
-                expect_100_continue=requires_100_continue(request),
+                expect_100_continue=(
+                    requires_100_continue(request)
+                    if expect_100_continue is None
+                    else expect_100_continue
+                ),
                 on_100_continue=context.on_100_continue,
                 on_response_start=on_response_start if writer is not None else None,
                 on_response_body=on_response_body if writer is not None else None,
@@ -1011,7 +1067,8 @@ class PalfreyServer:
         )
         if payload:
             writer.write(payload)
-        await writer.drain()
+        if not keep_alive or more_body or len(payload) >= 262_144:
+            await writer.drain()
 
     async def _write_response_body_chunk(
         self,

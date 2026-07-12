@@ -32,6 +32,28 @@ RETRYABLE_CONNECT_ERRNOS = {
 
 
 @dataclass(slots=True)
+class OperationRun:
+    """Measured operations from one benchmark workload."""
+
+    operations: int
+    duration_seconds: float
+    latency_seconds: tuple[float, ...] = ()
+    failed_operations: int = 0
+
+    def __iter__(self):
+        yield self.operations
+        yield self.duration_seconds
+
+
+@dataclass(slots=True)
+class ProcessResources:
+    """Best-effort resource snapshot for the server process."""
+
+    cpu_time_seconds: float | None
+    rss_bytes: int | None
+
+
+@dataclass(slots=True)
 class ScenarioResult:
     """Benchmark result for one server/scenario pair."""
 
@@ -39,6 +61,10 @@ class ScenarioResult:
     scenario: str
     operations: int
     duration_seconds: float
+    failed_operations: int = 0
+    latency_seconds: tuple[float, ...] = ()
+    cpu_time_seconds: float | None = None
+    max_rss_bytes: int | None = None
 
     @property
     def ops_per_second(self) -> float:
@@ -49,13 +75,29 @@ class ScenarioResult:
         return self.operations / self.duration_seconds
 
 
+def _percentile(samples: list[float], percentile: float) -> float:
+    if not samples:
+        return 0.0
+    ordered = sorted(samples)
+    index = math.ceil((percentile / 100.0) * len(ordered)) - 1
+    index = max(0, min(index, len(ordered) - 1))
+    return ordered[index]
+
+
 def _result_to_dict(result: ScenarioResult) -> dict[str, Any]:
+    latency_stats = _compute_statistics(list(result.latency_seconds))
     return {
         "server": result.server,
         "scenario": result.scenario,
         "operations": result.operations,
+        "successful_operations": result.operations,
+        "failed_operations": result.failed_operations,
         "duration_seconds": result.duration_seconds,
         "ops_per_second": result.ops_per_second,
+        "latency_seconds": latency_stats,
+        "latency_samples_seconds": list(result.latency_seconds),
+        "cpu_time_seconds": result.cpu_time_seconds,
+        "max_rss_bytes": result.max_rss_bytes,
     }
 
 
@@ -119,7 +161,7 @@ def _build_command(server: str, port: int) -> list[str]:
             "--no-access-log",
             "--no-proxy-headers",
             "--http",
-            "httptools",
+            "auto",
             "--loop",
             "uvloop",
             "--ws",
@@ -169,15 +211,17 @@ def _stop_server(process: subprocess.Popen[str]) -> None:
             process.wait(timeout=5)
 
 
-def _http_worker(port: int, requests: int) -> int:
+def _http_worker(port: int, requests: int) -> OperationRun:
     if requests <= 0:
-        return 0
+        return OperationRun(operations=0, duration_seconds=0.0)
 
     keep_alive_payload = b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n\r\n"
     close_payload = b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
 
     conn: socket.socket | None = None
     completed = 0
+    latencies: list[float] = []
+    started = time.perf_counter()
     try:
         while completed < requests:
             is_last = completed == requests - 1
@@ -185,6 +229,7 @@ def _http_worker(port: int, requests: int) -> int:
                 conn = _create_connection_with_retry("127.0.0.1", port, timeout=5)
 
             payload = close_payload if is_last else keep_alive_payload
+            request_started = time.perf_counter()
             try:
                 conn.sendall(payload)
                 status_code = _read_http_status_code(conn)
@@ -196,6 +241,7 @@ def _http_worker(port: int, requests: int) -> int:
             if status_code != 200:
                 raise RuntimeError("HTTP benchmark received non-200 response")
             completed += 1
+            latencies.append(time.perf_counter() - request_started)
             if is_last:
                 conn.close()
                 conn = None
@@ -203,7 +249,11 @@ def _http_worker(port: int, requests: int) -> int:
         if conn is not None:
             conn.close()
 
-    return completed
+    return OperationRun(
+        operations=completed,
+        duration_seconds=time.perf_counter() - started,
+        latency_seconds=tuple(latencies),
+    )
 
 
 def _read_http_status_code(sock: socket.socket) -> int:
@@ -297,8 +347,12 @@ def _consume_chunked_body(sock: socket.socket, initial: bytes) -> None:
             return
 
 
-def _run_http(port: int, requests: int, concurrency: int) -> tuple[int, float]:
+def _run_http(port: int, requests: int, concurrency: int) -> OperationRun:
+    if concurrency <= 0:
+        raise ValueError("HTTP concurrency must be greater than zero")
+
     completed_total = 0
+    latency_samples: list[float] = []
     lock = threading.Lock()
     errors: list[Exception] = []
     errors_lock = threading.Lock()
@@ -309,13 +363,14 @@ def _run_http(port: int, requests: int, concurrency: int) -> tuple[int, float]:
     def worker(work: int) -> None:
         nonlocal completed_total
         try:
-            completed = _http_worker(port, work)
+            measurement = _http_worker(port, work)
         except Exception as exc:  # noqa: BLE001
             with errors_lock:
                 errors.append(exc)
             return
         with lock:
-            completed_total += completed
+            completed_total += measurement.operations
+            latency_samples.extend(measurement.latency_seconds)
 
     threads: list[threading.Thread] = []
     start = time.perf_counter()
@@ -332,7 +387,11 @@ def _run_http(port: int, requests: int, concurrency: int) -> tuple[int, float]:
         raise RuntimeError(f"HTTP benchmark worker failed: {errors[0]}") from errors[0]
 
     duration = time.perf_counter() - start
-    return completed_total, duration
+    return OperationRun(
+        operations=completed_total,
+        duration_seconds=duration,
+        latency_seconds=tuple(latency_samples),
+    )
 
 
 def _ws_handshake(sock: socket.socket, port: int) -> None:
@@ -405,22 +464,34 @@ def _read_exact(sock: socket.socket, size: int) -> bytes:
     return b"".join(chunks)
 
 
-def _ws_worker(port: int, messages: int) -> int:
+def _ws_worker(port: int, messages: int) -> OperationRun:
+    latencies: list[float] = []
+    started = time.perf_counter()
     with _create_connection_with_retry("127.0.0.1", port, timeout=5) as sock:
         _ws_handshake(sock, port)
         completed = 0
         for index in range(messages):
             payload = f"{random.randint(1, 999999)}-{index}"
+            message_started = time.perf_counter()
             _ws_send_text(sock, payload)
             echoed = _ws_recv_text(sock)
             if echoed != payload:
                 raise RuntimeError("WebSocket echo mismatch")
             completed += 1
-        return completed
+            latencies.append(time.perf_counter() - message_started)
+        return OperationRun(
+            operations=completed,
+            duration_seconds=time.perf_counter() - started,
+            latency_seconds=tuple(latencies),
+        )
 
 
-def _run_ws(port: int, clients: int, messages_per_client: int) -> tuple[int, float]:
+def _run_ws(port: int, clients: int, messages_per_client: int) -> OperationRun:
+    if clients <= 0:
+        raise ValueError("WebSocket client count must be greater than zero")
+
     completed_total = 0
+    latency_samples: list[float] = []
     lock = threading.Lock()
     errors: list[Exception] = []
     errors_lock = threading.Lock()
@@ -428,13 +499,14 @@ def _run_ws(port: int, clients: int, messages_per_client: int) -> tuple[int, flo
     def worker() -> None:
         nonlocal completed_total
         try:
-            completed = _ws_worker(port, messages_per_client)
+            measurement = _ws_worker(port, messages_per_client)
         except Exception as exc:  # noqa: BLE001
             with errors_lock:
                 errors.append(exc)
             return
         with lock:
-            completed_total += completed
+            completed_total += measurement.operations
+            latency_samples.extend(measurement.latency_seconds)
 
     threads: list[threading.Thread] = []
     start = time.perf_counter()
@@ -450,7 +522,69 @@ def _run_ws(port: int, clients: int, messages_per_client: int) -> tuple[int, flo
         raise RuntimeError(f"WebSocket benchmark worker failed: {errors[0]}") from errors[0]
 
     duration = time.perf_counter() - start
-    return completed_total, duration
+    return OperationRun(
+        operations=completed_total,
+        duration_seconds=duration,
+        latency_seconds=tuple(latency_samples),
+    )
+
+
+def _capture_process_resources(process: subprocess.Popen[str]) -> ProcessResources:
+    try:
+        psutil_module: Any = __import__("psutil")
+        process_factory = psutil_module.Process
+        server_process: Any = process_factory(process.pid)
+        cpu_times: Any = server_process.cpu_times()
+        memory_info: Any = server_process.memory_info()
+    except Exception:  # noqa: BLE001
+        return ProcessResources(cpu_time_seconds=None, rss_bytes=None)
+
+    return ProcessResources(
+        cpu_time_seconds=float(getattr(cpu_times, "user", 0.0))
+        + float(getattr(cpu_times, "system", 0.0)),
+        rss_bytes=int(getattr(memory_info, "rss", 0)),
+    )
+
+
+def _resource_delta(
+    before: ProcessResources,
+    after: ProcessResources,
+) -> tuple[float | None, int | None]:
+    cpu_time_seconds = None
+    if before.cpu_time_seconds is not None and after.cpu_time_seconds is not None:
+        cpu_time_seconds = max(0.0, after.cpu_time_seconds - before.cpu_time_seconds)
+    return cpu_time_seconds, after.rss_bytes
+
+
+def _measurement_to_result(
+    server: str,
+    scenario: str,
+    measurement: OperationRun | tuple[int, float],
+    *,
+    cpu_time_seconds: float | None = None,
+    max_rss_bytes: int | None = None,
+) -> ScenarioResult:
+    if isinstance(measurement, OperationRun):
+        return ScenarioResult(
+            server=server,
+            scenario=scenario,
+            operations=measurement.operations,
+            duration_seconds=measurement.duration_seconds,
+            failed_operations=measurement.failed_operations,
+            latency_seconds=measurement.latency_seconds,
+            cpu_time_seconds=cpu_time_seconds,
+            max_rss_bytes=max_rss_bytes,
+        )
+
+    operations, duration_seconds = measurement
+    return ScenarioResult(
+        server=server,
+        scenario=scenario,
+        operations=operations,
+        duration_seconds=duration_seconds,
+        cpu_time_seconds=cpu_time_seconds,
+        max_rss_bytes=max_rss_bytes,
+    )
 
 
 def _benchmark_server(
@@ -466,24 +600,38 @@ def _benchmark_server(
     results: list[ScenarioResult] = []
     try:
         if http_requests > 0:
-            http_ops, http_duration = _run_http(port, http_requests, http_concurrency)
+            resources_before = _capture_process_resources(process)
+            http_measurement = _run_http(port, http_requests, http_concurrency)
+            resources_after = _capture_process_resources(process)
+            cpu_time_seconds, max_rss_bytes = _resource_delta(
+                resources_before,
+                resources_after,
+            )
             results.append(
-                ScenarioResult(
-                    server=server,
-                    scenario="http",
-                    operations=http_ops,
-                    duration_seconds=http_duration,
+                _measurement_to_result(
+                    server,
+                    "http",
+                    http_measurement,
+                    cpu_time_seconds=cpu_time_seconds,
+                    max_rss_bytes=max_rss_bytes,
                 )
             )
 
         if ws_clients > 0 and ws_messages > 0:
-            ws_ops, ws_duration = _run_ws(port, ws_clients, ws_messages)
+            resources_before = _capture_process_resources(process)
+            ws_measurement = _run_ws(port, ws_clients, ws_messages)
+            resources_after = _capture_process_resources(process)
+            cpu_time_seconds, max_rss_bytes = _resource_delta(
+                resources_before,
+                resources_after,
+            )
             results.append(
-                ScenarioResult(
-                    server=server,
-                    scenario="websocket",
-                    operations=ws_ops,
-                    duration_seconds=ws_duration,
+                _measurement_to_result(
+                    server,
+                    "websocket",
+                    ws_measurement,
+                    cpu_time_seconds=cpu_time_seconds,
+                    max_rss_bytes=max_rss_bytes,
                 )
             )
     finally:
@@ -515,12 +663,28 @@ def _aggregate_results(results: list[ScenarioResult]) -> list[ScenarioResult]:
     for (server, scenario), samples in sorted(grouped.items(), key=lambda entry: entry[0]):
         operations = sum(sample.operations for sample in samples)
         duration = sum(sample.duration_seconds for sample in samples)
+        failed_operations = sum(sample.failed_operations for sample in samples)
+        latency_seconds = tuple(latency for sample in samples for latency in sample.latency_seconds)
+        cpu_times = [sample.cpu_time_seconds for sample in samples]
+        cpu_time_seconds = (
+            sum(cpu_time for cpu_time in cpu_times if cpu_time is not None)
+            if all(cpu_time is not None for cpu_time in cpu_times)
+            else None
+        )
+        rss_values = [
+            sample.max_rss_bytes for sample in samples if sample.max_rss_bytes is not None
+        ]
+        max_rss_bytes = max(rss_values) if rss_values else None
         aggregated.append(
             ScenarioResult(
                 server=server,
                 scenario=scenario,
                 operations=operations,
                 duration_seconds=duration,
+                failed_operations=failed_operations,
+                latency_seconds=latency_seconds,
+                cpu_time_seconds=cpu_time_seconds,
+                max_rss_bytes=max_rss_bytes,
             )
         )
     return aggregated
@@ -538,11 +702,16 @@ def _sample_statistics(results: list[ScenarioResult]) -> dict[str, dict[str, dic
             "samples": len(samples),
             "mean": stats["mean"],
             "median": stats["median"],
+            "p95": stats["p95"],
             "p99": stats["p99"],
+            "max": stats["max"],
             "stddev": stats["stddev"],
             "ci_lower": stats["ci_lower"],
             "ci_upper": stats["ci_upper"],
         }
+        latency_samples = [latency for sample in samples for latency in sample.latency_seconds]
+        if latency_samples:
+            summary[scenario][server]["latency_seconds"] = _compute_statistics(latency_samples)
 
     for _scenario, by_server in summary.items():
         palfrey = by_server.get("palfrey")
@@ -579,7 +748,10 @@ def _compute_statistics(samples: list[float]) -> dict[str, float]:
         return {
             "mean": 0.0,
             "median": 0.0,
+            "p95": 0.0,
             "p99": 0.0,
+            "max": 0.0,
+            "min": 0.0,
             "stddev": 0.0,
             "ci_lower": 0.0,
             "ci_upper": 0.0,
@@ -590,11 +762,8 @@ def _compute_statistics(samples: list[float]) -> dict[str, float]:
 
     if len(samples) < 2:
         stddev_val = 0.0
-        p99_val = samples[0]
     else:
         stddev_val = statistics.stdev(samples)
-        quantiles = statistics.quantiles(samples, n=100)
-        p99_val = quantiles[-1] if quantiles else samples[-1]
 
     n = len(samples)
     stderr = stddev_val / math.sqrt(n) if n > 0 else 0.0
@@ -603,7 +772,10 @@ def _compute_statistics(samples: list[float]) -> dict[str, float]:
     return {
         "mean": mean_val,
         "median": median_val,
-        "p99": p99_val,
+        "p95": _percentile(samples, 95),
+        "p99": _percentile(samples, 99),
+        "max": max(samples),
+        "min": min(samples),
         "stddev": stddev_val,
         "ci_lower": mean_val - margin,
         "ci_upper": mean_val + margin,
@@ -615,6 +787,20 @@ def _save_json_output(data: dict[str, Any], output_path: Path) -> None:
         json.dumps(data, indent=2),
         encoding="utf-8",
     )
+
+
+def _format_optional(value: float | int | None, suffix: str = "") -> str:
+    if value is None:
+        return "n/a"
+    if isinstance(value, int):
+        return f"{value}{suffix}"
+    return f"{value:.3f}{suffix}"
+
+
+def _latency_ms(result: ScenarioResult, key: str) -> str:
+    if not result.latency_seconds:
+        return "n/a"
+    return f"{_compute_statistics(list(result.latency_seconds))[key] * 1000:.3f}"
 
 
 def _run_benchmark_phases(
@@ -652,18 +838,13 @@ def _run_benchmark_phases(
         for sample_index in range(sample_count):
             sample_label = f", sample {sample_index + 1}/{sample_count}" if sample_count > 1 else ""
             print(f"Phase: MEASURE (HTTP {http_requests} requests{sample_label})")
-            http_ops, http_duration = _run_http(port, http_requests, http_concurrency)
-            http_samples.append(
-                ScenarioResult(
-                    server=server,
-                    scenario="http",
-                    operations=http_ops,
-                    duration_seconds=http_duration,
-                )
+            http_result = _measurement_to_result(
+                server,
+                "http",
+                _run_http(port, http_requests, http_concurrency),
             )
-            results["measure_samples"].append(
-                http_ops / http_duration if http_duration > 0 else 0.0
-            )
+            http_samples.append(http_result)
+            results["measure_samples"].append(http_result.ops_per_second)
 
         http_aggregate = _aggregate_results(http_samples)[0]
         results["http"] = {
@@ -685,16 +866,13 @@ def _run_benchmark_phases(
         for sample_index in range(sample_count):
             sample_label = f", sample {sample_index + 1}/{sample_count}" if sample_count > 1 else ""
             print(f"Phase: MEASURE (WS {ws_messages} messages{sample_label})")
-            ws_ops, ws_duration = _run_ws(port, ws_clients, ws_messages)
-            ws_samples.append(
-                ScenarioResult(
-                    server=server,
-                    scenario="websocket",
-                    operations=ws_ops,
-                    duration_seconds=ws_duration,
-                )
+            ws_result = _measurement_to_result(
+                server,
+                "websocket",
+                _run_ws(port, ws_clients, ws_messages),
             )
-            results["measure_samples"].append(ws_ops / ws_duration if ws_duration > 0 else 0.0)
+            ws_samples.append(ws_result)
+            results["measure_samples"].append(ws_result.ops_per_second)
 
         ws_aggregate = _aggregate_results(ws_samples)[0]
         results["websocket"] = {
@@ -798,12 +976,20 @@ def main() -> None:
                     print(f"Benchmark for {server} failed: {exc}")
 
     display_results = _aggregate_results(results)
-    print("\n| Scenario | Server | Operations | Duration (s) | Ops/s |")
-    print("| --- | --- | ---: | ---: | ---: |")
+    print(
+        "\n| Scenario | Server | Operations | Failures | Duration (s) | Ops/s | "
+        "p50 ms | p95 ms | p99 ms | Max ms | CPU s | Max RSS bytes |"
+    )
+    print("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
     for result in sorted(display_results, key=lambda entry: (entry.scenario, entry.server)):
         print(
             f"| {result.scenario} | {result.server} | {result.operations} | "
-            f"{result.duration_seconds:.4f} | {result.ops_per_second:.2f} |"
+            f"{result.failed_operations} | {result.duration_seconds:.4f} | "
+            f"{result.ops_per_second:.2f} | {_latency_ms(result, 'median')} | "
+            f"{_latency_ms(result, 'p95')} | {_latency_ms(result, 'p99')} | "
+            f"{_latency_ms(result, 'max')} | "
+            f"{_format_optional(result.cpu_time_seconds)} | "
+            f"{_format_optional(result.max_rss_bytes)} |"
         )
 
     for scenario in ("http", "websocket"):

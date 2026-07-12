@@ -413,6 +413,7 @@ async def test_handle_connection_switches_to_websocket_upgrade(monkeypatch) -> N
         http_version="HTTP/1.1",
         headers=[("upgrade", "websocket"), ("connection", "Upgrade")],
         body=b"",
+        is_websocket_upgrade=True,
     )
 
     calls = {"count": 0}
@@ -428,7 +429,6 @@ async def test_handle_connection_switches_to_websocket_upgrade(monkeypatch) -> N
         captured_kwargs.update(kwargs)
 
     monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
-    monkeypatch.setattr(server_module, "is_websocket_upgrade", lambda req: True)
     monkeypatch.setattr(server_module, "handle_websocket", fake_handle_websocket)
 
     await server._handle_connection(asyncio.StreamReader(), writer)
@@ -454,6 +454,7 @@ async def test_handle_connection_uses_custom_ws_protocol_class(monkeypatch) -> N
         http_version="HTTP/1.1",
         headers=[("upgrade", "websocket"), ("connection", "Upgrade")],
         body=b"",
+        is_websocket_upgrade=True,
     )
     calls = {"count": 0}
 
@@ -473,7 +474,6 @@ async def test_handle_connection_uses_custom_ws_protocol_class(monkeypatch) -> N
         regular_ws_calls.append("ws")
 
     monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
-    monkeypatch.setattr(server_module, "is_websocket_upgrade", lambda req: True)
     monkeypatch.setattr(PalfreyServer, "_run_custom_ws_protocol", fake_run_custom_ws_protocol)
     monkeypatch.setattr(server_module, "handle_websocket", fake_handle_websocket)
 
@@ -497,6 +497,7 @@ async def test_handle_connection_returns_400_for_upgrade_when_ws_backend_disable
         http_version="HTTP/1.1",
         headers=[("upgrade", "websocket"), ("connection", "Upgrade")],
         body=b"",
+        is_websocket_upgrade=True,
     )
     calls = {"count": 0}
 
@@ -512,7 +513,6 @@ async def test_handle_connection_returns_400_for_upgrade_when_ws_backend_disable
         called.append("ws")
 
     monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
-    monkeypatch.setattr(server_module, "is_websocket_upgrade", lambda req: True)
     monkeypatch.setattr(server_module, "handle_websocket", fake_handle_websocket)
 
     await server._handle_connection(asyncio.StreamReader(), writer)
@@ -808,6 +808,32 @@ async def test_handle_connection_processes_pipelined_keepalive_requests() -> Non
     assert payload.count(b"HTTP/1.1 200 OK") == 2
     assert b"/one" in payload
     assert b"/two" in payload
+    assert writer.closed is True
+
+
+@pytest.mark.asyncio
+async def test_handle_connection_common_http_path_avoids_background_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
+    server._resolved_app = _resolved_app()
+    writer = DummyWriter()
+    reader = asyncio.StreamReader()
+    reader.feed_data(
+        b"GET /one HTTP/1.1\r\nHost: x\r\n\r\n"
+        b"GET /two HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+    )
+    reader.feed_eof()
+
+    async def fail_background_reader(*args, **kwargs):
+        raise AssertionError("common HTTP path should not start the background reader")
+
+    monkeypatch.setattr(PalfreyServer, "_queue_connection_requests", fail_background_reader)
+
+    await server._handle_connection(reader, writer)
+
+    payload = b"".join(writer.writes)
+    assert payload.count(b"HTTP/1.1 200 OK") == 2
     assert writer.closed is True
 
 

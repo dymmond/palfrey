@@ -7,22 +7,26 @@ Benchmark numbers are useful only when they are reproducible and tied to a speci
 Command:
 
 ```bash
-hatch run python benchmarks/run.py --http-requests 5000
+hatch run python benchmarks/run.py --http-requests 100000 --http-concurrency 20 --ws-clients 0 --ws-messages 0 --samples 3 --output benchmarks/results/http-latest.json
 ```
 
-Sample output:
+Runtime modes are explicit: Palfrey runs with its default `--http auto` path, while the
+comparison server runs with `--http httptools`; both use `uvloop`, disabled access logs,
+and disabled proxy-header parsing.
 
-| Scenario | Server | Operations | Duration (s) | Ops/s |
-| --- | --- | ---: | ---: | ---: |
-| http | palfrey | 5000 | 0.1426 | 35063.12 |
-| http | uvicorn | 5000 | 0.2721 | 18374.60 |
-| websocket | palfrey | 1000 | 0.0306 | 32631.40 |
-| websocket | uvicorn | 1000 | 0.0702 | 14235.33 |
+Output shape:
+
+| Scenario | Server | Operations | Failures | Duration (s) | Ops/s | p50 ms | p95 ms | p99 ms | Max ms | CPU s | Max RSS bytes |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| http | palfrey | ... | ... | ... | ... | ... | ... | ... | ... | ... | ... |
+| http | uvicorn | ... | ... | ... | ... | ... | ... | ... | ... | ... | ... |
+| websocket | palfrey | ... | ... | ... | ... | ... | ... | ... | ... | ... | ... |
+| websocket | uvicorn | ... | ... | ... | ... | ... | ... | ... | ... | ... | ... |
 
 Relative throughput in this run:
 
-- http: `1.908x` (Palfrey / Uvicorn)
-- websocket: `2.292x` (Palfrey / Uvicorn)
+- http: `...x` (Palfrey / Uvicorn)
+- websocket: `...x` (Palfrey / Uvicorn)
 
 Important:
 These numbers are environment-specific and not universal guarantees.
@@ -33,6 +37,7 @@ These numbers are environment-specific and not universal guarantees.
 - keep commands and environment details explicit
 - run multiple samples and inspect variance
 - include failure/error counts, not only throughput
+- retain raw JSON output when making performance claims
 
 ## Suggested scenario matrix
 
@@ -50,8 +55,10 @@ For each scenario, record:
 - Python and dependency versions
 - operations/sec
 - p50/p95/p99 latency
+- maximum latency
 - CPU and memory
 - error count
+- raw JSON output path
 
 ## Communication rule
 

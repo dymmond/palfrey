@@ -67,7 +67,7 @@ def test_encode_http_response_chunks_chunked_frames_are_individual_parts() -> No
     assert streamed[-7:] == [b"3\r\n", b"abc", b"\r\n", b"3\r\n", b"def", b"\r\n", b"0\r\n\r\n"]
 
 
-def test_write_response_streams_with_writelines_and_preserves_keep_alive_header() -> None:
+def test_write_response_streams_with_writelines_and_close_header() -> None:
     async def scenario() -> None:
         server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
         writer = _Writer()

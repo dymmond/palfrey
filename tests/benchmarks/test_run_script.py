@@ -71,6 +71,24 @@ def test_run_http_raises_when_worker_thread_fails(
         bench_run._run_http(port=8000, requests=10, concurrency=2)
 
 
+def test_run_http_collects_latency_samples(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_http_worker(port: int, requests: int) -> bench_run.OperationRun:
+        return bench_run.OperationRun(
+            operations=requests,
+            duration_seconds=0.1,
+            latency_seconds=tuple(0.01 for _ in range(requests)),
+        )
+
+    monkeypatch.setattr(bench_run, "_http_worker", fake_http_worker)
+
+    measurement = bench_run._run_http(port=8000, requests=5, concurrency=2)
+
+    assert measurement.operations == 5
+    assert len(measurement.latency_seconds) == 5
+
+
 def test_run_ws_raises_when_worker_thread_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -83,6 +101,24 @@ def test_run_ws_raises_when_worker_thread_fails(
         bench_run._run_ws(port=8000, clients=2, messages_per_client=10)
 
 
+def test_run_ws_collects_latency_samples(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_ws_worker(port: int, messages: int) -> bench_run.OperationRun:
+        return bench_run.OperationRun(
+            operations=messages,
+            duration_seconds=0.1,
+            latency_seconds=tuple(0.02 for _ in range(messages)),
+        )
+
+    monkeypatch.setattr(bench_run, "_ws_worker", fake_ws_worker)
+
+    measurement = bench_run._run_ws(port=8000, clients=3, messages_per_client=4)
+
+    assert measurement.operations == 12
+    assert len(measurement.latency_seconds) == 12
+
+
 def test_build_command_uses_optimized_profiles() -> None:
     palfrey_cmd = bench_run._build_command("palfrey", 8123)
     uvicorn_cmd = bench_run._build_command("uvicorn", 8123)
@@ -92,7 +128,7 @@ def test_build_command_uses_optimized_profiles() -> None:
     assert "--no-proxy-headers" in palfrey_cmd
     assert "--no-proxy-headers" in uvicorn_cmd
 
-    assert palfrey_cmd[palfrey_cmd.index("--http") + 1] == "httptools"
+    assert palfrey_cmd[palfrey_cmd.index("--http") + 1] == "auto"
     assert uvicorn_cmd[uvicorn_cmd.index("--http") + 1] == "httptools"
 
     assert palfrey_cmd[palfrey_cmd.index("--ws") + 1] == "websockets"
@@ -150,6 +186,41 @@ def test_benchmark_server_skips_disabled_scenarios(
 
     assert results == []
     assert call_counts == {"http": 0, "ws": 0, "stop": 1}
+
+
+def test_benchmark_server_attaches_process_resource_delta(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_process = object()
+    snapshots = [
+        bench_run.ProcessResources(cpu_time_seconds=1.0, rss_bytes=100),
+        bench_run.ProcessResources(cpu_time_seconds=1.75, rss_bytes=150),
+    ]
+
+    monkeypatch.setattr(bench_run, "_available_port", lambda: 8123)
+    monkeypatch.setattr(bench_run, "_spawn_server", lambda server, port: fake_process)
+    monkeypatch.setattr(bench_run, "_stop_server", lambda process: None)
+    monkeypatch.setattr(bench_run, "_capture_process_resources", lambda process: snapshots.pop(0))
+    monkeypatch.setattr(
+        bench_run,
+        "_run_http",
+        lambda port, requests, concurrency: bench_run.OperationRun(
+            operations=requests,
+            duration_seconds=0.25,
+            latency_seconds=(0.01,),
+        ),
+    )
+
+    results = bench_run._benchmark_server(
+        "palfrey",
+        http_requests=10,
+        http_concurrency=2,
+        ws_clients=0,
+        ws_messages=0,
+    )
+
+    assert results[0].cpu_time_seconds == pytest.approx(0.75)
+    assert results[0].max_rss_bytes == 150
 
 
 def test_main_samples_repeats_simple_mode(

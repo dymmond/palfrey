@@ -179,7 +179,10 @@ class TestStatisticalReporting:
 
         assert "mean" in stats
         assert "median" in stats
+        assert "p95" in stats
         assert "p99" in stats
+        assert "max" in stats
+        assert "min" in stats
         assert "stddev" in stats
         assert "ci_lower" in stats
         assert "ci_upper" in stats
@@ -187,7 +190,10 @@ class TestStatisticalReporting:
         # Sanity checks
         assert stats["mean"] > 0
         assert stats["median"] > 0
+        assert stats["p95"] >= stats["median"]
         assert stats["p99"] >= stats["median"]
+        assert stats["max"] >= stats["p99"]
+        assert stats["min"] <= stats["median"]
         assert stats["stddev"] >= 0
 
     def test_statistics_match_stdlib(self, mock_benchmark_samples):
@@ -229,10 +235,10 @@ class TestStatisticalReporting:
         from benchmarks.run import ScenarioResult, _sample_statistics
 
         results = [
-            ScenarioResult("uvicorn", "http", 100, 1.0),
-            ScenarioResult("uvicorn", "http", 100, 2.0),
-            ScenarioResult("palfrey", "http", 100, 0.5),
-            ScenarioResult("palfrey", "http", 100, 1.0),
+            ScenarioResult("uvicorn", "http", 100, 1.0, latency_seconds=(0.1, 0.2)),
+            ScenarioResult("uvicorn", "http", 100, 2.0, latency_seconds=(0.2, 0.3)),
+            ScenarioResult("palfrey", "http", 100, 0.5, latency_seconds=(0.05, 0.06)),
+            ScenarioResult("palfrey", "http", 100, 1.0, latency_seconds=(0.07, 0.08)),
         ]
 
         stats = _sample_statistics(results)
@@ -240,6 +246,8 @@ class TestStatisticalReporting:
         assert stats["http"]["uvicorn"]["samples"] == 2
         assert stats["http"]["palfrey"]["samples"] == 2
         assert stats["http"]["palfrey"]["mean"] > stats["http"]["uvicorn"]["mean"]
+        assert "latency_seconds" in stats["http"]["palfrey"]
+        assert stats["http"]["palfrey"]["latency_seconds"]["p95"] >= 0.07
         assert stats["http"]["ratio"]["palfrey_over_uvicorn_mean"] > 1.0
 
     def test_aggregate_results_combines_matching_samples(self):
@@ -247,17 +255,66 @@ class TestStatisticalReporting:
         from benchmarks.run import ScenarioResult, _aggregate_results
 
         results = [
-            ScenarioResult("palfrey", "http", 100, 1.0),
-            ScenarioResult("palfrey", "http", 100, 3.0),
+            ScenarioResult(
+                "palfrey",
+                "http",
+                100,
+                1.0,
+                latency_seconds=(0.01,),
+                cpu_time_seconds=0.1,
+                max_rss_bytes=100,
+            ),
+            ScenarioResult(
+                "palfrey",
+                "http",
+                100,
+                3.0,
+                failed_operations=1,
+                latency_seconds=(0.02,),
+                cpu_time_seconds=0.2,
+                max_rss_bytes=120,
+            ),
             ScenarioResult("palfrey", "websocket", 50, 0.5),
         ]
 
         aggregated = _aggregate_results(results)
 
         assert aggregated == [
-            ScenarioResult("palfrey", "http", 200, 4.0),
+            ScenarioResult(
+                "palfrey",
+                "http",
+                200,
+                4.0,
+                failed_operations=1,
+                latency_seconds=(0.01, 0.02),
+                cpu_time_seconds=0.30000000000000004,
+                max_rss_bytes=120,
+            ),
             ScenarioResult("palfrey", "websocket", 50, 0.5),
         ]
+
+    def test_result_to_dict_includes_latency_and_resource_metrics(self):
+        """JSON results should retain raw latency and resource evidence."""
+        from benchmarks.run import ScenarioResult, _result_to_dict
+
+        payload = _result_to_dict(
+            ScenarioResult(
+                "palfrey",
+                "http",
+                2,
+                0.5,
+                latency_seconds=(0.01, 0.02),
+                cpu_time_seconds=0.25,
+                max_rss_bytes=123456,
+            )
+        )
+
+        assert payload["successful_operations"] == 2
+        assert payload["failed_operations"] == 0
+        assert payload["latency_seconds"]["median"] == 0.015
+        assert payload["latency_samples_seconds"] == [0.01, 0.02]
+        assert payload["cpu_time_seconds"] == 0.25
+        assert payload["max_rss_bytes"] == 123456
 
 
 class TestReproducibilityFeatures:

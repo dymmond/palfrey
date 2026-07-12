@@ -728,6 +728,9 @@ def test_http_keep_alive_reuse_matches_uvicorn() -> None:
         == [_decode_http_body(headers, body) for _status, headers, body in uvicorn_responses]
         == [b"/one", b"/two"]
     )
+    assert [headers.get("connection") for _status, headers, _body in palfrey_responses] == [
+        headers.get("connection") for _status, headers, _body in uvicorn_responses
+    ]
 
 
 def test_http_malformed_forwarded_headers_match_uvicorn() -> None:

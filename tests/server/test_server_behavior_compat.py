@@ -523,7 +523,7 @@ def test_handle_connection_respects_keep_alive_for_multiple_requests(
             return req2
         return None
 
-    async def fake_handle_request(self, request, context, writer=None):
+    async def fake_handle_request(self, request, context, writer=None, expect_100_continue=None):
         return HTTPResponse(
             status=200, headers=[(b"content-type", b"text/plain")], body_chunks=[b"ok"]
         )

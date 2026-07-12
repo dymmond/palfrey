@@ -5,6 +5,19 @@ from __future__ import annotations
 def parse_header_items(headers: list[str]) -> list[tuple[str, str]]: ...
 def split_csv_values(value: str) -> list[str]: ...
 def parse_request_head(data: bytes) -> tuple[bytes, bytes, bytes, list[tuple[bytes, bytes]]]: ...
+def parse_request_head_normalized(
+    data: bytes,
+) -> tuple[
+    bytes,
+    bytes,
+    bytes,
+    list[tuple[bytes, bytes]],
+    bytes | None,
+    bytes,
+    bytes,
+    bytes,
+    bool,
+]: ...
 def unmask_websocket_payload(
     payload: bytes | bytearray | memoryview, masking_key: bytes
 ) -> bytes: ...

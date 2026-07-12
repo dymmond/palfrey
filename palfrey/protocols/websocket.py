@@ -648,6 +648,17 @@ async def _handle_websocket_core(
     connect_sent = not connect_event_first
     transport = getattr(writer, "transport", None) or getattr(writer, "_transport", None)
     high_watermark_bytes = 262_144
+    close_event = asyncio.Event()
+    pong_received = asyncio.Event()
+    keepalive_task: asyncio.Task[None] | None = None
+    pending_ping_payload: bytes | None = None
+    ping_counter = 0
+
+    def _mark_closed(code: int) -> None:
+        nonlocal closed, close_disconnect_code
+        closed = True
+        close_disconnect_code = code
+        close_event.set()
 
     async def _flush_if_needed(*, force: bool = False) -> None:
         """Flushes the underlying stream writer if the buffer exceeds the watermark.
@@ -666,6 +677,93 @@ async def _handle_websocket_core(
         if callable(get_size) and int(get_size()) >= high_watermark_bytes:
             await writer.drain()
 
+    async def _read_network_chunk() -> bytes | None:
+        if close_event.is_set():
+            return None
+
+        read_task = asyncio.create_task(reader.read(65_536))
+        close_task = asyncio.create_task(close_event.wait())
+        try:
+            done, pending = await asyncio.wait(
+                {read_task, close_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            if close_task in done:
+                return None
+            return read_task.result()
+        finally:
+            for task in (read_task, close_task):
+                if not task.done():
+                    task.cancel()
+
+    async def _wait_for_pong(timeout: float) -> bool:
+        pong_task = asyncio.create_task(pong_received.wait())
+        close_task = asyncio.create_task(close_event.wait())
+        try:
+            done, pending = await asyncio.wait(
+                {pong_task, close_task},
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            return pong_task in done or close_task in done
+        finally:
+            for task in (pong_task, close_task):
+                if not task.done():
+                    task.cancel()
+
+    async def _keepalive_ping_loop() -> None:
+        nonlocal pending_ping_payload, ping_counter
+        ping_interval = config.ws_ping_interval
+        if ping_interval is None or ping_interval <= 0:
+            return
+
+        ping_timeout = config.ws_ping_timeout
+        while True:
+            await asyncio.sleep(float(ping_interval))
+            if closed:
+                return
+
+            pong_received.clear()
+            ping_counter += 1
+            pending_ping_payload = struct.pack("!I", ping_counter)
+            _write_frame(writer, 0x9, pending_ping_payload)
+            await _flush_if_needed(force=True)
+
+            if ping_timeout is None:
+                continue
+            if await _wait_for_pong(float(ping_timeout)):
+                if closed:
+                    return
+                continue
+
+            pending_ping_payload = None
+            _mark_closed(1011)
+            _write_frame(
+                writer,
+                0x8,
+                struct.pack("!H", 1011) + b"keepalive ping timeout",
+            )
+            await _flush_if_needed(force=True)
+            return
+
+    def _start_keepalive() -> None:
+        nonlocal keepalive_task
+        if (
+            config.ws_ping_interval is None
+            or config.ws_ping_interval <= 0
+            or keepalive_task is not None
+        ):
+            return
+        keepalive_task = asyncio.create_task(_keepalive_ping_loop())
+
     async def receive() -> Message:
         """The ASGI receive channel for the WebSocket connection.
 
@@ -677,6 +775,7 @@ async def _handle_websocket_core(
             Message: An ASGI-compliant WebSocket message.
         """
         nonlocal closed, close_disconnect_code, fragmented_opcode, connect_sent
+        nonlocal pending_ping_payload
 
         if not connect_sent:
             connect_sent = True
@@ -693,20 +792,22 @@ async def _handle_websocket_core(
                     del read_buffer[:consumed]
                     break
 
-                chunk = await reader.read(65_536)
+                chunk = await _read_network_chunk()
+                if chunk is None:
+                    return {"type": "websocket.disconnect", "code": close_disconnect_code}
                 if not chunk:
-                    closed = True
+                    _mark_closed(1005 if accepted else 1006)
                     return {
                         "type": "websocket.disconnect",
-                        "code": 1005 if accepted else 1006,
+                        "code": close_disconnect_code,
                     }
                 read_buffer.extend(chunk)
 
             if frame.opcode == 0x8:
-                closed = True
                 code = 1000
                 if len(frame.payload) >= 2:
                     code = struct.unpack("!H", frame.payload[:2])[0]
+                _mark_closed(code)
                 return {"type": "websocket.disconnect", "code": code}
 
             if frame.opcode == 0x9:
@@ -715,10 +816,14 @@ async def _handle_websocket_core(
                 continue
 
             if frame.opcode == 0xA:
+                if pending_ping_payload is not None and frame.payload == pending_ping_payload:
+                    pending_ping_payload = None
+                    pong_received.set()
                 continue
 
             if frame.opcode == 0x0:
                 if fragmented_opcode is None:
+                    _mark_closed(1002)
                     return {"type": "websocket.disconnect", "code": 1002}
                 fragmented_chunks.append(frame.payload)
                 if not frame.fin:
@@ -734,10 +839,12 @@ async def _handle_websocket_core(
                             "text": payload.decode("utf-8"),
                         }
                     except UnicodeDecodeError:
+                        _mark_closed(1007)
                         return {"type": "websocket.disconnect", "code": 1007}
                 return {"type": "websocket.receive", "bytes": payload}
 
             if (frame.opcode & 0x08) == 0 and frame.opcode not in {0x1, 0x2}:
+                _mark_closed(1002)
                 return {"type": "websocket.disconnect", "code": 1002}
 
             if frame.opcode == 0x1:
@@ -751,6 +858,7 @@ async def _handle_websocket_core(
                         "text": frame.payload.decode("utf-8"),
                     }
                 except UnicodeDecodeError:
+                    _mark_closed(1007)
                     return {"type": "websocket.disconnect", "code": 1007}
 
             if frame.opcode == 0x2:
@@ -793,6 +901,7 @@ async def _handle_websocket_core(
             writer.write(response)
             await _flush_if_needed(force=True)
             accepted = True
+            _start_keepalive()
             return
 
         if message_type == "websocket.http.response.start":
@@ -839,8 +948,7 @@ async def _handle_websocket_core(
 
             writer.write(b"\r\n".join(header_lines) + b"\r\n\r\n" + payload)
             await _flush_if_needed(force=True)
-            closed = True
-            close_disconnect_code = 1006
+            _mark_closed(1006)
             return
 
         if message_type == "websocket.send":
@@ -860,8 +968,7 @@ async def _handle_websocket_core(
                     b"HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
                 )
                 await _flush_if_needed(force=True)
-                closed = True
-                close_disconnect_code = 1006
+                _mark_closed(1006)
                 return
 
             code = int(message.get("code", 1000))
@@ -869,17 +976,22 @@ async def _handle_websocket_core(
             payload = struct.pack("!H", code) + reason
             _write_frame(writer, 0x8, payload)
             await _flush_if_needed(force=True)
-            closed = True
-            close_disconnect_code = code
+            _mark_closed(code)
             return
 
         raise RuntimeError(f"Unsupported websocket ASGI message type: {message_type}")
 
-    await app(scope, receive, send)
+    try:
+        await app(scope, receive, send)
 
-    if accepted and not closed:
-        _write_frame(writer, 0x8, struct.pack("!H", 1000))
-        await _flush_if_needed(force=True)
+        if accepted and not closed:
+            _write_frame(writer, 0x8, struct.pack("!H", 1000))
+            await _flush_if_needed(force=True)
+    finally:
+        if keepalive_task is not None:
+            keepalive_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await keepalive_task
 
 
 async def _handle_websocket_websockets_backend(

@@ -478,7 +478,7 @@ def test_handle_websocket_keepalive_pong_keeps_connection_open() -> None:
     asyncio.run(scenario())
 
     assert _server_frame_payloads(writer.writes, 0x9)
-    assert disconnects == [{"type": "websocket.disconnect", "code": 1000}]
+    assert disconnects == [{"type": "websocket.disconnect", "code": 1000, "reason": ""}]
 
 
 @pytest.mark.parametrize("ping_interval", [None, 0.0])
@@ -2025,6 +2025,39 @@ def test_websockets_backend_close_before_accept_reports_disconnect_1006(
     assert rejected.status == 403
 
 
+def test_websockets_backend_client_close_includes_empty_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="websockets")
+    writer = CaptureWriterWithTransport()
+    _install_fake_websockets_backend(monkeypatch)
+
+    async def app(scope, receive, send):
+        assert await receive() == {"type": "websocket.connect"}
+        await send({"type": "websocket.accept"})
+        assert await receive() == {
+            "type": "websocket.disconnect",
+            "code": 1000,
+            "reason": "",
+        }
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1),
+            server=("127.0.0.1", 2),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+
+
 def test_websockets_backend_rejects_messages_after_close(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2366,7 +2399,11 @@ def test_websockets_sansio_backend_handles_pong_and_close_without_reason(
     async def app(scope, receive, send):
         assert await receive() == {"type": "websocket.connect"}
         await send({"type": "websocket.accept"})
-        assert await receive() == {"type": "websocket.disconnect", "code": 1000}
+        assert await receive() == {
+            "type": "websocket.disconnect",
+            "code": 1000,
+            "reason": "",
+        }
 
     async def scenario() -> None:
         reader = await make_stream_reader(b"x")
@@ -2487,7 +2524,11 @@ def test_websockets_sansio_backend_parser_exception_without_reason(
     async def app(scope, receive, send):
         assert await receive() == {"type": "websocket.connect"}
         await send({"type": "websocket.accept"})
-        assert await receive() == {"type": "websocket.disconnect", "code": 1002}
+        assert await receive() == {
+            "type": "websocket.disconnect",
+            "code": 1002,
+            "reason": "",
+        }
 
     async def scenario() -> None:
         reader = await make_stream_reader(b"x")

@@ -705,6 +705,36 @@ def test_core_backend_close_frame_without_code_defaults_to_1000() -> None:
     asyncio.run(scenario())
 
 
+def test_core_backend_close_frame_with_code_includes_empty_reason() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="none")
+    writer = CaptureWriter()
+    incoming = _masked_frame(0x8, struct.pack("!H", 1000))
+
+    async def app(scope, receive, send):
+        await send({"type": "websocket.accept"})
+        assert await receive() == {
+            "type": "websocket.disconnect",
+            "code": 1000,
+            "reason": "",
+        }
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(incoming)
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1234),
+            server=("127.0.0.1", 8000),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+
+
 def test_core_backend_ignores_pong_then_reads_next_frame() -> None:
     config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="none")
     writer = CaptureWriter()

@@ -536,7 +536,11 @@ def test_wsproto_backend_close_after_accept_and_receive_closed(
         await send({"type": "websocket.accept"})
         await send({"type": "websocket.close", "code": 1001, "reason": "bye"})
         message = await receive()
-        assert message == {"type": "websocket.disconnect", "code": 1001}
+        assert message == {
+            "type": "websocket.disconnect",
+            "code": 1001,
+            "reason": "bye",
+        }
 
     async def scenario() -> None:
         reader = await make_stream_reader(b"")
@@ -813,7 +817,11 @@ def test_wsproto_backend_binary_send_path_uses_bytes_payload(
     async def app(scope, receive, send):
         await send({"type": "websocket.accept"})
         await send({"type": "websocket.send", "bytes": bytearray(b"bin")})
-        assert await receive() == {"type": "websocket.disconnect", "code": 1000}
+        assert await receive() == {
+            "type": "websocket.disconnect",
+            "code": 1000,
+            "reason": "",
+        }
 
     async def scenario() -> None:
         reader = await make_stream_reader(b"x")
@@ -956,7 +964,7 @@ def test_wsproto_backend_ignores_unknown_events_then_disconnects_on_eof(
     asyncio.run(scenario())
 
 
-def test_wsproto_backend_close_event_without_reason_omits_reason_field(
+def test_wsproto_backend_close_event_without_reason_includes_empty_reason(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _install_fake_wsproto(
@@ -969,7 +977,11 @@ def test_wsproto_backend_close_event_without_reason_omits_reason_field(
 
     async def app(scope, receive, send):
         await send({"type": "websocket.accept"})
-        assert await receive() == {"type": "websocket.disconnect", "code": 1000}
+        assert await receive() == {
+            "type": "websocket.disconnect",
+            "code": 1000,
+            "reason": "",
+        }
 
     async def scenario() -> None:
         reader = await make_stream_reader(b"x")

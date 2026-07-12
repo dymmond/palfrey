@@ -147,6 +147,27 @@ def _http_keep_alive_exchange(
         return responses
 
 
+def _http_keep_alive_timeout_exchange(
+    port: int,
+) -> tuple[int, dict[str, str], bytes, bool]:
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as conn:
+        request = f"GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: keep-alive\r\n\r\n"
+        conn.sendall(request.encode("ascii"))
+        status, headers, body = _read_http_response(conn)
+
+        deadline = time.monotonic() + 3.0
+        closed = False
+        conn.settimeout(0.1)
+        while time.monotonic() < deadline:
+            try:
+                data = conn.recv(1)
+            except TimeoutError:
+                continue
+            closed = data == b""
+            break
+        return status, headers, body, closed
+
+
 def _decode_http_body(headers: dict[str, str], body: bytes) -> bytes:
     transfer_encoding = headers.get("transfer-encoding", "").lower()
     if "chunked" not in transfer_encoding:
@@ -653,6 +674,48 @@ def test_http_keep_alive_reuse_matches_uvicorn() -> None:
         == [_decode_http_body(headers, body) for _status, headers, body in uvicorn_responses]
         == [b"/one", b"/two"]
     )
+
+
+def test_http_keep_alive_timeout_matches_uvicorn() -> None:
+    uvicorn_pythonpath = _uvicorn_pythonpath()
+    if uvicorn_pythonpath is None and importlib.util.find_spec("uvicorn") is None:
+        pytest.skip("uvicorn is not installed and local uvicorn repo is unavailable")
+    if not _cli_supports_option(
+        "uvicorn",
+        "--timeout-keep-alive",
+        pythonpath=uvicorn_pythonpath,
+    ):
+        pytest.skip("uvicorn CLI does not support --timeout-keep-alive in this environment")
+    if not _cli_supports_option("palfrey", "--timeout-keep-alive"):
+        pytest.skip("palfrey CLI does not support --timeout-keep-alive in this environment")
+
+    extra_args = ["--timeout-keep-alive", "1"]
+    with _spawn_server(
+        "uvicorn",
+        "tests.fixtures.apps:http_app",
+        extra_args=extra_args,
+        pythonpath=uvicorn_pythonpath,
+    ) as (_uvicorn_process, uvicorn_port):
+        uvicorn_status, uvicorn_headers, uvicorn_body, uvicorn_closed = (
+            _http_keep_alive_timeout_exchange(uvicorn_port)
+        )
+
+    with _spawn_server(
+        "palfrey",
+        "tests.fixtures.apps:http_app",
+        extra_args=extra_args,
+    ) as (_palfrey_process, palfrey_port):
+        palfrey_status, palfrey_headers, palfrey_body, palfrey_closed = (
+            _http_keep_alive_timeout_exchange(palfrey_port)
+        )
+
+    assert palfrey_status == uvicorn_status == 200
+    assert (
+        _decode_http_body(palfrey_headers, palfrey_body)
+        == _decode_http_body(uvicorn_headers, uvicorn_body)
+        == b"ok"
+    )
+    assert palfrey_closed == uvicorn_closed is True
 
 
 def test_http_limit_concurrency_rejection_matches_uvicorn() -> None:

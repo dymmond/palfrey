@@ -119,6 +119,8 @@ def build_websocket_scope(
     root_path: str,
     is_tls: bool,
     protocol_header: str | None = None,
+    app_state: dict[str, Any] | None = None,
+    asgi_version: str = "3.0",
 ) -> Scope:
     """
     Construct an ASGI scope dictionary for a WebSocket connection.
@@ -134,6 +136,9 @@ def build_websocket_scope(
         root_path (str): The ASGI root path.
         is_tls (bool): True if the connection is encrypted.
         protocol_header (str | None): Optional pre-extracted protocol header.
+        app_state (dict[str, Any] | None): Lifespan state to shallow-copy into
+            the per-connection scope.
+        asgi_version (str): ASGI callable version reported in the scope.
 
     Returns:
         Scope: A dictionary representing the connection scope.
@@ -153,7 +158,7 @@ def build_websocket_scope(
 
     return {
         "type": "websocket",
-        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "asgi": {"version": asgi_version, "spec_version": "2.3"},
         "http_version": "1.1",
         "scheme": "wss" if is_tls else "ws",
         "path": full_path,
@@ -166,7 +171,7 @@ def build_websocket_scope(
         "client": client,
         "server": server,
         "subprotocols": subprotocols,
-        "state": {},
+        "state": dict(app_state or {}),
         "extensions": {"websocket.http.response": {}},
     }
 
@@ -601,6 +606,8 @@ async def _handle_websocket_core(
     server: ServerAddress,
     is_tls: bool,
     connect_event_first: bool = False,
+    app_state: dict[str, Any] | None = None,
+    asgi_version: str = "3.0",
 ) -> None:
     """
     Execute the core Palfrey WebSocket backend handler.
@@ -623,6 +630,8 @@ async def _handle_websocket_core(
         root_path=config.root_path,
         is_tls=is_tls,
         protocol_header=headers_map.get("sec-websocket-protocol"),
+        app_state=app_state,
+        asgi_version=asgi_version,
     )
 
     accepted = False
@@ -884,6 +893,8 @@ async def _handle_websocket_websockets_backend(
     client: ClientAddress,
     server: ServerAddress,
     is_tls: bool,
+    app_state: dict[str, Any] | None = None,
+    asgi_version: str = "3.0",
 ) -> None:
     """
     Handle the WebSocket connection using the 'websockets' asyncio-based backend.
@@ -917,6 +928,8 @@ async def _handle_websocket_websockets_backend(
             server=server,
             is_tls=is_tls,
             connect_event_first=True,
+            app_state=app_state,
+            asgi_version=asgi_version,
         )
         return
 
@@ -1008,6 +1021,8 @@ async def _handle_websocket_websockets_backend(
         server=server,
         root_path=config.root_path,
         is_tls=is_tls,
+        app_state=app_state,
+        asgi_version=asgi_version,
     )
 
     handshake_started = asyncio.Event()
@@ -1276,6 +1291,8 @@ async def _handle_websocket_websockets_sansio_backend(
     client: ClientAddress,
     server: ServerAddress,
     is_tls: bool,
+    app_state: dict[str, Any] | None = None,
+    asgi_version: str = "3.0",
 ) -> None:
     """
     Handle the WebSocket connection using the 'websockets' sans-io implementation.
@@ -1376,6 +1393,8 @@ async def _handle_websocket_websockets_sansio_backend(
         server=server,
         root_path=config.root_path,
         is_tls=is_tls,
+        app_state=app_state,
+        asgi_version=asgi_version,
     )
 
     queue: asyncio.Queue[Message] = asyncio.Queue()
@@ -1751,6 +1770,8 @@ async def _handle_websocket_wsproto_backend(
     client: ClientAddress,
     server: ServerAddress,
     is_tls: bool,
+    app_state: dict[str, Any] | None = None,
+    asgi_version: str = "3.0",
 ) -> None:
     """Handles the WebSocket connection using the 'wsproto' state-machine backend.
 
@@ -1813,6 +1834,8 @@ async def _handle_websocket_wsproto_backend(
         server=server,
         root_path=config.root_path,
         is_tls=is_tls,
+        app_state=app_state,
+        asgi_version=asgi_version,
     )
 
     conn = ws_connection_cls(connection_type=connection_type.SERVER)
@@ -2063,6 +2086,8 @@ async def handle_websocket(
     client: ClientAddress,
     server: ServerAddress,
     is_tls: bool,
+    app_state: dict[str, Any] | None = None,
+    asgi_version: str = "3.0",
 ) -> None:
     """
     Handle the ASGI WebSocket flow for a connection, dispatching to the configured backend.
@@ -2086,6 +2111,8 @@ async def handle_websocket(
             client=client,
             server=server,
             is_tls=is_tls,
+            app_state=app_state,
+            asgi_version=asgi_version,
         )
         return
 
@@ -2100,6 +2127,8 @@ async def handle_websocket(
             client=client,
             server=server,
             is_tls=is_tls,
+            app_state=app_state,
+            asgi_version=asgi_version,
         )
         return
 
@@ -2114,6 +2143,8 @@ async def handle_websocket(
             client=client,
             server=server,
             is_tls=is_tls,
+            app_state=app_state,
+            asgi_version=asgi_version,
         )
         return
 
@@ -2127,4 +2158,6 @@ async def handle_websocket(
         client=client,
         server=server,
         is_tls=is_tls,
+        app_state=app_state,
+        asgi_version=asgi_version,
     )

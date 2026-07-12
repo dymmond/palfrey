@@ -270,6 +270,38 @@ async def http_expect_continue_body_app(scope, receive, send):
         await send({"type": "http.response.body", "body": payload})
 
 
+async def http_no_response_app(scope, receive, send):
+    """HTTP app that returns without sending a response."""
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    if scope["type"] == "http":
+        return
+
+
+async def http_body_before_start_app(scope, receive, send):
+    """HTTP app that emits a response body before response start."""
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    if scope["type"] == "http":
+        await send({"type": "http.response.body", "body": b"out of order"})
+
+
 async def http_exception_before_response_app(scope, receive, send):
     """HTTP app that fails before starting a response."""
 

@@ -5,12 +5,28 @@ hide:
 
 # Release Notes
 
+## 0.2.0
+
+### Highlights
+
+- HTTP behavior is broader and more robust across keep-alive reuse, disconnect handling, shutdown coordination, proxy headers, malformed input, and committed-response edge cases.
+- HTTP response hot paths now do less work for common responses through tighter metadata handling, faster body framing, and lower request parsing overhead.
+- A low-level HTTP/1 protocol path is available through explicit configuration for advanced performance validation and protocol experimentation.
+- Benchmark execution now uses Hatch-based workflows with clearer multi-sample throughput, latency, failure, CPU, and memory reporting.
+- WebSocket close details and keepalive behavior are preserved more consistently across supported runtime paths.
+
+### Operational impact
+
+- Existing default HTTP, WebSocket, lifespan, logging, and header behavior remain stable.
+- Operators get clearer benchmark commands and more reproducible performance reports.
+- Advanced users can opt into the low-level HTTP/1 protocol path without changing Palfrey's default runtime mode.
+
 ## 0.1.4
 
 ### Fixed
 
 - HTTP/1.1 ASGI responses now flush response headers and body chunks as the application sends them instead of buffering the full response until completion.
-- Streaming responses keep Palfrey's existing chunked transfer framing while preserving the collected response metadata used by server logging and compatibility tests.
+- Streaming responses keep Palfrey's existing chunked transfer framing while preserving the collected response metadata used by server logging and compatibility checks.
 
 ### Operational impact
 
@@ -92,7 +108,7 @@ and an upgrade path beyond HTTP/1.1 through opt-in HTTP/2 and HTTP/3 modes.
 
 ### Highlights
 
-- Uvicorn-style CLI surface with Click.
+- Familiar CLI surface with Click.
 - Production-ready HTTP/1.1 + WebSocket + lifespan runtime.
 - Process models for single-process, worker mode, reload mode, and Gunicorn worker integration.
 - Opt-in HTTP/2 (`--http h2`) support.

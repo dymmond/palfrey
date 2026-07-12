@@ -809,6 +809,9 @@ def test_http_keep_alive_timeout_matches_uvicorn() -> None:
 
 
 def test_http_graceful_shutdown_active_request_matches_uvicorn() -> None:
+    if os.name == "nt":
+        pytest.skip("POSIX SIGINT shutdown comparison is not available on Windows")
+
     uvicorn_pythonpath = _uvicorn_pythonpath()
     if uvicorn_pythonpath is None and importlib.util.find_spec("uvicorn") is None:
         pytest.skip("uvicorn is not installed and local uvicorn repo is unavailable")

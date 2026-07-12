@@ -653,6 +653,8 @@ def build_http_scope(
     server: ServerAddress,
     root_path: str,
     is_tls: bool,
+    app_state: dict[str, Any] | None = None,
+    asgi_version: str = "3.0",
 ) -> Scope:
     """
     Converts an internal HTTPRequest into an ASGI 3.0 scope dictionary.
@@ -663,6 +665,9 @@ def build_http_scope(
         server (ServerAddress): IP and port of the server.
         root_path (str): The mounting point of the application.
         is_tls (bool): True if connection is encrypted.
+        app_state (dict[str, Any] | None): Lifespan state to shallow-copy into
+            the per-request scope.
+        asgi_version (str): ASGI callable version reported in the scope.
 
     Returns:
         Scope: A dictionary conforming to the ASGI HTTP specification.
@@ -689,7 +694,7 @@ def build_http_scope(
 
     return {
         "type": "http",
-        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "asgi": {"version": asgi_version, "spec_version": "2.3"},
         "http_version": request.http_version.removeprefix("HTTP/"),
         "method": request.method,
         "scheme": "https" if is_tls else "http",
@@ -700,7 +705,7 @@ def build_http_scope(
         "headers": scope_headers,
         "client": client,
         "server": server,
-        "state": {},
+        "state": dict(app_state or {}),
     }
 
 

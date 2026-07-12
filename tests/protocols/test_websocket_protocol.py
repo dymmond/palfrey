@@ -181,6 +181,71 @@ def test_build_websocket_scope_sets_subprotocols_and_scheme() -> None:
     assert scope["subprotocols"] == ["chat", "superchat"]
 
 
+def test_build_websocket_scope_copies_lifespan_state_shallowly() -> None:
+    app_state = {"a": 123, "b": [1]}
+
+    first_scope = build_websocket_scope(
+        target="/ws",
+        headers=_handshake_headers(),
+        client=("127.0.0.1", 1234),
+        server=("127.0.0.1", 8000),
+        root_path="",
+        is_tls=False,
+        app_state=app_state,
+    )
+    first_scope["state"]["a"] = 456
+    first_scope["state"]["b"].append(2)
+
+    second_scope = build_websocket_scope(
+        target="/ws",
+        headers=_handshake_headers(),
+        client=("127.0.0.1", 1234),
+        server=("127.0.0.1", 8000),
+        root_path="",
+        is_tls=False,
+        app_state=app_state,
+    )
+
+    assert second_scope["state"] == {"a": 123, "b": [1, 2]}
+    assert second_scope["state"] is not app_state
+    assert second_scope["state"]["b"] is app_state["b"]
+
+
+def test_handle_websocket_copies_lifespan_state_per_scope() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="none")
+    app_state = {"a": 123, "b": [1]}
+    seen_states = []
+
+    async def app(scope, receive, send):
+        seen_states.append({"a": scope["state"]["a"], "b": list(scope["state"]["b"])})
+        scope["state"]["a"] = 456
+        scope["state"]["b"].append(2)
+        await send({"type": "websocket.accept"})
+
+    async def scenario() -> None:
+        for _ in range(2):
+            writer = CaptureWriter()
+            reader = await make_stream_reader(b"")
+            await handle_websocket(
+                app,
+                config,
+                reader=reader,
+                writer=writer,
+                headers=_handshake_headers(),
+                target="/ws",
+                client=("127.0.0.1", 1),
+                server=("127.0.0.1", 2),
+                is_tls=False,
+                app_state=app_state,
+            )
+            assert b"101 Switching Protocols" in writer.writes[0]
+
+    asyncio.run(scenario())
+
+    assert seen_states == [{"a": 123, "b": [1]}, {"a": 123, "b": [1, 2]}]
+    assert app_state == {"a": 123, "b": [1, 2, 2]}
+
+
 def test_handle_websocket_rejects_invalid_handshake() -> None:
     config = PalfreyConfig(app="tests.fixtures.apps:websocket_app")
     writer = CaptureWriter()

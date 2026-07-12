@@ -41,6 +41,41 @@ def test_build_http_scope_populates_asgi_fields() -> None:
     assert scope["headers"] == [(b"host", b"example.test"), (b"x-token", b"abc")]
 
 
+def test_build_http_scope_copies_lifespan_state_shallowly() -> None:
+    request = HTTPRequest(
+        method="GET",
+        target="/",
+        http_version="HTTP/1.1",
+        headers=[],
+        body=b"",
+    )
+    app_state = {"a": 123, "b": [1]}
+
+    first_scope = build_http_scope(
+        request,
+        client=("10.0.0.1", 12345),
+        server=("127.0.0.1", 8000),
+        root_path="",
+        is_tls=False,
+        app_state=app_state,
+    )
+    first_scope["state"]["a"] = 456
+    first_scope["state"]["b"].append(2)
+
+    second_scope = build_http_scope(
+        request,
+        client=("10.0.0.1", 12345),
+        server=("127.0.0.1", 8000),
+        root_path="",
+        is_tls=False,
+        app_state=app_state,
+    )
+
+    assert second_scope["state"] == {"a": 123, "b": [1, 2]}
+    assert second_scope["state"] is not app_state
+    assert second_scope["state"]["b"] is app_state["b"]
+
+
 def test_run_http_asgi_collects_response_body_chunks() -> None:
     async def app(scope, receive, send):
         message = await receive()
@@ -124,6 +159,24 @@ def test_run_http_asgi_uses_chunked_default_for_single_body_without_headers() ->
     assert response.chunked_encoding is True
     assert (b"transfer-encoding", b"chunked") in response.headers
     assert response.body_chunks == [b"ok"]
+
+
+def test_run_http_asgi_accepts_iterable_response_headers() -> None:
+    async def app(scope, receive, send):
+        await receive()
+        headers = iter([(b"x-test-header", b"test value")])
+        await send({"type": "http.response.start", "status": 200, "headers": headers})
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+    response = asyncio.run(
+        run_http_asgi(
+            app,
+            {"type": "http", "headers": [], "path": "/", "method": "GET", "state": {}},
+            b"",
+        )
+    )
+
+    assert (b"x-test-header", b"test value") in response.headers
 
 
 def test_run_http_asgi_converts_invalid_initial_message_to_500_response() -> None:

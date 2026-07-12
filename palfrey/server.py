@@ -654,6 +654,12 @@ class PalfreyServer:
                             )
                             for name, value in request.headers
                         ]
+                        app_state = (
+                            getattr(self._lifespan, "state", {})
+                            if self._lifespan is not None
+                            else {}
+                        )
+                        asgi_version = "2.0" if self._resolved_app.interface == "asgi2" else "3.0"
                         await handle_websocket(
                             self._resolved_app.app,
                             self.config,
@@ -664,6 +670,8 @@ class PalfreyServer:
                             client=context.client,
                             server=context.server,
                             is_tls=context.is_tls,
+                            app_state=app_state,
+                            asgi_version=asgi_version,
                         )
                     break
 
@@ -892,12 +900,16 @@ class PalfreyServer:
         if self._resolved_app is None:
             raise RuntimeError("Application is not resolved.")
 
+        app_state = getattr(self._lifespan, "state", {}) if self._lifespan is not None else {}
+        asgi_version = "2.0" if self._resolved_app.interface == "asgi2" else "3.0"
         scope = build_http_scope(
             request,
             client=context.client,
             server=context.server,
             root_path=self.config.root_path,
             is_tls=context.is_tls,
+            app_state=app_state,
+            asgi_version=asgi_version,
         )
 
         body_input = (

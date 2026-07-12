@@ -368,13 +368,45 @@ def test_core_backend_ping_drain_respects_high_watermark() -> None:
 def test_handle_websocket_reports_disconnect_code_from_close_frame() -> None:
     config = PalfreyConfig(app="tests.fixtures.apps:websocket_app")
     writer = CaptureWriter()
-    close_payload = struct.pack("!H", 1001)
+    close_payload = struct.pack("!H", 1001) + b"custom reason"
     incoming = _masked_frame(0x8, close_payload)
 
     async def app(scope, receive, send):
         await send({"type": "websocket.accept"})
         message = await receive()
-        assert message == {"type": "websocket.disconnect", "code": 1001}
+        assert message == {
+            "type": "websocket.disconnect",
+            "code": 1001,
+            "reason": "custom reason",
+        }
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(incoming)
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1234),
+            server=("127.0.0.1", 8000),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+
+
+def test_handle_websocket_rejects_invalid_close_reason_utf8() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app")
+    writer = CaptureWriter()
+    close_payload = struct.pack("!H", 1001) + b"\xff"
+    incoming = _masked_frame(0x8, close_payload)
+
+    async def app(scope, receive, send):
+        await send({"type": "websocket.accept"})
+        message = await receive()
+        assert message == {"type": "websocket.disconnect", "code": 1007}
 
     async def scenario() -> None:
         reader = await make_stream_reader(incoming)

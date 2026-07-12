@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import ssl
 
@@ -578,6 +579,45 @@ async def test_handle_connection_streams_asgi_body_before_app_completion(
     assert b"first" in payload
     assert b"second" in payload
     assert payload.count(b"200 OK") == 1
+
+
+@pytest.mark.asyncio
+async def test_handle_connection_sends_response_before_request_body_arrives() -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"early", "more_body": False})
+
+    server._resolved_app = ResolvedApp(app=app, interface="asgi3")
+    writer = DummyWriter()
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 18\r\n\r\n")
+    task = asyncio.create_task(server._handle_connection(reader, writer))
+
+    async def wait_for_response() -> bytes:
+        for _ in range(50):
+            payload = b"".join(writer.writes)
+            if b"HTTP/1.1 200 OK" in payload:
+                return payload
+            await asyncio.sleep(0.01)
+        raise AssertionError("response was not written before request body arrived")
+
+    try:
+        payload = await asyncio.wait_for(wait_for_response(), timeout=1)
+        assert b"early" in payload
+        assert writer.closed is False
+
+        reader.feed_data(b'{"hello": "world"}')
+        reader.feed_eof()
+        await asyncio.wait_for(task, timeout=1)
+    finally:
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    assert writer.closed is True
 
 
 @pytest.mark.asyncio

@@ -15,6 +15,7 @@ from palfrey.protocols.http import (
     append_default_response_headers,
     build_http_scope,
     encode_http_response,
+    encode_http_response_head_and_body_chunk,
     requires_100_continue,
     run_http_asgi,
     should_keep_alive,
@@ -54,6 +55,7 @@ class PalfreyHTTPProtocol(asyncio.Protocol):
         self.transport: asyncio.Transport | None = None
         self.buffer = bytearray()
         self.active_task: asyncio.Task[None] | None = None
+        self.data_event: asyncio.Event | None = None
         self.keep_alive_handle: asyncio.TimerHandle | None = None
         self.client: ClientAddress = ("0.0.0.0", 0)
         self.server: ServerAddress = (self.config.host, self.config.port)
@@ -82,6 +84,10 @@ class PalfreyHTTPProtocol(asyncio.Protocol):
         )
         self.is_tls = self.transport.get_extra_info("ssl_object") is not None
         self.server_state.connections.add(self)
+        self.data_event = asyncio.Event()
+        self.active_task = self.loop.create_task(self._connection_loop())
+        self.active_task.add_done_callback(self._connection_done)
+        self.server_state.tasks.add(self.active_task)
 
     def connection_lost(self, exc: Exception | None) -> None:
         self._cancel_keep_alive_timeout()
@@ -95,45 +101,61 @@ class PalfreyHTTPProtocol(asyncio.Protocol):
     def data_received(self, data: bytes) -> None:
         self._cancel_keep_alive_timeout()
         self.buffer.extend(data)
-        self._parse_available_requests()
+        self._wake_connection()
 
     def eof_received(self) -> bool | None:
         return None
 
-    def _parse_available_requests(self) -> None:
-        if self.transport is None or self.transport.is_closing() or self.active_task is not None:
-            return
+    async def _connection_loop(self) -> None:
+        while True:
+            if self.transport is None or self.transport.is_closing():
+                return
 
-        if self.buffer:
+            if not self.buffer:
+                await self._wait_for_data()
+                continue
+
             self._cancel_keep_alive_timeout()
+            should_wait = await self._process_buffer()
+            if not should_wait:
+                return
 
-        parsed = self._pop_request()
-        if parsed is None:
-            return
+    async def _wait_for_data(self) -> None:
+        if self.data_event is None:
+            self.data_event = asyncio.Event()
+        await self.data_event.wait()
+        self.data_event.clear()
 
-        request, error_response = parsed
-        if error_response is not None:
-            self._write_response(error_response, keep_alive=False)
-            self._close_transport()
-            return
+    async def _process_buffer(self) -> bool:
+        while self.transport is not None and not self.transport.is_closing():
+            parsed = self._pop_request()
+            if parsed is None:
+                return True
 
-        if request is None:
-            return
+            request, error_response = parsed
+            if error_response is not None:
+                self._write_response(error_response, keep_alive=False)
+                self._close_transport()
+                return False
 
-        if self._is_concurrency_limit_exceeded():
-            response = HTTPResponse(
-                status=503,
-                headers=[(b"content-type", b"text/plain")],
-                body_chunks=[b"Service Unavailable"],
-            )
-            append_default_response_headers(response, self.config)
-            self._write_response(response, keep_alive=False)
-            self._close_transport()
-            return
+            if request is None:
+                return True
 
-        self.active_task = self.loop.create_task(self._run_request(request))
-        self.active_task.add_done_callback(self._request_done)
-        self.server_state.tasks.add(self.active_task)
+            if self._is_concurrency_limit_exceeded():
+                response = HTTPResponse(
+                    status=503,
+                    headers=[(b"content-type", b"text/plain")],
+                    body_chunks=[b"Service Unavailable"],
+                )
+                append_default_response_headers(response, self.config)
+                self._write_response(response, keep_alive=False)
+                self._close_transport()
+                return False
+
+            if not await self._run_request(request):
+                return False
+
+        return False
 
     def _pop_request(self) -> tuple[HTTPRequest | None, HTTPResponse | None] | None:
         separator_index = self.buffer.find(_HEAD_SEPARATOR)
@@ -196,9 +218,9 @@ class PalfreyHTTPProtocol(asyncio.Protocol):
         )
         return request, None
 
-    async def _run_request(self, request: HTTPRequest) -> None:
+    async def _run_request(self, request: HTTPRequest) -> bool:
         if self.transport is None or self.transport.is_closing():
-            return
+            return False
 
         app = cast("ASGIApplication", self.config.loaded_app)
         scope = build_http_scope(
@@ -233,11 +255,13 @@ class PalfreyHTTPProtocol(asyncio.Protocol):
 
         if not keep_alive or self._request_limit_reached():
             self._close_transport()
-            return
+            return False
 
-        self._arm_keep_alive_timeout()
+        if not self.buffer:
+            self._arm_keep_alive_timeout()
+        return True
 
-    def _request_done(self, task: asyncio.Task[None]) -> None:
+    def _connection_done(self, task: asyncio.Task[None]) -> None:
         self.server_state.tasks.discard(task)
         if self.active_task is task:
             self.active_task = None
@@ -246,11 +270,19 @@ class PalfreyHTTPProtocol(asyncio.Protocol):
             if exc is not None:
                 logger.exception("HTTP protocol request failed: %s", exc)
                 self._close_transport()
-                return
-        self._parse_available_requests()
 
     def _write_response(self, response: HTTPResponse, *, keep_alive: bool) -> None:
         if self.transport is None or self.transport.is_closing():
+            return
+        if len(response.body_chunks) == 1:
+            self.transport.write(
+                encode_http_response_head_and_body_chunk(
+                    response,
+                    response.body_chunks[0],
+                    keep_alive=keep_alive,
+                    more_body=False,
+                )
+            )
             return
         self.transport.write(encode_http_response(response, keep_alive=keep_alive))
 
@@ -272,6 +304,11 @@ class PalfreyHTTPProtocol(asyncio.Protocol):
     def _close_transport(self) -> None:
         if self.transport is not None and not self.transport.is_closing():
             self.transport.close()
+        self._wake_connection()
+
+    def _wake_connection(self) -> None:
+        if self.data_event is not None:
+            self.data_event.set()
 
     def _is_concurrency_limit_exceeded(self) -> bool:
         limit = self.config.limit_concurrency

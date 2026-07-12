@@ -805,10 +805,19 @@ async def _handle_websocket_core(
 
             if frame.opcode == 0x8:
                 code = 1000
+                reason = ""
                 if len(frame.payload) >= 2:
                     code = struct.unpack("!H", frame.payload[:2])[0]
+                    try:
+                        reason = frame.payload[2:].decode("utf-8")
+                    except UnicodeDecodeError:
+                        _mark_closed(1007)
+                        return {"type": "websocket.disconnect", "code": 1007}
                 _mark_closed(code)
-                return {"type": "websocket.disconnect", "code": code}
+                message: Message = {"type": "websocket.disconnect", "code": code}
+                if reason:
+                    message["reason"] = reason
+                return message
 
             if frame.opcode == 0x9:
                 _write_frame(writer, 0xA, frame.payload)

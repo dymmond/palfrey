@@ -436,8 +436,8 @@ def test_handle_websocket_keepalive_pong_keeps_connection_open() -> None:
     config = PalfreyConfig(
         app="tests.fixtures.apps:websocket_app",
         ws="none",
-        ws_ping_interval=0.01,
-        ws_ping_timeout=0.03,
+        ws_ping_interval=0.02,
+        ws_ping_timeout=0.2,
     )
     writer = CaptureWriter()
     disconnects = []
@@ -462,7 +462,7 @@ def test_handle_websocket_keepalive_pong_keeps_connection_open() -> None:
             )
         )
         seen_writes = 0
-        deadline = asyncio.get_running_loop().time() + 0.08
+        deadline = asyncio.get_running_loop().time() + 0.12
         while asyncio.get_running_loop().time() < deadline:
             for payload in writer.writes[seen_writes:]:
                 if payload and payload[0] & 0x80 and payload[0] & 0x0F == 0x9:

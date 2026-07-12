@@ -121,7 +121,7 @@ lint = "ruff check palfrey tests benchmarks"
 format = "ruff format palfrey tests benchmarks"
 format-check = "ruff format --check palfrey tests benchmarks"
 check-types = "ty check palfrey"
-test-cov = "pytest --cov=palfrey --cov-report=term-missing --cov-report=xml --cov-fail-under=85"
+test-cov = "pytest --cov=palfrey --cov-report=term-missing --cov-report=xml --cov-fail-under=85 {args}"
 docs-build = "scripts/docs.py build --clean"
 benchmark = "python -m benchmarks.run"
 rust-build = "scripts/build-rust-extension"
@@ -146,7 +146,8 @@ features = ["testing", "standard"]
 python = ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
 [tool.hatch.envs.test.scripts]
-test = "pytest --cov=palfrey --cov-report=term-missing --cov-report=xml:coverage_reports/coverage.xml --cov-fail-under=85"
+test = "pytest --cov=palfrey --cov-report=term-missing --cov-report=xml:coverage_reports/coverage.xml --cov-fail-under=85 {args}"
+smoke = "pytest --no-cov {args}"
 test_man = "pytest -- {args} -s -vv"
 
 

@@ -5,12 +5,25 @@ hide:
 
 # Release Notes
 
+## 0.2.0
+
+### Highlights
+
+- Palfrey now enters the Uvicorn parity and performance campaign as an explicit product milestone, with compatibility work scoped around documented behavior, operational reliability, protocol correctness, and reproducible benchmark evidence.
+- The benchmark workflow now records a local three-phase HTTP and WebSocket echo baseline against Uvicorn, keeping performance claims tied to concrete workloads instead of broad replacement language.
+- Public runtime defaults remain stable for existing 0.1.x users while the next convergence work proceeds subsystem by subsystem.
+
+### Operational impact
+
+- Existing CLI usage, protocol selection defaults, worker controls, reload behavior, logging controls, and deployment patterns remain unchanged.
+- Treat the current benchmark baseline as scenario-specific evidence for the included HTTP and WebSocket echo workloads; broader workload claims remain intentionally reserved for future releases.
+
 ## 0.1.4
 
 ### Fixed
 
 - HTTP/1.1 ASGI responses now flush response headers and body chunks as the application sends them instead of buffering the full response until completion.
-- Streaming responses keep Palfrey's existing chunked transfer framing while preserving the collected response metadata used by server logging and compatibility tests.
+- Streaming responses keep Palfrey's existing chunked transfer framing while preserving the collected response metadata used by server logging and compatibility checks.
 
 ### Operational impact
 

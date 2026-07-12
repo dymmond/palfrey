@@ -5,19 +5,6 @@ hide:
 
 # Release Notes
 
-## 0.2.0
-
-### Highlights
-
-- Palfrey now enters the Uvicorn parity and performance campaign as an explicit product milestone, with compatibility work scoped around documented behavior, operational reliability, protocol correctness, and reproducible benchmark evidence.
-- The benchmark workflow now records a local three-phase HTTP and WebSocket echo baseline against Uvicorn, keeping performance claims tied to concrete workloads instead of broad replacement language.
-- Public runtime defaults remain stable for existing 0.1.x users while the next convergence work proceeds subsystem by subsystem.
-
-### Operational impact
-
-- Existing CLI usage, protocol selection defaults, worker controls, reload behavior, logging controls, and deployment patterns remain unchanged.
-- Treat the current benchmark baseline as scenario-specific evidence for the included HTTP and WebSocket echo workloads; broader workload claims remain intentionally reserved for future releases.
-
 ## 0.1.4
 
 ### Fixed
@@ -105,7 +92,7 @@ and an upgrade path beyond HTTP/1.1 through opt-in HTTP/2 and HTTP/3 modes.
 
 ### Highlights
 
-- Uvicorn-style CLI surface with Click.
+- Familiar CLI surface with Click.
 - Production-ready HTTP/1.1 + WebSocket + lifespan runtime.
 - Process models for single-process, worker mode, reload mode, and Gunicorn worker integration.
 - Opt-in HTTP/2 (`--http h2`) support.

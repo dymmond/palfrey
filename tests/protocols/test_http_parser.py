@@ -50,6 +50,7 @@ def test_read_http_request_returns_none_on_eof() -> None:
     "payload",
     [
         b"GET / HTTP/1.1\r\nHost: x\r\nContent-Length: nope\r\n\r\n",
+        b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: -1\r\n\r\n",
         b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\nZZ\r\n",
     ],
 )

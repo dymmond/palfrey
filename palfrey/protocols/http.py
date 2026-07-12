@@ -458,6 +458,8 @@ async def read_http_request(
             content_length = int(content_length_raw)
         except ValueError as exc:
             raise ValueError("Invalid Content-Length header") from exc
+        if content_length < 0:
+            raise ValueError("Invalid Content-Length header")
 
     body_chunks: list[bytes] = [b""]
     if b"chunked" in transfer_encoding:

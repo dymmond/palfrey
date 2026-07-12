@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import http
 import importlib
+import re
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -152,6 +153,8 @@ _CONNECTION_KEEP_ALIVE: bytes = b"connection: keep-alive\r\n"
 _CONNECTION_CLOSE: bytes = b"connection: close\r\n"
 _HEADER_SEPARATOR: bytes = b": "
 _CRLF: bytes = b"\r\n"
+_INVALID_RESPONSE_HEADER_NAME_RE = re.compile(b'[\x00-\x1f\x7f()<>@,;:\\[\\]={} \t\\\\"]')
+_INVALID_RESPONSE_HEADER_VALUE_RE = re.compile(b"[\x00-\x08\x0a-\x1f\x7f]")
 
 
 class _HTTPToolsParserProtocol:
@@ -756,10 +759,12 @@ async def run_http_asgi(
             waiting_for_100_continue = False
 
             response.status = int(message.get("status", 200))
-            response.headers = [
-                (_coerce_header_bytes(name), _coerce_header_bytes(value))
-                for name, value in message.get("headers", [])
-            ]
+            response.headers = []
+            for raw_name, raw_value in message.get("headers", []):
+                name = _coerce_header_bytes(raw_name)
+                value = _coerce_header_bytes(raw_value)
+                _validate_response_header(name, value)
+                response.headers.append((name, value))
             response.suppress_body = scope.get("method") == "HEAD"
 
             # Parse headers for explicit length or encoding
@@ -864,6 +869,14 @@ def _coerce_header_bytes(value: object) -> bytes:
     if isinstance(value, bytearray):
         return bytes(value)
     return str(value).encode("latin-1")
+
+
+def _validate_response_header(name: bytes, value: bytes) -> None:
+    """Reject header bytes that would produce invalid HTTP response framing."""
+    if not name or _INVALID_RESPONSE_HEADER_NAME_RE.search(name):
+        raise RuntimeError("Invalid HTTP header name.")
+    if _INVALID_RESPONSE_HEADER_VALUE_RE.search(value):
+        raise RuntimeError("Invalid HTTP header value.")
 
 
 def _normalize_header_items(

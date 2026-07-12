@@ -342,6 +342,62 @@ async def http_exception_after_response_start_app(scope, receive, send):
         raise RuntimeError("response already started")
 
 
+async def http_duplicate_response_start_app(scope, receive, send):
+    """HTTP app that sends response start twice."""
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    if scope["type"] == "http":
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"text/plain")],
+            }
+        )
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 201,
+                "headers": [(b"content-type", b"text/plain")],
+            }
+        )
+
+
+async def http_body_after_complete_app(scope, receive, send):
+    """HTTP app that sends a response body after completion."""
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    if scope["type"] == "http":
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [
+                    (b"content-type", b"text/plain"),
+                    (b"content-length", b"2"),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+        await send({"type": "http.response.body", "body": b"late", "more_body": False})
+
+
 async def lifespan_fail_app(scope, receive, send):
     """Fail lifespan startup to validate process-exit behavior."""
 

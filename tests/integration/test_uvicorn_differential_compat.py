@@ -838,6 +838,65 @@ def test_http_exception_after_response_start_matches_uvicorn() -> None:
     assert palfrey_headers.get("transfer-encoding") == uvicorn_headers.get("transfer-encoding")
 
 
+def test_http_duplicate_response_start_matches_uvicorn() -> None:
+    uvicorn_pythonpath = _uvicorn_pythonpath()
+    if uvicorn_pythonpath is None and importlib.util.find_spec("uvicorn") is None:
+        pytest.skip("uvicorn is not installed and local uvicorn repo is unavailable")
+
+    with _spawn_server(
+        "uvicorn",
+        "tests.fixtures.apps:http_duplicate_response_start_app",
+        pythonpath=uvicorn_pythonpath,
+    ) as (_uvicorn_process, uvicorn_port):
+        uvicorn_raw = _raw_http_exchange(uvicorn_port)
+
+    with _spawn_server(
+        "palfrey",
+        "tests.fixtures.apps:http_duplicate_response_start_app",
+    ) as (_palfrey_process, palfrey_port):
+        palfrey_raw = _raw_http_exchange(palfrey_port)
+
+    uvicorn_status, uvicorn_headers, uvicorn_body = _parse_http_response(uvicorn_raw)
+    palfrey_status, palfrey_headers, palfrey_body = _parse_http_response(palfrey_raw)
+
+    assert palfrey_status == uvicorn_status == 200
+    assert _decode_available_http_body(
+        palfrey_headers, palfrey_body
+    ) == _decode_available_http_body(uvicorn_headers, uvicorn_body)
+    assert b"Internal Server Error" not in palfrey_raw
+    assert b"Internal Server Error" not in uvicorn_raw
+    assert palfrey_headers.get("content-length") == uvicorn_headers.get("content-length")
+    assert palfrey_headers.get("transfer-encoding") == uvicorn_headers.get("transfer-encoding")
+
+
+def test_http_body_after_response_complete_matches_uvicorn() -> None:
+    uvicorn_pythonpath = _uvicorn_pythonpath()
+    if uvicorn_pythonpath is None and importlib.util.find_spec("uvicorn") is None:
+        pytest.skip("uvicorn is not installed and local uvicorn repo is unavailable")
+
+    with _spawn_server(
+        "uvicorn",
+        "tests.fixtures.apps:http_body_after_complete_app",
+        pythonpath=uvicorn_pythonpath,
+    ) as (_uvicorn_process, uvicorn_port):
+        uvicorn_status, uvicorn_headers, uvicorn_body = _http_exchange(uvicorn_port)
+
+    with _spawn_server(
+        "palfrey",
+        "tests.fixtures.apps:http_body_after_complete_app",
+    ) as (_palfrey_process, palfrey_port):
+        palfrey_status, palfrey_headers, palfrey_body = _http_exchange(palfrey_port)
+
+    assert palfrey_status == uvicorn_status == 200
+    assert (
+        _decode_http_body(palfrey_headers, palfrey_body)
+        == _decode_http_body(uvicorn_headers, uvicorn_body)
+        == b"ok"
+    )
+    assert palfrey_headers.get("content-length") == uvicorn_headers.get("content-length")
+    assert palfrey_headers.get("transfer-encoding") == uvicorn_headers.get("transfer-encoding")
+
+
 def test_websocket_echo_matches_uvicorn_for_fixture_app() -> None:
     uvicorn_pythonpath = _uvicorn_pythonpath()
     if uvicorn_pythonpath is None and importlib.util.find_spec("uvicorn") is None:

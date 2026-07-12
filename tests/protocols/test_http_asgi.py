@@ -211,6 +211,36 @@ def test_run_http_asgi_stream_callbacks_are_awaited_in_send_order() -> None:
         "body:second:False",
         "after-second",
     ]
+    assert response.body_chunks == []
+
+
+def test_run_http_asgi_streams_with_body_callback_only() -> None:
+    bodies: list[tuple[bytes, bool]] = []
+
+    async def on_response_body(
+        _response: HTTPResponse,
+        body: bytes,
+        more_body: bool,
+    ) -> None:
+        bodies.append((body, more_body))
+
+    async def app(scope, receive, send):
+        await receive()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+
+    response = asyncio.run(
+        run_http_asgi(
+            app,
+            {"type": "http", "headers": [], "path": "/", "method": "GET", "state": {}},
+            b"",
+            on_response_body=on_response_body,
+        )
+    )
+
+    assert response.streamed is True
+    assert response.body_chunks == []
+    assert bodies == [(b"ok", False)]
 
 
 def test_run_http_asgi_uses_chunked_default_for_single_body_without_headers() -> None:

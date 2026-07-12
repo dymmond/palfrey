@@ -182,6 +182,11 @@ class HTTPResponse:
     streamed: bool = False
     close_after_response: bool = False
     connection_keep_alive: bool | None = None
+    headers_metadata_trusted: bool = False
+    has_content_length: bool = False
+    has_transfer_encoding: bool = False
+    has_connection_header: bool = False
+    connection_header: bytes = b""
 
 
 class HTTPResponseStartedError(RuntimeError):
@@ -220,6 +225,10 @@ _SERVER_HEADER_VALUE: bytes = b"palfrey"
 _CONNECTION_CLOSE: bytes = b"connection: close\r\n"
 _HEADER_SEPARATOR: bytes = b": "
 _CRLF: bytes = b"\r\n"
+_CHUNK_END: bytes = b"0\r\n\r\n"
+_SMALL_CHUNK_PREFIXES: tuple[bytes, ...] = tuple(
+    f"{size:x}\r\n".encode("ascii") for size in range(256)
+)
 _INVALID_RESPONSE_HEADER_NAME_RE = re.compile(b'[\x00-\x1f\x7f()<>@,;:\\[\\]={} \t\\\\"]')
 _INVALID_RESPONSE_HEADER_VALUE_RE = re.compile(b"[\x00-\x08\x0a-\x1f\x7f]")
 
@@ -648,16 +657,17 @@ async def read_http_request(
     if content_length > body_limit:
         raise ValueError("HTTP body exceeds configured limit")
 
-    body_chunks: list[bytes] = [b""]
+    body = b""
+    body_chunks: list[bytes] = []
     body_stream: HTTPBodyStream | None = None
     if b"chunked" in transfer_encoding:
         body_chunks = await _read_chunked_body_chunks(reader, body_limit)
+        body = body_chunks[0] if len(body_chunks) == 1 else b"".join(body_chunks)
     elif stream_body and content_length > 0:
-        body_chunks = []
         body_stream = HTTPBodyStream(reader, content_length, body_limit)
-    else:
+    elif content_length > 0:
         body_chunks = await _read_content_length_body_chunks(reader, content_length, body_limit)
-    body = b"".join(body_chunks)
+        body = body_chunks[0] if len(body_chunks) == 1 else b"".join(body_chunks)
 
     if websocket_upgrade:
         request_headers: list[tuple[str, str] | tuple[bytes, bytes]] = [
@@ -942,6 +952,11 @@ async def run_http_asgi(
             (b"content-length", b"21"),
             (b"connection", b"close"),
         ]
+        response.headers_metadata_trusted = True
+        response.has_content_length = True
+        response.has_transfer_encoding = False
+        response.has_connection_header = True
+        response.connection_header = b"close"
         response.body_chunks = [] if scope.get("method") == "HEAD" else [b"Internal Server Error"]
         response.chunked_encoding = False
         response.suppress_body = scope.get("method") == "HEAD"
@@ -1014,6 +1029,11 @@ async def run_http_asgi(
             response.status = int(message.get("status", 200))
             _validate_response_status(response.status)
             response.headers = []
+            response.headers_metadata_trusted = True
+            response.has_content_length = False
+            response.has_transfer_encoding = False
+            response.has_connection_header = False
+            response.connection_header = b""
             for raw_name, raw_value in message.get("headers", []):
                 name = raw_name if isinstance(raw_name, bytes) else _coerce_header_bytes(raw_name)
                 value = (
@@ -1021,20 +1041,19 @@ async def run_http_asgi(
                 )
                 _validate_response_header(name, value)
                 response.headers.append((name, value))
-                if name == b"content-length":
+                lowered_name = name if name.islower() else name.lower()
+                if lowered_name == b"content-length":
+                    response.has_content_length = True
                     expected_content_length = int(value.decode("latin-1"))
                     chunked_encoding = False
-                elif name == b"transfer-encoding" and value.lower() == b"chunked":
-                    chunked_encoding = True
+                elif lowered_name == b"transfer-encoding":
+                    response.has_transfer_encoding = True
                     expected_content_length = 0
-                elif not name.islower():
-                    lowered_name = name.lower()
-                    if lowered_name == b"content-length":
-                        expected_content_length = int(value.decode("latin-1"))
-                        chunked_encoding = False
-                    elif lowered_name == b"transfer-encoding" and value.lower() == b"chunked":
+                    if value.lower() == b"chunked":
                         chunked_encoding = True
-                        expected_content_length = 0
+                elif lowered_name == b"connection":
+                    response.has_connection_header = True
+                    response.connection_header = value.lower()
             response.suppress_body = scope.get("method") == "HEAD"
 
             # Default to chunked if no explicit length/encoding (allows apps to stream without Content-Length)
@@ -1045,6 +1064,7 @@ async def run_http_asgi(
             ):
                 chunked_encoding = True
                 response.headers.append((b"transfer-encoding", b"chunked"))
+                response.has_transfer_encoding = True
 
             response.chunked_encoding = bool(chunked_encoding)
 
@@ -1054,6 +1074,8 @@ async def run_http_asgi(
 
             if on_response_start is not None:
                 await on_response_start(response)
+                response.streamed = True
+            elif on_response_body is not None:
                 response.streamed = True
             return
 
@@ -1075,13 +1097,15 @@ async def run_http_asgi(
             if response.suppress_body:
                 pass  # HEAD requests intentionally drop the body
             elif chunked_encoding:
-                response.body_chunks.append(body)
+                if not response.streamed:
+                    response.body_chunks.append(body)
             else:
                 body_size = len(body)
                 if body_size > expected_content_length:
                     raise RuntimeError("Response content longer than Content-Length")
                 expected_content_length -= body_size
-                response.body_chunks.append(body)
+                if not response.streamed:
+                    response.body_chunks.append(body)
 
             if response.streamed and on_response_body is not None:
                 await on_response_body(response, body, more_body)
@@ -1189,12 +1213,38 @@ def append_default_response_headers(
     """
     if default_headers is not None:
         if not response.headers:
-            response.headers.extend(default_headers)
+            for name, value in default_headers:
+                _append_response_header(response, name, value)
             return
+
+        if len(default_headers) == 2:
+            first_name, first_value = default_headers[0]
+            second_name, second_value = default_headers[1]
+            has_first = False
+            has_second = False
+            for name, _value in response.headers:
+                if name == first_name:
+                    has_first = True
+                elif name == second_name:
+                    has_second = True
+                elif not name.islower():
+                    lowered_name = name.lower()
+                    if lowered_name == first_name:
+                        has_first = True
+                    elif lowered_name == second_name:
+                        has_second = True
+                if has_first and has_second:
+                    break
+            if not has_first:
+                _append_response_header(response, first_name, first_value)
+            if not has_second:
+                _append_response_header(response, second_name, second_value)
+            return
+
         for name, value in default_headers:
-            if _has_header(response.headers, name.lower()):
+            if _has_header(response.headers, name):
                 continue
-            response.headers.append((name, value))
+            _append_response_header(response, name, value)
         return
 
     existing_headers = {name.lower() for name, _ in response.headers}
@@ -1207,17 +1257,32 @@ def append_default_response_headers(
         and b"server" not in existing_headers
         and "server" not in configured_header_names
     ):
-        response.headers.append((b"server", _SERVER_HEADER_VALUE))
+        _append_response_header(response, b"server", _SERVER_HEADER_VALUE)
 
     if (
         config.date_header
         and b"date" not in existing_headers
         and "date" not in configured_header_names
     ):
-        response.headers.append((b"date", _http_date_header()))
+        _append_response_header(response, b"date", _http_date_header())
 
     for name, value in configured_headers:
-        response.headers.append((name.encode("latin-1"), value.encode("latin-1")))
+        _append_response_header(response, name.encode("latin-1"), value.encode("latin-1"))
+
+
+def _append_response_header(response: HTTPResponse, name: bytes, value: bytes) -> None:
+    response.headers.append((name, value))
+    if not response.headers_metadata_trusted:
+        return
+
+    lowered_name = name if name.islower() else name.lower()
+    if lowered_name == b"content-length":
+        response.has_content_length = True
+    elif lowered_name == b"transfer-encoding":
+        response.has_transfer_encoding = True
+    elif lowered_name == b"connection":
+        response.has_connection_header = True
+        response.connection_header = value.lower()
 
 
 def _has_header(headers: list[tuple[bytes, bytes]], header_name: bytes) -> bool:
@@ -1251,25 +1316,27 @@ def encode_http_response_head(response: HTTPResponse, keep_alive: bool) -> Itera
             reason = ""
         yield f"HTTP/1.1 {response.status} {reason}\r\n".encode("ascii")
 
-    has_content_length = False
-    has_transfer_encoding = False
-    has_connection = False
+    metadata_trusted = response.headers_metadata_trusted
+    has_content_length = response.has_content_length if metadata_trusted else False
+    has_transfer_encoding = response.has_transfer_encoding if metadata_trusted else False
+    has_connection = response.has_connection_header if metadata_trusted else False
 
     for name, value in response.headers:
-        if name == b"content-length":
-            has_content_length = True
-        elif name == b"transfer-encoding":
-            has_transfer_encoding = True
-        elif name == b"connection":
-            has_connection = True
-        elif not name.islower():
-            lowered_name = name.lower()
-            if lowered_name == b"content-length":
+        if not metadata_trusted:
+            if name == b"content-length":
                 has_content_length = True
-            elif lowered_name == b"transfer-encoding":
+            elif name == b"transfer-encoding":
                 has_transfer_encoding = True
-            elif lowered_name == b"connection":
+            elif name == b"connection":
                 has_connection = True
+            elif not name.islower():
+                lowered_name = name.lower()
+                if lowered_name == b"content-length":
+                    has_content_length = True
+                elif lowered_name == b"transfer-encoding":
+                    has_transfer_encoding = True
+                elif lowered_name == b"connection":
+                    has_connection = True
 
         yield name
         yield _HEADER_SEPARATOR
@@ -1307,6 +1374,127 @@ def encode_http_response_body_chunk(
         return
     if body:
         yield body
+
+
+def encode_http_response_head_and_body_chunk(
+    response: HTTPResponse,
+    body: bytes,
+    *,
+    keep_alive: bool,
+    more_body: bool,
+) -> bytes:
+    """Serialize response headers and the first body event in one pass."""
+    body_size = len(body)
+    if (
+        response.status == 200
+        and response.headers_metadata_trusted
+        and response.chunked_encoding
+        and response.has_transfer_encoding
+        and not response.has_connection_header
+        and not response.suppress_body
+        and keep_alive
+        and not more_body
+        and 0 < body_size < len(_SMALL_CHUNK_PREFIXES)
+    ):
+        headers = response.headers
+        if len(headers) == 4:
+            first_name, first_value = headers[0]
+            second_name, second_value = headers[1]
+            third_name, third_value = headers[2]
+            fourth_name, fourth_value = headers[3]
+            if (
+                first_name == b"content-type"
+                and second_name == b"transfer-encoding"
+                and second_value == b"chunked"
+                and third_name == b"date"
+                and fourth_name == b"server"
+            ):
+                return b"".join(
+                    (
+                        _STATUS_LINES[200],
+                        first_name,
+                        _HEADER_SEPARATOR,
+                        first_value,
+                        _CRLF,
+                        second_name,
+                        _HEADER_SEPARATOR,
+                        second_value,
+                        _CRLF,
+                        third_name,
+                        _HEADER_SEPARATOR,
+                        third_value,
+                        _CRLF,
+                        fourth_name,
+                        _HEADER_SEPARATOR,
+                        fourth_value,
+                        _CRLF,
+                        _CRLF,
+                        _SMALL_CHUNK_PREFIXES[body_size],
+                        body,
+                        _CRLF,
+                        _CHUNK_END,
+                    )
+                )
+
+    if response.status in _STATUS_LINES:
+        parts = [_STATUS_LINES[response.status]]
+    else:
+        try:
+            reason = http.HTTPStatus(response.status).phrase
+        except ValueError:
+            reason = ""
+        parts = [f"HTTP/1.1 {response.status} {reason}\r\n".encode("ascii")]
+
+    metadata_trusted = response.headers_metadata_trusted
+    has_content_length = response.has_content_length if metadata_trusted else False
+    has_transfer_encoding = response.has_transfer_encoding if metadata_trusted else False
+    has_connection = response.has_connection_header if metadata_trusted else False
+
+    for name, value in response.headers:
+        if not metadata_trusted:
+            if name == b"content-length":
+                has_content_length = True
+            elif name == b"transfer-encoding":
+                has_transfer_encoding = True
+            elif name == b"connection":
+                has_connection = True
+            elif not name.islower():
+                lowered_name = name.lower()
+                if lowered_name == b"content-length":
+                    has_content_length = True
+                elif lowered_name == b"transfer-encoding":
+                    has_transfer_encoding = True
+                elif lowered_name == b"connection":
+                    has_connection = True
+
+        parts.append(name)
+        parts.append(_HEADER_SEPARATOR)
+        parts.append(value)
+        parts.append(_CRLF)
+
+    if not has_content_length and not has_transfer_encoding:
+        payload_len = 0 if response.suppress_body else sum(len(c) for c in response.body_chunks)
+        parts.append(b"content-length: ")
+        parts.append(str(payload_len).encode("ascii"))
+        parts.append(_CRLF)
+
+    if not has_connection and not keep_alive:
+        parts.append(_CONNECTION_CLOSE)
+
+    parts.append(_CRLF)
+
+    if not response.suppress_body:
+        if response.chunked_encoding:
+            if body:
+                parts.append(f"{len(body):x}\r\n".encode("ascii"))
+                parts.append(body)
+                parts.append(_CRLF)
+            if not more_body:
+                parts.append(_CHUNK_END)
+        elif body:
+            parts.append(body)
+
+    return b"".join(parts)
 
 
 def encode_http_response_chunks(response: HTTPResponse, keep_alive: bool) -> Iterable[bytes]:
@@ -1371,11 +1559,14 @@ def should_keep_alive(request: HTTPRequest, response: HTTPResponse) -> bool:
         if request.headers_normalized
         else request.connection_header or _normalize_connection_value(request.headers)
     )
-    response_connection = b""
-    for name, value in response.headers:
-        if name == b"connection" or (not name.islower() and name.lower() == b"connection"):
-            response_connection = value.lower()
-            break
+    if response.headers_metadata_trusted:
+        response_connection = response.connection_header
+    else:
+        response_connection = b""
+        for name, value in response.headers:
+            if name == b"connection" or (not name.islower() and name.lower() == b"connection"):
+                response_connection = value.lower()
+                break
 
     if b"close" in request_connection or b"close" in response_connection:
         return False

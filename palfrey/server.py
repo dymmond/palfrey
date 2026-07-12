@@ -51,6 +51,7 @@ from palfrey.protocols.http import (
     encode_http_response_body_chunk,
     encode_http_response_chunks,
     encode_http_response_head,
+    encode_http_response_head_and_body_chunk,
     read_http_request,
     requires_100_continue,
     run_http_asgi,
@@ -632,6 +633,11 @@ class PalfreyServer:
         parser_mode = "auto" if self.config.http == "auto" else self.config.effective_http
         max_head_size = self.config.h11_max_incomplete_event_size or 1_048_576
         first_request = True
+        enforce_concurrency_limit = self.config.limit_concurrency is not None
+        max_requests_before_exit = self._max_requests_before_exit
+        if max_requests_before_exit is None and self.config.limit_max_requests is not None:
+            max_requests_before_exit = self._compute_max_requests_before_exit()
+            self._max_requests_before_exit = max_requests_before_exit
 
         async def read_next_request() -> _QueuedRequest:
             nonlocal first_request
@@ -725,31 +731,39 @@ class PalfreyServer:
                 else:
                     context.on_100_continue = None
 
-                if self._is_concurrency_limit_exceeded():
-                    await self._write_response(
-                        writer,
-                        self._service_unavailable_response(),
-                        keep_alive=False,
-                    )
-                    break
+                if enforce_concurrency_limit:
+                    if self._is_concurrency_limit_exceeded():
+                        await self._write_response(
+                            writer,
+                            self._service_unavailable_response(),
+                            keep_alive=False,
+                        )
+                        break
 
-                # Check concurrency limits to ensure fair resource distribution across connections
-                acquired = self._enter_request_slot()
-                if not acquired:
-                    await self._write_response(
-                        writer, self._service_unavailable_response(), keep_alive=False
-                    )
-                    break
+                    # Check concurrency limits to ensure fair resource distribution across connections
+                    acquired = self._enter_request_slot()
+                    if not acquired:
+                        await self._write_response(
+                            writer, self._service_unavailable_response(), keep_alive=False
+                        )
+                        break
 
-                try:
+                    try:
+                        response = await self._handle_http_request(
+                            request,
+                            context,
+                            writer=writer,
+                            expect_100_continue=expect_100_continue,
+                        )
+                    finally:
+                        self._leave_request_slot()
+                else:
                     response = await self._handle_http_request(
                         request,
                         context,
                         writer=writer,
                         expect_100_continue=expect_100_continue,
                     )
-                finally:
-                    self._leave_request_slot()
 
                 keep_processing = (
                     False
@@ -768,11 +782,9 @@ class PalfreyServer:
                         keep_processing = False
 
                 self.server_state.total_requests += 1
-                if self._max_requests_before_exit is None:
-                    self._max_requests_before_exit = self._compute_max_requests_before_exit()
                 if (
-                    self._max_requests_before_exit is not None
-                    and self.server_state.total_requests >= self._max_requests_before_exit
+                    max_requests_before_exit is not None
+                    and self.server_state.total_requests >= max_requests_before_exit
                 ):
                     self.request_shutdown()
         except ValueError as exc:
@@ -970,7 +982,7 @@ class PalfreyServer:
         streamed_head_sent = False
         response_keep_alive: bool | None = None
 
-        async def on_response_start(response: HTTPResponse) -> None:
+        def prepare_response(response: HTTPResponse) -> None:
             default_headers = self.server_state.default_headers or None
             append_default_response_headers(response, self.config, default_headers=default_headers)
             self._log_access(scope, response)
@@ -982,6 +994,7 @@ class PalfreyServer:
         ) -> None:
             nonlocal response_keep_alive, streamed_head_sent
             if not streamed_head_sent:
+                prepare_response(response)
                 response_keep_alive = should_keep_alive(request, response)
                 response.connection_keep_alive = response_keep_alive
                 await self._write_response_head_and_body_chunk(
@@ -1006,7 +1019,7 @@ class PalfreyServer:
                     else expect_100_continue
                 ),
                 on_100_continue=context.on_100_continue,
-                on_response_start=on_response_start if writer is not None else None,
+                on_response_start=None,
                 on_response_body=on_response_body if writer is not None else None,
             )
         except HTTPResponseStartedError as exc:
@@ -1014,6 +1027,7 @@ class PalfreyServer:
             response.close_after_response = True
             if writer is not None:
                 if response.streamed and not streamed_head_sent:
+                    prepare_response(response)
                     payload = b"".join(encode_http_response_head(response, keep_alive=False))
                     if payload:
                         writer.write(payload)
@@ -1023,9 +1037,7 @@ class PalfreyServer:
             logger.error("%s", exc)
 
         if not response.streamed:
-            default_headers = self.server_state.default_headers or None
-            append_default_response_headers(response, self.config, default_headers=default_headers)
-            self._log_access(scope, response)
+            prepare_response(response)
 
         return response
 
@@ -1059,11 +1071,11 @@ class PalfreyServer:
         """
         if writer is None:
             return
-        payload = b"".join(
-            (
-                *encode_http_response_head(response, keep_alive=keep_alive),
-                *encode_http_response_body_chunk(response, body, more_body=more_body),
-            )
+        payload = encode_http_response_head_and_body_chunk(
+            response,
+            body,
+            keep_alive=keep_alive,
+            more_body=more_body,
         )
         if payload:
             writer.write(payload)

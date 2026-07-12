@@ -335,6 +335,22 @@ async def test_handle_connection_writes_400_on_bad_request(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_handle_connection_rejects_negative_content_length() -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
+    server._resolved_app = _resolved_app()
+    writer = DummyWriter()
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: -1\r\n\r\n")
+    reader.feed_eof()
+
+    await server._handle_connection(reader, writer)
+
+    payload = b"".join(writer.writes)
+    assert b"400 Bad Request" in payload
+    assert writer.closed is True
+
+
+@pytest.mark.asyncio
 async def test_handle_connection_writes_500_on_unhandled_exception(monkeypatch) -> None:
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
     server._resolved_app = _resolved_app()

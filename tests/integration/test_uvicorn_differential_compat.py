@@ -104,9 +104,20 @@ def _spawn_server(
             process.wait(timeout=5)
 
 
-def _raw_http_exchange(port: int, *, method: str = "GET") -> bytes:
+def _raw_http_exchange(
+    port: int,
+    *,
+    method: str = "GET",
+    headers: tuple[tuple[str, str], ...] = (),
+) -> bytes:
     with socket.create_connection(("127.0.0.1", port), timeout=5) as conn:
-        request = f"{method} / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+        extra_headers = "".join(f"{name}: {value}\r\n" for name, value in headers)
+        request = (
+            f"{method} / HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{port}\r\n"
+            f"{extra_headers}"
+            "Connection: close\r\n\r\n"
+        )
         conn.sendall(request.encode("ascii"))
         chunks = []
         while True:
@@ -117,8 +128,13 @@ def _raw_http_exchange(port: int, *, method: str = "GET") -> bytes:
     return b"".join(chunks)
 
 
-def _http_exchange(port: int, *, method: str = "GET") -> tuple[int, dict[str, str], bytes]:
-    raw = _raw_http_exchange(port, method=method)
+def _http_exchange(
+    port: int,
+    *,
+    method: str = "GET",
+    headers: tuple[tuple[str, str], ...] = (),
+) -> tuple[int, dict[str, str], bytes]:
+    raw = _raw_http_exchange(port, method=method, headers=headers)
     head, _, body = raw.partition(b"\r\n\r\n")
     lines = head.split(b"\r\n")
     status_line = lines[0].decode("latin-1")
@@ -673,6 +689,42 @@ def test_http_keep_alive_reuse_matches_uvicorn() -> None:
         [_decode_http_body(headers, body) for _status, headers, body in palfrey_responses]
         == [_decode_http_body(headers, body) for _status, headers, body in uvicorn_responses]
         == [b"/one", b"/two"]
+    )
+
+
+def test_http_malformed_forwarded_headers_match_uvicorn() -> None:
+    uvicorn_pythonpath = _uvicorn_pythonpath()
+    if uvicorn_pythonpath is None and importlib.util.find_spec("uvicorn") is None:
+        pytest.skip("uvicorn is not installed and local uvicorn repo is unavailable")
+
+    malformed_headers = (
+        ("X-Forwarded-Proto", "ftp"),
+        ("X-Forwarded-For", ", ,"),
+    )
+    with _spawn_server(
+        "uvicorn",
+        "tests.fixtures.apps:http_scope_echo_app",
+        pythonpath=uvicorn_pythonpath,
+    ) as (_uvicorn_process, uvicorn_port):
+        uvicorn_status, uvicorn_headers, uvicorn_body = _http_exchange(
+            uvicorn_port,
+            headers=malformed_headers,
+        )
+
+    with _spawn_server(
+        "palfrey",
+        "tests.fixtures.apps:http_scope_echo_app",
+    ) as (_palfrey_process, palfrey_port):
+        palfrey_status, palfrey_headers, palfrey_body = _http_exchange(
+            palfrey_port,
+            headers=malformed_headers,
+        )
+
+    assert palfrey_status == uvicorn_status == 200
+    assert (
+        _decode_http_body(palfrey_headers, palfrey_body)
+        == _decode_http_body(uvicorn_headers, uvicorn_body)
+        == b"scheme=http;client=127.0.0.1"
     )
 
 

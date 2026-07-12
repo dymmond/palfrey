@@ -234,6 +234,34 @@ async def http_path_echo_app(scope, receive, send):
         await send({"type": "http.response.body", "body": payload})
 
 
+async def http_scope_echo_app(scope, receive, send):
+    """HTTP app that returns stable client and scheme scope fields."""
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    if scope["type"] == "http":
+        client = scope.get("client") or ("", 0)
+        payload = f"scheme={scope.get('scheme')};client={client[0]}".encode("ascii")
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [
+                    (b"content-type", b"text/plain"),
+                    (b"content-length", str(len(payload)).encode("ascii")),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": payload})
+
+
 async def http_expect_continue_body_app(scope, receive, send):
     """HTTP app that consumes the request body before responding."""
 

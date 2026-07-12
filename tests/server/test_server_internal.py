@@ -650,6 +650,53 @@ async def test_handle_connection_does_not_append_500_after_committed_response(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("headers", "forbidden"),
+    [
+        ([(b"key", b"value\r\nCookie: smuggled=value")], b"Cookie: smuggled=value"),
+        ([(b"bad header", b"value")], b"bad header"),
+    ],
+)
+async def test_handle_connection_rejects_invalid_response_headers_without_smuggling(
+    monkeypatch,
+    headers: list[tuple[bytes, bytes]],
+    forbidden: bytes,
+) -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", timeout_keep_alive=1))
+    writer = DummyWriter()
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": headers})
+        await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+
+    server._resolved_app = ResolvedApp(app=app, interface="asgi3")
+    request = HTTPRequest(
+        method="GET",
+        target="/",
+        http_version="HTTP/1.1",
+        headers=[],
+        body=b"",
+    )
+    calls = {"count": 0}
+
+    async def fake_read_request(reader, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return request
+        return None
+
+    monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
+
+    await server._handle_connection(asyncio.StreamReader(), writer)
+
+    payload = b"".join(writer.writes)
+    assert b"500 Internal Server Error" not in payload
+    assert forbidden not in payload
+    assert payload == b""
+    assert writer.closed is True
+
+
+@pytest.mark.asyncio
 async def test_handle_connection_returns_503_when_concurrency_limit_reached(
     monkeypatch,
 ) -> None:

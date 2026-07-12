@@ -932,11 +932,14 @@ class PalfreyServer:
         except HTTPResponseStartedError as exc:
             response = exc.response
             response.close_after_response = True
-            if writer is not None and response.streamed and not streamed_head_sent:
-                payload = b"".join(encode_http_response_head(response, keep_alive=False))
-                if payload:
-                    writer.write(payload)
-                await writer.drain()
+            if writer is not None:
+                if response.streamed and not streamed_head_sent:
+                    payload = b"".join(encode_http_response_head(response, keep_alive=False))
+                    if payload:
+                        writer.write(payload)
+                    await writer.drain()
+                elif not response.streamed:
+                    response.streamed = True
             logger.error("%s", exc)
 
         if not response.streamed:

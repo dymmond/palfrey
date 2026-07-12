@@ -655,6 +655,45 @@ def test_http_keep_alive_reuse_matches_uvicorn() -> None:
     )
 
 
+def test_http_limit_concurrency_rejection_matches_uvicorn() -> None:
+    uvicorn_pythonpath = _uvicorn_pythonpath()
+    if uvicorn_pythonpath is None and importlib.util.find_spec("uvicorn") is None:
+        pytest.skip("uvicorn is not installed and local uvicorn repo is unavailable")
+    if not _cli_supports_option(
+        "uvicorn",
+        "--limit-concurrency",
+        pythonpath=uvicorn_pythonpath,
+    ):
+        pytest.skip("uvicorn CLI does not support --limit-concurrency in this environment")
+    if not _cli_supports_option("palfrey", "--limit-concurrency"):
+        pytest.skip("palfrey CLI does not support --limit-concurrency in this environment")
+
+    extra_args = ["--limit-concurrency", "1"]
+    with _spawn_server(
+        "uvicorn",
+        "tests.fixtures.apps:http_app",
+        extra_args=extra_args,
+        pythonpath=uvicorn_pythonpath,
+    ) as (_uvicorn_process, uvicorn_port):
+        uvicorn_status, uvicorn_headers, uvicorn_body = _http_exchange(uvicorn_port)
+
+    with _spawn_server(
+        "palfrey",
+        "tests.fixtures.apps:http_app",
+        extra_args=extra_args,
+    ) as (_palfrey_process, palfrey_port):
+        palfrey_status, palfrey_headers, palfrey_body = _http_exchange(palfrey_port)
+
+    assert palfrey_status == uvicorn_status == 503
+    assert (
+        _decode_http_body(palfrey_headers, palfrey_body)
+        == _decode_http_body(uvicorn_headers, uvicorn_body)
+        == b"Service Unavailable"
+    )
+    assert palfrey_headers.get("content-length") == uvicorn_headers.get("content-length")
+    assert palfrey_headers.get("transfer-encoding") == uvicorn_headers.get("transfer-encoding")
+
+
 def test_http_expect_continue_when_body_consumed_matches_uvicorn() -> None:
     uvicorn_pythonpath = _uvicorn_pythonpath()
     if uvicorn_pythonpath is None and importlib.util.find_spec("uvicorn") is None:

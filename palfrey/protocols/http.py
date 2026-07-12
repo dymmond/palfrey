@@ -112,6 +112,15 @@ class HTTPResponse:
     chunked_encoding: bool = False
     suppress_body: bool = False
     streamed: bool = False
+    close_after_response: bool = False
+
+
+class HTTPResponseStartedError(RuntimeError):
+    """Raised when an ASGI error occurs after response start."""
+
+    def __init__(self, message: str, response: HTTPResponse) -> None:
+        super().__init__(message)
+        self.response = response
 
 
 # Pre-computed HTTP status lines for common response codes.
@@ -825,17 +834,25 @@ async def run_http_asgi(
     except BaseException as exc:
         if not response_started:
             await _send_internal_server_error()
-        elif isinstance(exc, RuntimeError):
+        elif isinstance(exc, HTTPResponseStartedError):
             raise
+        elif isinstance(exc, RuntimeError):
+            raise HTTPResponseStartedError(str(exc), response) from exc
         else:
-            raise RuntimeError("Exception in ASGI application") from exc
+            raise HTTPResponseStartedError("Exception in ASGI application", response) from exc
     else:
         if result is not None:
-            raise RuntimeError(f"ASGI callable should return None, but returned '{result}'.")
+            message = f"ASGI callable should return None, but returned '{result}'."
+            if response_started:
+                raise HTTPResponseStartedError(message, response)
+            raise RuntimeError(message)
         if not response_started:
             await _send_internal_server_error()
         elif not response_complete:
-            raise RuntimeError("ASGI callable returned without completing response.")
+            raise HTTPResponseStartedError(
+                "ASGI callable returned without completing response.",
+                response,
+            )
 
     return response
 

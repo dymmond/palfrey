@@ -565,6 +565,91 @@ async def test_handle_connection_streams_asgi_body_before_app_completion(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", ["partial", "duplicate_start"])
+async def test_handle_connection_closes_started_response_without_500(
+    monkeypatch,
+    scenario: str,
+) -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", timeout_keep_alive=1))
+    writer = DummyWriter()
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        if scenario == "duplicate_start":
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+
+    server._resolved_app = ResolvedApp(app=app, interface="asgi3")
+    request = HTTPRequest(
+        method="GET",
+        target="/",
+        http_version="HTTP/1.1",
+        headers=[],
+        body=b"",
+    )
+    calls = {"count": 0}
+
+    async def fake_read_request(reader, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return request
+        return None
+
+    monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
+
+    await server._handle_connection(asyncio.StreamReader(), writer)
+
+    payload = b"".join(writer.writes)
+    assert b"HTTP/1.1 200 OK" in payload
+    assert b"500 Internal Server Error" not in payload
+    assert writer.closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", ["body_after_complete", "value_returned"])
+async def test_handle_connection_does_not_append_500_after_committed_response(
+    monkeypatch,
+    scenario: str,
+) -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", timeout_keep_alive=1))
+    writer = DummyWriter()
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+        if scenario == "body_after_complete":
+            await send({"type": "http.response.body", "body": b"again", "more_body": False})
+        else:
+            return 123
+
+    server._resolved_app = ResolvedApp(app=app, interface="asgi3")
+    request = HTTPRequest(
+        method="GET",
+        target="/",
+        http_version="HTTP/1.1",
+        headers=[],
+        body=b"",
+    )
+    calls = {"count": 0}
+
+    async def fake_read_request(reader, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return request
+        return None
+
+    monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
+
+    await server._handle_connection(asyncio.StreamReader(), writer)
+
+    payload = b"".join(writer.writes)
+    assert b"HTTP/1.1 200 OK" in payload
+    assert b"ok" in payload
+    assert b"500 Internal Server Error" not in payload
+    assert payload.count(b"HTTP/1.1") == 1
+    assert writer.closed is True
+
+
+@pytest.mark.asyncio
 async def test_handle_connection_returns_503_when_concurrency_limit_reached(
     monkeypatch,
 ) -> None:

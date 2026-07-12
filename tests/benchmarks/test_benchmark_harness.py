@@ -124,6 +124,49 @@ class TestBenchmarkPhases:
             assert len(results["measure_samples"]) > 0
             assert all(isinstance(s, int | float) for s in results["measure_samples"])
 
+    def test_measure_phase_collects_requested_sample_count(self):
+        """Measurement phase should repeat requested samples after warmup."""
+        from benchmarks.run import _run_benchmark_phases
+
+        with patch("benchmarks.run._run_http") as mock_http:
+            mock_http.side_effect = [
+                (1000, 1.0),
+                (5000, 1.0),
+                (10000, 2.0),
+                (10000, 2.5),
+                (10000, 2.25),
+            ]
+
+            results = _run_benchmark_phases(
+                server="palfrey",
+                port=8000,
+                http_requests=10000,
+                http_concurrency=10,
+                ws_clients=0,
+                ws_messages=0,
+                sample_count=3,
+            )
+
+            assert mock_http.call_count == 5
+            assert len(results["measure_samples"]) == 3
+            assert len(results["http"]["samples"]) == 3
+            assert results["http"]["statistics"]["samples"] == 3
+
+    def test_measure_phase_rejects_empty_sample_count(self):
+        """Measurement phase should reject a sample count with no samples."""
+        from benchmarks.run import _run_benchmark_phases
+
+        with pytest.raises(ValueError, match="sample_count"):
+            _run_benchmark_phases(
+                server="palfrey",
+                port=8000,
+                http_requests=10000,
+                http_concurrency=10,
+                ws_clients=0,
+                ws_messages=0,
+                sample_count=0,
+            )
+
 
 class TestStatisticalReporting:
     """Test statistical output: mean, median, p99, stddev."""
@@ -180,6 +223,41 @@ class TestStatisticalReporting:
         assert stats["ci_lower"] <= stats["mean"]
         assert stats["ci_upper"] >= stats["mean"]
         assert stats["ci_upper"] > stats["ci_lower"]
+
+    def test_sample_statistics_group_by_server_and_scenario(self):
+        """Repeated samples should be summarized per server and scenario."""
+        from benchmarks.run import ScenarioResult, _sample_statistics
+
+        results = [
+            ScenarioResult("uvicorn", "http", 100, 1.0),
+            ScenarioResult("uvicorn", "http", 100, 2.0),
+            ScenarioResult("palfrey", "http", 100, 0.5),
+            ScenarioResult("palfrey", "http", 100, 1.0),
+        ]
+
+        stats = _sample_statistics(results)
+
+        assert stats["http"]["uvicorn"]["samples"] == 2
+        assert stats["http"]["palfrey"]["samples"] == 2
+        assert stats["http"]["palfrey"]["mean"] > stats["http"]["uvicorn"]["mean"]
+        assert stats["http"]["ratio"]["palfrey_over_uvicorn_mean"] > 1.0
+
+    def test_aggregate_results_combines_matching_samples(self):
+        """Repeated samples should aggregate without dropping later samples."""
+        from benchmarks.run import ScenarioResult, _aggregate_results
+
+        results = [
+            ScenarioResult("palfrey", "http", 100, 1.0),
+            ScenarioResult("palfrey", "http", 100, 3.0),
+            ScenarioResult("palfrey", "websocket", 50, 0.5),
+        ]
+
+        aggregated = _aggregate_results(results)
+
+        assert aggregated == [
+            ScenarioResult("palfrey", "http", 200, 4.0),
+            ScenarioResult("palfrey", "websocket", 50, 0.5),
+        ]
 
 
 class TestReproducibilityFeatures:

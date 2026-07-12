@@ -71,7 +71,7 @@ def test_write_response_drains_when_buffer_exceeds_high_watermark() -> None:
                 keep_alive=True,
             )
 
-        assert writer.drain_calls >= 2
+        assert writer.drain_calls >= 1
         assert writer.transport.size_checks >= 1
 
     asyncio.run(scenario())
@@ -94,8 +94,7 @@ def test_write_response_resumes_writing_after_drain() -> None:
             )
 
         assert writer.events.index("drain") < len(writer.events) - 1
-        assert writer.events[-1] == "drain"
-        assert writer.events[-2] == "write"
+        assert writer.events[-1] == "write"
 
     asyncio.run(scenario())
 
@@ -114,6 +113,28 @@ def test_write_response_non_congested_path_avoids_backpressure_checks() -> None:
                 cast("asyncio.StreamWriter", writer),
                 HTTPResponse(status=200, headers=[]),
                 keep_alive=True,
+            )
+
+        assert writer.transport.size_checks == 0
+        assert writer.drain_calls == 0
+
+    asyncio.run(scenario())
+
+
+def test_write_response_connection_close_drains_non_congested_response() -> None:
+    async def scenario() -> None:
+        server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
+        writer = _WriterNoWritelines()
+
+        with patch.object(
+            server_module,
+            "encode_http_response_chunks",
+            lambda _response, keep_alive: [b"ok", b"done"],
+        ):
+            await server._write_response(
+                cast("asyncio.StreamWriter", writer),
+                HTTPResponse(status=200, headers=[]),
+                keep_alive=False,
             )
 
         assert writer.transport.size_checks == 0
@@ -143,7 +164,7 @@ def test_chunked_streaming_with_writelines_respects_backpressure() -> None:
             )
 
         assert writer.writelines_calls >= 2
-        assert writer.drain_calls >= 2
+        assert writer.drain_calls >= 1
         assert writer.transport.size_checks >= 1
 
     asyncio.run(scenario())

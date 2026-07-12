@@ -1049,7 +1049,7 @@ class PalfreyServer:
         high_watermark_bytes = 262_144
         if hasattr(transport, "get_write_buffer_limits"):
             try:
-                high_watermark_bytes, _ = transport.get_write_buffer_limits()
+                _, high_watermark_bytes = transport.get_write_buffer_limits()
             except (ValueError, TypeError):
                 pass
         pending_bytes = 0
@@ -1084,7 +1084,8 @@ class PalfreyServer:
                 writer.write(chunk)
                 pending_bytes += len(chunk)
                 await drain_if_needed()
-        await writer.drain()
+        if not keep_alive or pending_bytes >= high_watermark_bytes:
+            await writer.drain()
 
     def _service_unavailable_response(self) -> HTTPResponse:
         """

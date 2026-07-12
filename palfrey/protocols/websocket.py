@@ -689,6 +689,9 @@ async def _handle_websocket_core(
         if close_event.is_set():
             return None
 
+        if config.ws_ping_interval is None or config.ws_ping_interval <= 0:
+            return await reader.read(65_536)
+
         read_task = asyncio.create_task(reader.read(65_536))
         close_task = asyncio.create_task(close_event.wait())
         try:

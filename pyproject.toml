@@ -141,6 +141,9 @@ dev = "scripts/docs.py serve"
 [tool.hatch.envs.test]
 features = ["testing", "standard"]
 
+[[tool.hatch.envs.test.matrix]]
+python = ["3.10", "3.11", "3.12", "3.13", "3.14"]
+
 [tool.hatch.envs.test.scripts]
 test = "pytest --cov=palfrey --cov-report=term-missing --cov-report=xml:coverage_reports/coverage.xml --cov-fail-under=85"
 test_man = "pytest -- {args} -s -vv"

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import errno
+import json
 import socket
+from pathlib import Path
 
 import pytest
 
@@ -87,6 +89,8 @@ def test_build_command_uses_optimized_profiles() -> None:
 
     assert "--no-access-log" in palfrey_cmd
     assert "--no-access-log" in uvicorn_cmd
+    assert "--no-proxy-headers" in palfrey_cmd
+    assert "--no-proxy-headers" in uvicorn_cmd
 
     assert palfrey_cmd[palfrey_cmd.index("--http") + 1] == "httptools"
     assert uvicorn_cmd[uvicorn_cmd.index("--http") + 1] == "httptools"
@@ -146,3 +150,47 @@ def test_benchmark_server_skips_disabled_scenarios(
 
     assert results == []
     assert call_counts == {"http": 0, "ws": 0, "stop": 1}
+
+
+def test_main_samples_repeats_simple_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+    output_path = tmp_path / "benchmark.json"
+
+    monkeypatch.setattr(
+        bench_run.sys,
+        "argv",
+        [
+            "run.py",
+            "--http-requests",
+            "100",
+            "--ws-clients",
+            "0",
+            "--samples",
+            "3",
+            "--output",
+            str(output_path),
+        ],
+    )
+
+    def fake_benchmark_server(server: str, **kwargs: object) -> list[bench_run.ScenarioResult]:
+        calls.append(server)
+        return [bench_run.ScenarioResult(server, "http", 100, 0.5)]
+
+    monkeypatch.setattr(bench_run, "_benchmark_server", fake_benchmark_server)
+
+    bench_run.main()
+
+    assert calls == ["uvicorn", "palfrey", "uvicorn", "palfrey", "uvicorn", "palfrey"]
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["samples"] == 3
+    assert payload["summary"]["http"]["palfrey"]["samples"] == 3
+
+
+def test_main_rejects_zero_samples(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(bench_run.sys, "argv", ["run.py", "--samples", "0"])
+
+    with pytest.raises(SystemExit):
+        bench_run.main()

@@ -637,6 +637,7 @@ async def _handle_websocket_core(
     accepted = False
     closed = False
     close_disconnect_code = 1000
+    close_disconnect_reason: str | None = None
     accept_subprotocol: str | None = None
     http_response_started = False
     http_response_status = 500
@@ -654,11 +655,18 @@ async def _handle_websocket_core(
     pending_ping_payload: bytes | None = None
     ping_counter = 0
 
-    def _mark_closed(code: int) -> None:
-        nonlocal closed, close_disconnect_code
+    def _mark_closed(code: int, reason: str | None = None) -> None:
+        nonlocal closed, close_disconnect_code, close_disconnect_reason
         closed = True
         close_disconnect_code = code
+        close_disconnect_reason = reason
         close_event.set()
+
+    def _disconnect_message(code: int, reason: str | None = None) -> Message:
+        message: Message = {"type": "websocket.disconnect", "code": code}
+        if reason is not None:
+            message["reason"] = reason
+        return message
 
     async def _flush_if_needed(*, force: bool = False) -> None:
         """Flushes the underlying stream writer if the buffer exceeds the watermark.
@@ -783,7 +791,7 @@ async def _handle_websocket_core(
 
         while True:
             if closed:
-                return {"type": "websocket.disconnect", "code": close_disconnect_code}
+                return _disconnect_message(close_disconnect_code, close_disconnect_reason)
 
             while True:
                 parsed = _try_parse_frame_from_buffer(read_buffer, max_size=config.ws_max_size)
@@ -794,13 +802,10 @@ async def _handle_websocket_core(
 
                 chunk = await _read_network_chunk()
                 if chunk is None:
-                    return {"type": "websocket.disconnect", "code": close_disconnect_code}
+                    return _disconnect_message(close_disconnect_code, close_disconnect_reason)
                 if not chunk:
                     _mark_closed(1005 if accepted else 1006)
-                    return {
-                        "type": "websocket.disconnect",
-                        "code": close_disconnect_code,
-                    }
+                    return _disconnect_message(close_disconnect_code, close_disconnect_reason)
                 read_buffer.extend(chunk)
 
             if frame.opcode == 0x8:
@@ -813,11 +818,10 @@ async def _handle_websocket_core(
                     except UnicodeDecodeError:
                         _mark_closed(1007)
                         return {"type": "websocket.disconnect", "code": 1007}
+                    _mark_closed(code, reason)
+                    return _disconnect_message(code, reason)
                 _mark_closed(code)
-                message: Message = {"type": "websocket.disconnect", "code": code}
-                if reason:
-                    message["reason"] = reason
-                return message
+                return _disconnect_message(code)
 
             if frame.opcode == 0x9:
                 _write_frame(writer, 0xA, frame.payload)
@@ -981,11 +985,12 @@ async def _handle_websocket_core(
                 return
 
             code = int(message.get("code", 1000))
-            reason = message.get("reason", "").encode("utf-8")
-            payload = struct.pack("!H", code) + reason
+            reason = str(message.get("reason", "") or "")
+            reason_bytes = reason.encode("utf-8")
+            payload = struct.pack("!H", code) + reason_bytes
             _write_frame(writer, 0x8, payload)
             await _flush_if_needed(force=True)
-            _mark_closed(code)
+            _mark_closed(code, reason)
             return
 
         raise RuntimeError(f"Unsupported websocket ASGI message type: {message_type}")
@@ -1155,6 +1160,8 @@ async def _handle_websocket_websockets_backend(
     accepted_headers: list[tuple[bytes, bytes]] = []
     pending_http_response: list[tuple[int, list[tuple[bytes, bytes]], bytes] | None] = [None]
     handshake_accepted = False
+    close_disconnect_code = 1005
+    close_disconnect_reason: str | None = None
 
     async def asgi_receive() -> Message:
         """The ASGI receive channel for the WebSocket connection.
@@ -1170,10 +1177,13 @@ async def _handle_websocket_websockets_backend(
 
         await handshake_completed.wait()
         if closed.is_set():
-            return {
+            message: Message = {
                 "type": "websocket.disconnect",
-                "code": 1005 if handshake_accepted else 1006,
+                "code": close_disconnect_code if handshake_accepted else 1006,
             }
+            if handshake_accepted and close_disconnect_reason is not None:
+                message["reason"] = close_disconnect_reason
+            return message
 
         try:
             payload = await connection.recv()
@@ -1181,9 +1191,7 @@ async def _handle_websocket_websockets_backend(
             closed.set()
             code = int(getattr(connection, "close_code", 1005) or 1005)
             reason = str(getattr(connection, "close_reason", "") or "")
-            if reason:
-                return {"type": "websocket.disconnect", "code": code, "reason": reason}
-            return {"type": "websocket.disconnect", "code": code}
+            return {"type": "websocket.disconnect", "code": code, "reason": reason}
 
         if isinstance(payload, str):
             return {"type": "websocket.receive", "text": payload}
@@ -1199,6 +1207,7 @@ async def _handle_websocket_websockets_backend(
             RuntimeError: If the application violates the ASGI WebSocket spec.
         """
         nonlocal accepted_subprotocol, accepted_headers, handshake_accepted
+        nonlocal close_disconnect_code, close_disconnect_reason
 
         message_type = message["type"]
 
@@ -1264,8 +1273,10 @@ async def _handle_websocket_websockets_backend(
 
         if message_type == "websocket.close":
             code = int(message.get("code", 1000))
-            reason = str(message.get("reason", ""))
+            reason = str(message.get("reason", "") or "")
             await connection.close(code, reason)
+            close_disconnect_code = code
+            close_disconnect_reason = reason
             closed.set()
             return
 
@@ -1562,10 +1573,7 @@ async def _handle_websocket_websockets_sansio_backend(
             close_rcvd = getattr(conn, "close_rcvd", None)
             code = int(getattr(close_rcvd, "code", 1000) or 1000)
             reason = str(getattr(close_rcvd, "reason", "") or "")
-            message: Message = {"type": "websocket.disconnect", "code": code}
-            if reason:
-                message["reason"] = reason
-            queue.put_nowait(message)
+            queue.put_nowait({"type": "websocket.disconnect", "code": code, "reason": reason})
             await _flush_websockets_output(conn, writer, force=True)
             close_sent = True
             return
@@ -1659,10 +1667,7 @@ async def _handle_websocket_websockets_sansio_backend(
                 close_sent_obj = getattr(conn, "close_sent", None)
                 code = int(getattr(close_sent_obj, "code", 1002) or 1002)
                 reason = str(getattr(close_sent_obj, "reason", "") or "")
-                message: Message = {"type": "websocket.disconnect", "code": code}
-                if reason:
-                    message["reason"] = reason
-                queue.put_nowait(message)
+                queue.put_nowait({"type": "websocket.disconnect", "code": code, "reason": reason})
                 await _flush_websockets_output(conn, writer, force=True)
                 close_sent = True
                 return
@@ -1752,13 +1757,9 @@ async def _handle_websocket_websockets_sansio_backend(
                 if message_type == "websocket.close":
                     code = int(message.get("code", 1000))
                     reason = str(message.get("reason", "") or "")
-                    disconnect_message: Message = {
-                        "type": "websocket.disconnect",
-                        "code": code,
-                    }
-                    if reason:
-                        disconnect_message["reason"] = reason
-                    queue.put_nowait(disconnect_message)
+                    queue.put_nowait(
+                        {"type": "websocket.disconnect", "code": code, "reason": reason}
+                    )
                     conn.send_close(code, reason)
                     await _flush_websockets_output(conn, writer, force=True)
                     close_sent = True
@@ -1977,6 +1978,7 @@ async def _handle_websocket_wsproto_backend(
     accepted = False
     closed = False
     close_disconnect_code = 1000
+    close_disconnect_reason: str | None = None
     receive_lock = asyncio.Lock()
     text_chunks: list[str] = []
     bytes_chunks: list[bytes] = []
@@ -1991,15 +1993,18 @@ async def _handle_websocket_wsproto_backend(
         Returns:
             Message: An ASGI-compliant WebSocket message.
         """
-        nonlocal closed, close_disconnect_code
+        nonlocal closed, close_disconnect_code, close_disconnect_reason
 
         async with receive_lock:
             while True:
                 if closed:
-                    return {
+                    message: Message = {
                         "type": "websocket.disconnect",
                         "code": close_disconnect_code,
                     }
+                    if close_disconnect_reason is not None:
+                        message["reason"] = close_disconnect_reason
+                    return message
 
                 packet = await reader.read(65_536)
                 if not packet:
@@ -2062,13 +2067,8 @@ async def _handle_websocket_wsproto_backend(
                         code = int(getattr(event, "code", 1000))
                         close_disconnect_code = code
                         reason = str(getattr(event, "reason", ""))
-                        if reason:
-                            return {
-                                "type": "websocket.disconnect",
-                                "code": code,
-                                "reason": reason,
-                            }
-                        return {"type": "websocket.disconnect", "code": code}
+                        close_disconnect_reason = reason
+                        return {"type": "websocket.disconnect", "code": code, "reason": reason}
 
     async def send(message: Message) -> None:
         """The ASGI send channel for the 'wsproto' backend.
@@ -2079,7 +2079,7 @@ async def _handle_websocket_wsproto_backend(
         Raises:
             RuntimeError: If the application violates the ASGI WebSocket spec.
         """
-        nonlocal accepted, closed, close_disconnect_code
+        nonlocal accepted, closed, close_disconnect_code, close_disconnect_reason
         nonlocal http_response_started, http_response_status
         nonlocal http_response_headers, http_response_body_chunks
 
@@ -2185,6 +2185,7 @@ async def _handle_websocket_wsproto_backend(
             await writer.drain()
             closed = True
             close_disconnect_code = code
+            close_disconnect_reason = reason
             return
 
         raise RuntimeError(f"Unsupported websocket ASGI message type: {message_type}")

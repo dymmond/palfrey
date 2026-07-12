@@ -172,6 +172,34 @@ def _decode_http_body(headers: dict[str, str], body: bytes) -> bytes:
     return bytes(decoded)
 
 
+def _decode_available_http_body(headers: dict[str, str], body: bytes) -> bytes:
+    transfer_encoding = headers.get("transfer-encoding", "").lower()
+    if "chunked" not in transfer_encoding:
+        return body
+
+    index = 0
+    decoded = bytearray()
+    total = len(body)
+    while index < total:
+        line_end = body.find(b"\r\n", index)
+        if line_end == -1:
+            break
+        size_line = body[index:line_end].split(b";", 1)[0]
+        try:
+            size = int(size_line, 16)
+        except ValueError:
+            break
+        index = line_end + 2
+        if size == 0:
+            break
+        chunk_end = index + size
+        if chunk_end > total:
+            break
+        decoded.extend(body[index:chunk_end])
+        index = chunk_end + 2
+    return bytes(decoded)
+
+
 def _parse_http_response(raw: bytes) -> tuple[int, dict[str, str], bytes]:
     head, _, body = raw.partition(b"\r\n\r\n")
     lines = head.split(b"\r\n")
@@ -691,6 +719,67 @@ def test_http_expect_continue_not_sent_when_body_not_consumed_matches_uvicorn() 
         == _decode_http_body(uvicorn_responses[0][1], uvicorn_responses[0][2])
         == b"ok"
     )
+
+
+def test_http_exception_before_response_matches_uvicorn() -> None:
+    uvicorn_pythonpath = _uvicorn_pythonpath()
+    if uvicorn_pythonpath is None and importlib.util.find_spec("uvicorn") is None:
+        pytest.skip("uvicorn is not installed and local uvicorn repo is unavailable")
+
+    with _spawn_server(
+        "uvicorn",
+        "tests.fixtures.apps:http_exception_before_response_app",
+        pythonpath=uvicorn_pythonpath,
+    ) as (_uvicorn_process, uvicorn_port):
+        uvicorn_status, uvicorn_headers, uvicorn_body = _http_exchange(uvicorn_port)
+
+    with _spawn_server(
+        "palfrey",
+        "tests.fixtures.apps:http_exception_before_response_app",
+    ) as (_palfrey_process, palfrey_port):
+        palfrey_status, palfrey_headers, palfrey_body = _http_exchange(palfrey_port)
+
+    assert palfrey_status == uvicorn_status == 500
+    assert (
+        _decode_http_body(palfrey_headers, palfrey_body)
+        == _decode_http_body(uvicorn_headers, uvicorn_body)
+        == b"Internal Server Error"
+    )
+    assert palfrey_headers.get("content-length") == uvicorn_headers.get("content-length")
+    assert palfrey_headers.get("transfer-encoding") == uvicorn_headers.get("transfer-encoding")
+
+
+def test_http_exception_after_response_start_matches_uvicorn() -> None:
+    uvicorn_pythonpath = _uvicorn_pythonpath()
+    if uvicorn_pythonpath is None and importlib.util.find_spec("uvicorn") is None:
+        pytest.skip("uvicorn is not installed and local uvicorn repo is unavailable")
+
+    with _spawn_server(
+        "uvicorn",
+        "tests.fixtures.apps:http_exception_after_response_start_app",
+        pythonpath=uvicorn_pythonpath,
+    ) as (_uvicorn_process, uvicorn_port):
+        uvicorn_raw = _raw_http_exchange(uvicorn_port)
+
+    with _spawn_server(
+        "palfrey",
+        "tests.fixtures.apps:http_exception_after_response_start_app",
+    ) as (_palfrey_process, palfrey_port):
+        palfrey_raw = _raw_http_exchange(palfrey_port)
+
+    uvicorn_status, uvicorn_headers, uvicorn_body = _parse_http_response(uvicorn_raw)
+    palfrey_status, palfrey_headers, palfrey_body = _parse_http_response(palfrey_raw)
+
+    assert palfrey_status == uvicorn_status == 200
+    assert (
+        _decode_available_http_body(palfrey_headers, palfrey_body)
+        == _decode_available_http_body(uvicorn_headers, uvicorn_body)
+        == b"partial"
+    )
+    assert b"Internal Server Error" not in palfrey_raw
+    assert b"Internal Server Error" not in uvicorn_raw
+    assert palfrey_headers.get("content-length") == uvicorn_headers.get("content-length")
+    assert palfrey_headers.get("transfer-encoding") == uvicorn_headers.get("transfer-encoding")
 
 
 def test_websocket_echo_matches_uvicorn_for_fixture_app() -> None:

@@ -270,6 +270,46 @@ async def http_expect_continue_body_app(scope, receive, send):
         await send({"type": "http.response.body", "body": payload})
 
 
+async def http_exception_before_response_app(scope, receive, send):
+    """HTTP app that fails before starting a response."""
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    if scope["type"] == "http":
+        raise RuntimeError("response did not start")
+
+
+async def http_exception_after_response_start_app(scope, receive, send):
+    """HTTP app that fails after response start and a partial body chunk."""
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    if scope["type"] == "http":
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"text/plain")],
+            }
+        )
+        await send({"type": "http.response.body", "body": b"partial", "more_body": True})
+        raise RuntimeError("response already started")
+
+
 async def lifespan_fail_app(scope, receive, send):
     """Fail lifespan startup to validate process-exit behavior."""
 

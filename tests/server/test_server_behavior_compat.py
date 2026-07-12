@@ -240,7 +240,7 @@ def test_shutdown_closes_server_and_runs_lifespan_shutdown(
     assert fake_lifespan.shutdown_calls == 1
 
 
-def test_shutdown_requests_shutdown_on_all_connections(
+def test_shutdown_waits_before_closing_connections(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
@@ -260,8 +260,8 @@ def test_shutdown_requests_shutdown_on_all_connections(
 
     asyncio.run(server._shutdown())
 
-    assert connection_one.shutdown_calls == 1
-    assert connection_two.shutdown_calls == 1
+    assert connection_one.shutdown_calls == 0
+    assert connection_two.shutdown_calls == 0
 
 
 def test_shutdown_cancels_tasks_when_graceful_timeout_expires(
@@ -274,6 +274,8 @@ def test_shutdown_cancels_tasks_when_graceful_timeout_expires(
         )
     )
     server._server = FakeAsyncServer()  # type: ignore[assignment]
+    connection = FakeConnection()
+    server.server_state.connections = {connection}  # type: ignore[assignment]
     task = FakeTask()
     server.server_state.tasks = {task}  # type: ignore[assignment]
 
@@ -309,6 +311,7 @@ def test_shutdown_cancels_tasks_when_graceful_timeout_expires(
 
     assert task.cancelled is True
     assert task.message == "Task cancelled, timeout graceful shutdown exceeded"
+    assert connection.shutdown_calls == 1
     assert any("timeout graceful shutdown exceeded" in message for message in messages)
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import importlib.util
 import os
+import signal
 import socket
 import struct
 import subprocess
@@ -185,6 +186,19 @@ def _http_keep_alive_timeout_exchange(
             closed = data == b""
             break
         return status, headers, body, closed
+
+
+def _http_active_request_shutdown_exchange(
+    process: subprocess.Popen[bytes],
+    port: int,
+) -> tuple[int, dict[str, str], bytes, int]:
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as conn:
+        request = f"GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+        conn.sendall(request.encode("ascii"))
+        time.sleep(0.1)
+        process.send_signal(signal.SIGINT)
+        status, headers, body = _read_http_response(conn)
+    return status, headers, body, process.wait(timeout=10)
 
 
 def _decode_http_body(headers: dict[str, str], body: bytes) -> bytes:
@@ -792,6 +806,48 @@ def test_http_keep_alive_timeout_matches_uvicorn() -> None:
         == b"ok"
     )
     assert palfrey_closed == uvicorn_closed is True
+
+
+def test_http_graceful_shutdown_active_request_matches_uvicorn() -> None:
+    uvicorn_pythonpath = _uvicorn_pythonpath()
+    if uvicorn_pythonpath is None and importlib.util.find_spec("uvicorn") is None:
+        pytest.skip("uvicorn is not installed and local uvicorn repo is unavailable")
+    if not _cli_supports_option(
+        "uvicorn",
+        "--timeout-graceful-shutdown",
+        pythonpath=uvicorn_pythonpath,
+    ):
+        pytest.skip("uvicorn CLI does not support --timeout-graceful-shutdown in this environment")
+    if not _cli_supports_option("palfrey", "--timeout-graceful-shutdown"):
+        pytest.skip("palfrey CLI does not support --timeout-graceful-shutdown in this environment")
+
+    extra_args = ["--timeout-graceful-shutdown", "5"]
+    with _spawn_server(
+        "uvicorn",
+        "tests.fixtures.apps:http_slow_response_app",
+        extra_args=extra_args,
+        pythonpath=uvicorn_pythonpath,
+    ) as (uvicorn_process, uvicorn_port):
+        uvicorn_status, uvicorn_headers, uvicorn_body, uvicorn_code = (
+            _http_active_request_shutdown_exchange(uvicorn_process, uvicorn_port)
+        )
+
+    with _spawn_server(
+        "palfrey",
+        "tests.fixtures.apps:http_slow_response_app",
+        extra_args=extra_args,
+    ) as (palfrey_process, palfrey_port):
+        palfrey_status, palfrey_headers, palfrey_body, palfrey_code = (
+            _http_active_request_shutdown_exchange(palfrey_process, palfrey_port)
+        )
+
+    assert palfrey_status == uvicorn_status == 200
+    assert (
+        _decode_http_body(palfrey_headers, palfrey_body)
+        == _decode_http_body(uvicorn_headers, uvicorn_body)
+        == b"slow-ok"
+    )
+    assert palfrey_code == uvicorn_code == 0
 
 
 def test_http_limit_concurrency_rejection_matches_uvicorn() -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 
 
@@ -454,6 +455,33 @@ async def http_body_after_complete_app(scope, receive, send):
         )
         await send({"type": "http.response.body", "body": b"ok", "more_body": False})
         await send({"type": "http.response.body", "body": b"late", "more_body": False})
+
+
+async def http_slow_response_app(scope, receive, send):
+    """HTTP app that keeps one request active briefly."""
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    if scope["type"] == "http":
+        await asyncio.sleep(0.5)
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [
+                    (b"content-type", b"text/plain"),
+                    (b"content-length", b"7"),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": b"slow-ok"})
 
 
 async def lifespan_fail_app(scope, receive, send):

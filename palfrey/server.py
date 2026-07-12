@@ -500,10 +500,6 @@ class PalfreyServer:
                 sock.close()
         self._external_sockets.clear()
 
-        for connection in list(self.server_state.connections):
-            connection.shutdown()
-        await asyncio.sleep(0.1)
-
         try:
             await asyncio.wait_for(
                 self._wait_tasks_to_complete(),
@@ -516,6 +512,9 @@ class PalfreyServer:
             )
             for task in list(self.server_state.tasks):
                 task.cancel(msg="Task cancelled, timeout graceful shutdown exceeded")
+
+        for connection in list(self.server_state.connections):
+            connection.shutdown()
 
         if self._lifespan is not None and not self._force_exit:
             await self._lifespan.shutdown()

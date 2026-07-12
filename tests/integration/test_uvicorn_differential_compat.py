@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 LOCAL_UVICORN_REPO = Path(
-    os.environ.get("PALFREY_UVICORN_REPO", "/Users/tarsil/Projects/github/dymmond/uvicorn")
+    os.environ.get("PALFREY_UVICORN_REPO", "<uvicorn-reference-repo>")
 )
 
 

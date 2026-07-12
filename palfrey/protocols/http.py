@@ -68,6 +68,7 @@ class HTTPBodyStream:
     body_limit: int
     bytes_read: int = 0
     complete: bool = False
+    disconnected: bool = False
     _complete_event: asyncio.Event = field(default_factory=asyncio.Event, init=False, repr=False)
 
     async def receive(self) -> tuple[bytes, bool]:
@@ -80,7 +81,15 @@ class HTTPBodyStream:
             self._mark_complete()
             return b"", False
 
-        chunk = await self.reader.readexactly(min(65_536, remaining))
+        try:
+            chunk = await self.reader.readexactly(min(65_536, remaining))
+        except asyncio.IncompleteReadError as exc:
+            chunk = exc.partial
+            self.bytes_read += len(chunk)
+            self.disconnected = True
+            self._mark_complete()
+            return chunk, bool(chunk)
+
         self.bytes_read += len(chunk)
         if self.bytes_read >= self.content_length:
             self._mark_complete()
@@ -805,8 +814,12 @@ async def run_http_asgi(
                 await on_100_continue()
 
         if body_stream is not None:
+            if body_stream.disconnected:
+                return {"type": "http.disconnect"}
             if not body_stream.complete:
                 body, more_body = await body_stream.receive()
+                if body_stream.disconnected and not body:
+                    return {"type": "http.disconnect"}
                 return {
                     "type": "http.request",
                     "body": body,

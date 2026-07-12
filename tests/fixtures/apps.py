@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 
 async def http_app(scope, receive, send):
     """Return a simple HTTP response and lifecycle events."""
@@ -260,6 +262,34 @@ async def http_scope_echo_app(scope, receive, send):
             }
         )
         await send({"type": "http.response.body", "body": payload})
+
+
+async def http_disconnect_observer_app(scope, receive, send):
+    """HTTP app that records request/disconnect event order for tests."""
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    if scope["type"] == "http":
+        events = []
+        while True:
+            message = await receive()
+            events.append(message["type"])
+            if message["type"] == "http.disconnect":
+                break
+            if not message.get("more_body", False):
+                break
+
+        log_path = os.environ.get("PALFREY_DISCONNECT_LOG")
+        if log_path:
+            with open(log_path, "w", encoding="utf-8") as log_file:
+                log_file.write(",".join(events))
 
 
 async def http_expect_continue_body_app(scope, receive, send):

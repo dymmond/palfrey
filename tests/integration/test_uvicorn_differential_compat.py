@@ -63,6 +63,7 @@ def _spawn_server(
     app_path: str,
     *,
     extra_args: list[str] | None = None,
+    extra_env: dict[str, str] | None = None,
     pythonpath: str | None = None,
 ) -> Iterator[tuple[subprocess.Popen[bytes], int]]:
     port = _available_port()
@@ -85,6 +86,8 @@ def _spawn_server(
     if pythonpath:
         existing = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = pythonpath if not existing else f"{pythonpath}{os.pathsep}{existing}"
+    if extra_env:
+        env.update(extra_env)
 
     process = subprocess.Popen(
         command,
@@ -326,6 +329,27 @@ def _http_chunked_request_exchange(port: int) -> tuple[int, dict[str, str], byte
         time.sleep(0.02)
         conn.sendall(b"6\r\nsecond\r\n0\r\n\r\n")
         return _read_http_response(conn)
+
+
+def _send_partial_request_and_close(port: int) -> None:
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as conn:
+        request = (
+            "POST / HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{port}\r\n"
+            "Content-Length: 10\r\n"
+            "Connection: close\r\n\r\n"
+            "hello"
+        )
+        conn.sendall(request.encode("ascii"))
+
+
+def _wait_for_text(path: Path, *, timeout: float = 5.0) -> str:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return path.read_text(encoding="utf-8")
+        time.sleep(0.05)
+    raise TimeoutError(f"Timed out waiting for {path.name}")
 
 
 def _ws_send_text(sock: socket.socket, text: str) -> None:
@@ -916,6 +940,33 @@ def test_http_chunked_request_body_matches_uvicorn() -> None:
     )
     assert palfrey_headers.get("content-length") == uvicorn_headers.get("content-length")
     assert palfrey_headers.get("transfer-encoding") == uvicorn_headers.get("transfer-encoding")
+
+
+def test_http_client_disconnect_message_matches_uvicorn(tmp_path: Path) -> None:
+    uvicorn_pythonpath = _uvicorn_pythonpath()
+    if uvicorn_pythonpath is None and importlib.util.find_spec("uvicorn") is None:
+        pytest.skip("uvicorn is not installed and local uvicorn repo is unavailable")
+
+    uvicorn_log = tmp_path / "uvicorn-disconnect.txt"
+    with _spawn_server(
+        "uvicorn",
+        "tests.fixtures.apps:http_disconnect_observer_app",
+        extra_env={"PALFREY_DISCONNECT_LOG": str(uvicorn_log)},
+        pythonpath=uvicorn_pythonpath,
+    ) as (_uvicorn_process, uvicorn_port):
+        _send_partial_request_and_close(uvicorn_port)
+        uvicorn_events = _wait_for_text(uvicorn_log)
+
+    palfrey_log = tmp_path / "palfrey-disconnect.txt"
+    with _spawn_server(
+        "palfrey",
+        "tests.fixtures.apps:http_disconnect_observer_app",
+        extra_env={"PALFREY_DISCONNECT_LOG": str(palfrey_log)},
+    ) as (_palfrey_process, palfrey_port):
+        _send_partial_request_and_close(palfrey_port)
+        palfrey_events = _wait_for_text(palfrey_log)
+
+    assert palfrey_events == uvicorn_events == "http.request,http.disconnect"
 
 
 def test_http_no_response_matches_uvicorn() -> None:

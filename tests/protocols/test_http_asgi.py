@@ -164,6 +164,51 @@ def test_run_http_asgi_rejects_messages_after_response_completion() -> None:
         )
 
 
+def test_run_http_asgi_receive_after_response_returns_disconnect() -> None:
+    observed: list[dict[str, object]] = []
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+        observed.append(await receive())
+
+    asyncio.run(
+        run_http_asgi(
+            app,
+            {"type": "http", "headers": [], "path": "/", "method": "POST", "state": {}},
+            b"payload",
+        )
+    )
+
+    assert observed == [{"type": "http.disconnect"}]
+
+
+def test_run_http_asgi_late_receive_does_not_send_100_continue() -> None:
+    sent_continue = {"count": 0}
+    observed: list[dict[str, object]] = []
+
+    async def on_continue() -> None:
+        sent_continue["count"] += 1
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+        observed.append(await receive())
+
+    asyncio.run(
+        run_http_asgi(
+            app,
+            {"type": "http", "headers": [], "path": "/", "method": "POST", "state": {}},
+            b"payload",
+            expect_100_continue=True,
+            on_100_continue=on_continue,
+        )
+    )
+
+    assert observed == [{"type": "http.disconnect"}]
+    assert sent_continue["count"] == 0
+
+
 def test_run_http_asgi_streams_request_body_chunks() -> None:
     observed: list[bytes] = []
     observed_more_body: list[bool] = []

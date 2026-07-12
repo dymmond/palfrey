@@ -721,6 +721,9 @@ async def run_http_asgi(
             Message: An 'http.request' or 'http.disconnect' message.
         """
         nonlocal waiting_for_100_continue, body_index
+        if response_complete:
+            return {"type": "http.disconnect"}
+
         if waiting_for_100_continue:
             waiting_for_100_continue = False
             if on_100_continue is not None:

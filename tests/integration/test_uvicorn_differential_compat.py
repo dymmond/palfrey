@@ -14,16 +14,13 @@ from pathlib import Path
 
 import pytest
 
-LOCAL_UVICORN_REPO = Path(
-    os.environ.get("PALFREY_UVICORN_REPO", "<uvicorn-reference-repo>")
-)
-
 
 def _uvicorn_pythonpath() -> str | None:
+    configured_repo = os.environ.get("PALFREY_UVICORN_REPO")
+    if configured_repo and Path(configured_repo).exists():
+        return configured_repo
     if importlib.util.find_spec("uvicorn") is not None:
         return None
-    if LOCAL_UVICORN_REPO.exists():
-        return str(LOCAL_UVICORN_REPO)
     return None
 
 
@@ -133,6 +130,23 @@ def _http_exchange(port: int, *, method: str = "GET") -> tuple[int, dict[str, st
     return status, headers, body
 
 
+def _http_keep_alive_exchange(
+    port: int,
+    *,
+    paths: tuple[str, str] = ("/one", "/two"),
+) -> list[tuple[int, dict[str, str], bytes]]:
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as conn:
+        responses = []
+        for index, path in enumerate(paths):
+            connection = "keep-alive" if index == 0 else "close"
+            request = (
+                f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: {connection}\r\n\r\n"
+            )
+            conn.sendall(request.encode("ascii"))
+            responses.append(_read_http_response(conn))
+        return responses
+
+
 def _decode_http_body(headers: dict[str, str], body: bytes) -> bytes:
     transfer_encoding = headers.get("transfer-encoding", "").lower()
     if "chunked" not in transfer_encoding:
@@ -208,6 +222,30 @@ def _read_http_response(sock: socket.socket) -> tuple[int, dict[str, str], bytes
         body.extend(chunk)
 
     return status, headers, bytes(body[:content_length])
+
+
+def _http_expect_continue_exchange(
+    port: int,
+    *,
+    body: bytes,
+    send_body_after_continue: bool,
+) -> list[tuple[int, dict[str, str], bytes]]:
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as conn:
+        request = (
+            "POST / HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{port}\r\n"
+            "Expect: 100-continue\r\n"
+            "Content-Type: application/octet-stream\r\n"
+            f"Content-Length: {len(body)}\r\n"
+            "Connection: close\r\n\r\n"
+        )
+        conn.sendall(request.encode("ascii"))
+        first = _read_http_response(conn)
+        responses = [first]
+        if first[0] == 100 and send_body_after_continue:
+            conn.sendall(body)
+            responses.append(_read_http_response(conn))
+        return responses
 
 
 def _ws_send_text(sock: socket.socket, text: str) -> None:
@@ -514,6 +552,145 @@ def test_http_duplicate_set_cookie_headers_match_uvicorn() -> None:
     uvicorn_set_cookies = [line for line in uvicorn_head if line.lower().startswith(b"set-cookie:")]
     palfrey_set_cookies = [line for line in palfrey_head if line.lower().startswith(b"set-cookie:")]
     assert palfrey_set_cookies == uvicorn_set_cookies
+
+
+def test_http_streamed_response_matches_uvicorn() -> None:
+    uvicorn_pythonpath = _uvicorn_pythonpath()
+    if uvicorn_pythonpath is None and importlib.util.find_spec("uvicorn") is None:
+        pytest.skip("uvicorn is not installed and local uvicorn repo is unavailable")
+
+    with _spawn_server(
+        "uvicorn",
+        "tests.fixtures.apps:http_streaming_app",
+        pythonpath=uvicorn_pythonpath,
+    ) as (_uvicorn_process, uvicorn_port):
+        uvicorn_status, uvicorn_headers, uvicorn_body = _http_exchange(uvicorn_port)
+
+    with _spawn_server(
+        "palfrey",
+        "tests.fixtures.apps:http_streaming_app",
+    ) as (_palfrey_process, palfrey_port):
+        palfrey_status, palfrey_headers, palfrey_body = _http_exchange(palfrey_port)
+
+    assert palfrey_status == uvicorn_status == 200
+    assert (
+        _decode_http_body(palfrey_headers, palfrey_body)
+        == _decode_http_body(uvicorn_headers, uvicorn_body)
+        == b"first-second"
+    )
+    assert palfrey_headers.get("transfer-encoding") == uvicorn_headers.get("transfer-encoding")
+    assert palfrey_headers.get("content-length") == uvicorn_headers.get("content-length")
+
+
+def test_http_keep_alive_reuse_matches_uvicorn() -> None:
+    uvicorn_pythonpath = _uvicorn_pythonpath()
+    if uvicorn_pythonpath is None and importlib.util.find_spec("uvicorn") is None:
+        pytest.skip("uvicorn is not installed and local uvicorn repo is unavailable")
+
+    with _spawn_server(
+        "uvicorn",
+        "tests.fixtures.apps:http_path_echo_app",
+        pythonpath=uvicorn_pythonpath,
+    ) as (_uvicorn_process, uvicorn_port):
+        uvicorn_responses = _http_keep_alive_exchange(uvicorn_port)
+
+    with _spawn_server(
+        "palfrey",
+        "tests.fixtures.apps:http_path_echo_app",
+    ) as (_palfrey_process, palfrey_port):
+        palfrey_responses = _http_keep_alive_exchange(palfrey_port)
+
+    assert (
+        [status for status, _headers, _body in palfrey_responses]
+        == [status for status, _headers, _body in uvicorn_responses]
+        == [200, 200]
+    )
+    assert (
+        [_decode_http_body(headers, body) for _status, headers, body in palfrey_responses]
+        == [_decode_http_body(headers, body) for _status, headers, body in uvicorn_responses]
+        == [b"/one", b"/two"]
+    )
+
+
+def test_http_expect_continue_when_body_consumed_matches_uvicorn() -> None:
+    uvicorn_pythonpath = _uvicorn_pythonpath()
+    if uvicorn_pythonpath is None and importlib.util.find_spec("uvicorn") is None:
+        pytest.skip("uvicorn is not installed and local uvicorn repo is unavailable")
+
+    body = b'{"hello": "world"}'
+    with _spawn_server(
+        "uvicorn",
+        "tests.fixtures.apps:http_expect_continue_body_app",
+        pythonpath=uvicorn_pythonpath,
+    ) as (_uvicorn_process, uvicorn_port):
+        uvicorn_responses = _http_expect_continue_exchange(
+            uvicorn_port,
+            body=body,
+            send_body_after_continue=True,
+        )
+
+    with _spawn_server(
+        "palfrey",
+        "tests.fixtures.apps:http_expect_continue_body_app",
+    ) as (_palfrey_process, palfrey_port):
+        palfrey_responses = _http_expect_continue_exchange(
+            palfrey_port,
+            body=body,
+            send_body_after_continue=True,
+        )
+
+    assert (
+        [status for status, _headers, _body in palfrey_responses]
+        == [status for status, _headers, _body in uvicorn_responses]
+        == [100, 200]
+    )
+    assert (
+        _decode_http_body(palfrey_responses[-1][1], palfrey_responses[-1][2])
+        == _decode_http_body(uvicorn_responses[-1][1], uvicorn_responses[-1][2])
+        == b'Body: {"hello": "world"}'
+    )
+    assert palfrey_responses[-1][1].get("content-length") == uvicorn_responses[-1][1].get(
+        "content-length"
+    )
+
+
+def test_http_expect_continue_not_sent_when_body_not_consumed_matches_uvicorn() -> None:
+    uvicorn_pythonpath = _uvicorn_pythonpath()
+    if uvicorn_pythonpath is None and importlib.util.find_spec("uvicorn") is None:
+        pytest.skip("uvicorn is not installed and local uvicorn repo is unavailable")
+
+    body = b'{"hello": "world"}'
+    with _spawn_server(
+        "uvicorn",
+        "tests.fixtures.apps:http_app",
+        pythonpath=uvicorn_pythonpath,
+    ) as (_uvicorn_process, uvicorn_port):
+        uvicorn_responses = _http_expect_continue_exchange(
+            uvicorn_port,
+            body=body,
+            send_body_after_continue=False,
+        )
+
+    with _spawn_server("palfrey", "tests.fixtures.apps:http_app") as (
+        _palfrey_process,
+        palfrey_port,
+    ):
+        palfrey_responses = _http_expect_continue_exchange(
+            palfrey_port,
+            body=body,
+            send_body_after_continue=False,
+        )
+
+    assert (
+        [status for status, _headers, _body in palfrey_responses]
+        == [status for status, _headers, _body in uvicorn_responses]
+        == [200]
+    )
+    assert (
+        _decode_http_body(palfrey_responses[0][1], palfrey_responses[0][2])
+        == _decode_http_body(uvicorn_responses[0][1], uvicorn_responses[0][2])
+        == b"ok"
+    )
 
 
 def test_websocket_echo_matches_uvicorn_for_fixture_app() -> None:

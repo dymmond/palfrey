@@ -705,6 +705,12 @@ class PalfreyServer:
                 if not response.streamed:
                     await self._write_response(writer, response, keep_alive=keep_processing)
 
+                if keep_processing and request.body_stream is not None:
+                    try:
+                        await request.body_stream.drain()
+                    except Exception:
+                        keep_processing = False
+
                 self.server_state.total_requests += 1
                 if self._max_requests_before_exit is None:
                     self._max_requests_before_exit = self._compute_max_requests_before_exit()
@@ -809,6 +815,7 @@ class PalfreyServer:
                     reader,
                     max_head_size=self.config.h11_max_incomplete_event_size or 1_048_576,
                     parser_mode=self.config.effective_http,
+                    stream_body=True,
                 )
                 try:
                     if first_request and keep_alive_timeout > 0:
@@ -826,6 +833,8 @@ class PalfreyServer:
                 await self._queue_with_backpressure(reader, queue, _QueuedRequest(request=request))
                 if request is None:
                     return
+                if request.body_stream is not None:
+                    await request.body_stream.wait_complete()
         except asyncio.CancelledError:
             return
 
@@ -891,8 +900,12 @@ class PalfreyServer:
             is_tls=context.is_tls,
         )
 
-        body_input: bytes | list[bytes] = (
-            request.body_chunks if request.body_chunks else request.body
+        body_input = (
+            request.body_stream
+            if request.body_stream is not None
+            else request.body_chunks
+            if request.body_chunks
+            else request.body
         )
         streamed_head_sent = False
 

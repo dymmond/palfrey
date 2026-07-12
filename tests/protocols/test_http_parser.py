@@ -28,6 +28,25 @@ def test_read_http_request_with_content_length_body() -> None:
     assert request.body == b"hello"
 
 
+def test_read_http_request_stream_body_defers_content_length_body() -> None:
+    async def scenario() -> None:
+        reader = asyncio.StreamReader()
+        reader.feed_data(b"POST /submit HTTP/1.1\r\nHost: test\r\nContent-Length: 5\r\n\r\n")
+
+        request = await asyncio.wait_for(read_http_request(reader, stream_body=True), timeout=0.1)
+        assert request is not None
+        assert request.body == b""
+        assert request.body_chunks == []
+        assert request.body_stream is not None
+
+        reader.feed_data(b"hello")
+        body, more_body = await request.body_stream.receive()
+        assert body == b"hello"
+        assert more_body is False
+
+    asyncio.run(scenario())
+
+
 def test_read_http_request_with_chunked_body() -> None:
     payload = (
         b"POST /chunked HTTP/1.1\r\n"

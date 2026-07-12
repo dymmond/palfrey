@@ -54,6 +54,53 @@ if TYPE_CHECKING:
 
 
 @dataclass(slots=True)
+class HTTPBodyStream:
+    """
+    Deferred reader for a fixed-size HTTP request body.
+
+    The server uses this when an application may respond before consuming the
+    body. It keeps the public read_http_request() behavior buffered by default
+    while allowing the connection loop to preserve request framing.
+    """
+
+    reader: asyncio.StreamReader
+    content_length: int
+    body_limit: int
+    bytes_read: int = 0
+    complete: bool = False
+    _complete_event: asyncio.Event = field(default_factory=asyncio.Event, init=False, repr=False)
+
+    async def receive(self) -> tuple[bytes, bool]:
+        """Read the next request-body chunk and report whether more data remains."""
+        if self.complete:
+            return b"", False
+
+        remaining = self.content_length - self.bytes_read
+        if remaining <= 0:
+            self._mark_complete()
+            return b"", False
+
+        chunk = await self.reader.readexactly(min(65_536, remaining))
+        self.bytes_read += len(chunk)
+        if self.bytes_read >= self.content_length:
+            self._mark_complete()
+        return chunk, not self.complete
+
+    async def drain(self) -> None:
+        """Consume unread body bytes so the connection can parse the next request."""
+        while not self.complete:
+            await self.receive()
+
+    async def wait_complete(self) -> None:
+        """Wait until the request body has been consumed or drained."""
+        await self._complete_event.wait()
+
+    def _mark_complete(self) -> None:
+        self.complete = True
+        self._complete_event.set()
+
+
+@dataclass(slots=True)
 class HTTPRequest:
     """
     Data container for a parsed HTTP request, including headers and body content.
@@ -77,6 +124,7 @@ class HTTPRequest:
     headers: Sequence[tuple[str, str] | tuple[bytes, bytes]]
     body: bytes
     body_chunks: list[bytes] = field(default_factory=list)
+    body_stream: HTTPBodyStream | None = None
 
     def __post_init__(self) -> None:
         """Synchronizes the body and body_chunks attributes after initialization.
@@ -85,6 +133,12 @@ class HTTPRequest:
         concatenated content. If only body is provided, body_chunks is populated
         with a single-element list containing that body.
         """
+        if self.body_stream is not None:
+            if self.body_chunks:
+                self.body = b"".join(self.body_chunks)
+            elif self.body:
+                self.body_chunks = [self.body]
+            return
         if self.body_chunks:
             self.body = b"".join(self.body_chunks)
             return
@@ -423,6 +477,7 @@ async def read_http_request(
     max_head_size: int = 1_048_576,
     body_limit: int = 4_194_304,
     parser_mode: str = "auto",
+    stream_body: bool = False,
 ) -> HTTPRequest | None:
     """
     Reads and parses a full HTTP request (head and body) from the reader.
@@ -461,9 +516,16 @@ async def read_http_request(
         if content_length < 0:
             raise ValueError("Invalid Content-Length header")
 
+    if content_length > body_limit:
+        raise ValueError("HTTP body exceeds configured limit")
+
     body_chunks: list[bytes] = [b""]
+    body_stream: HTTPBodyStream | None = None
     if b"chunked" in transfer_encoding:
         body_chunks = await _read_chunked_body_chunks(reader, body_limit)
+    elif stream_body and content_length > 0:
+        body_chunks = []
+        body_stream = HTTPBodyStream(reader, content_length, body_limit)
     else:
         body_chunks = await _read_content_length_body_chunks(reader, content_length, body_limit)
     body = b"".join(body_chunks)
@@ -482,6 +544,7 @@ async def read_http_request(
         headers=request_headers,
         body=body,
         body_chunks=body_chunks,
+        body_stream=body_stream,
     )
 
 
@@ -644,7 +707,7 @@ def build_http_scope(
 async def run_http_asgi(
     app: ASGIApplication,
     scope: Scope,
-    request_body: bytes | list[bytes],
+    request_body: bytes | list[bytes] | HTTPBodyStream,
     *,
     expect_100_continue: bool = False,
     on_100_continue: Callable[[], Awaitable[None]] | None = None,
@@ -679,8 +742,15 @@ async def run_http_asgi(
         RuntimeError: If the ASGI application violates the protocol sequence or crashes.
     """
     response = HTTPResponse()
-    body_chunks = request_body if isinstance(request_body, list) else [request_body]
-    if not body_chunks:
+    body_stream = request_body if isinstance(request_body, HTTPBodyStream) else None
+    body_chunks = (
+        []
+        if body_stream is not None
+        else request_body
+        if isinstance(request_body, list)
+        else [request_body]
+    )
+    if body_stream is None and not body_chunks:
         body_chunks = [b""]
 
     response_started = False
@@ -728,6 +798,17 @@ async def run_http_asgi(
             waiting_for_100_continue = False
             if on_100_continue is not None:
                 await on_100_continue()
+
+        if body_stream is not None:
+            if not body_stream.complete:
+                body, more_body = await body_stream.receive()
+                return {
+                    "type": "http.request",
+                    "body": body,
+                    "more_body": more_body,
+                }
+            await message_complete.wait()
+            return {"type": "http.disconnect"}
 
         if body_index < len(body_chunks):
             body = body_chunks[body_index]

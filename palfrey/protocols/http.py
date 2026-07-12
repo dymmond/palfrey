@@ -759,6 +759,7 @@ async def run_http_asgi(
             waiting_for_100_continue = False
 
             response.status = int(message.get("status", 200))
+            _validate_response_status(response.status)
             response.headers = []
             for raw_name, raw_value in message.get("headers", []):
                 name = _coerce_header_bytes(raw_name)
@@ -877,6 +878,12 @@ def _validate_response_header(name: bytes, value: bytes) -> None:
         raise RuntimeError("Invalid HTTP header name.")
     if _INVALID_RESPONSE_HEADER_VALUE_RE.search(value):
         raise RuntimeError("Invalid HTTP header value.")
+
+
+def _validate_response_status(status: int) -> None:
+    """Reject status codes outside the HTTP response range used on the wire."""
+    if status < 100 or status > 599:
+        raise RuntimeError("Invalid HTTP status code.")
 
 
 def _normalize_header_items(

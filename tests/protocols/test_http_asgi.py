@@ -4,9 +4,11 @@ import asyncio
 
 import pytest
 
+import palfrey.protocols.http as http_module
 from palfrey.protocols.http import (
     HTTPRequest,
     HTTPResponse,
+    append_default_response_headers,
     build_http_scope,
     read_http_request,
     run_http_asgi,
@@ -41,6 +43,86 @@ def test_build_http_scope_populates_asgi_fields() -> None:
     assert scope["headers"] == [(b"host", b"example.test"), (b"x-token", b"abc")]
 
 
+def test_build_http_scope_skips_unquote_for_plain_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = HTTPRequest(
+        method="GET",
+        target="/plain?x=1",
+        http_version="HTTP/1.1",
+        headers=[],
+        body=b"",
+    )
+
+    def fail_unquote(value: str) -> str:
+        raise AssertionError("plain paths should not call unquote")
+
+    monkeypatch.setattr(http_module, "unquote", fail_unquote)
+
+    scope = build_http_scope(
+        request,
+        client=("10.0.0.1", 12345),
+        server=("127.0.0.1", 8000),
+        root_path="",
+        is_tls=False,
+    )
+
+    assert scope["path"] == "/plain"
+    assert scope["raw_path"] == b"/plain"
+    assert scope["query_string"] == b"x=1"
+
+
+def test_build_http_scope_copies_lifespan_state_shallowly() -> None:
+    request = HTTPRequest(
+        method="GET",
+        target="/",
+        http_version="HTTP/1.1",
+        headers=[],
+        body=b"",
+    )
+    app_state = {"a": 123, "b": [1]}
+
+    first_scope = build_http_scope(
+        request,
+        client=("10.0.0.1", 12345),
+        server=("127.0.0.1", 8000),
+        root_path="",
+        is_tls=False,
+        app_state=app_state,
+    )
+    first_scope["state"]["a"] = 456
+    first_scope["state"]["b"].append(2)
+
+    second_scope = build_http_scope(
+        request,
+        client=("10.0.0.1", 12345),
+        server=("127.0.0.1", 8000),
+        root_path="",
+        is_tls=False,
+        app_state=app_state,
+    )
+
+    assert second_scope["state"] == {"a": 123, "b": [1, 2]}
+    assert second_scope["state"] is not app_state
+    assert second_scope["state"]["b"] is app_state["b"]
+
+
+def test_append_default_response_headers_preserves_existing_headers() -> None:
+    response = HTTPResponse(headers=[(b"server", b"custom"), (b"content-type", b"text/plain")])
+
+    append_default_response_headers(
+        response,
+        config=object(),  # type: ignore[arg-type]
+        default_headers=[(b"date", b"today"), (b"server", b"palfrey")],
+    )
+
+    assert response.headers == [
+        (b"server", b"custom"),
+        (b"content-type", b"text/plain"),
+        (b"date", b"today"),
+    ]
+
+
 def test_run_http_asgi_collects_response_body_chunks() -> None:
     async def app(scope, receive, send):
         message = await receive()
@@ -62,6 +144,30 @@ def test_run_http_asgi_collects_response_body_chunks() -> None:
     assert response.status == 201
     assert response.headers == [(b"x", b"1"), (b"transfer-encoding", b"chunked")]
     assert response.body_chunks == [b"hello ", b"world"]
+
+
+def test_run_http_asgi_send_only_path_does_not_allocate_completion_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+
+    async def scenario() -> HTTPResponse:
+        def fail_event() -> asyncio.Event:
+            raise AssertionError("send-only ASGI path should not allocate a completion event")
+
+        monkeypatch.setattr(http_module.asyncio, "Event", fail_event)
+        return await run_http_asgi(
+            app,
+            {"type": "http", "headers": [], "path": "/", "method": "GET", "state": {}},
+            b"",
+        )
+
+    response = asyncio.run(scenario())
+
+    assert response.status == 200
+    assert response.body_chunks == [b"ok"]
 
 
 def test_run_http_asgi_stream_callbacks_are_awaited_in_send_order() -> None:
@@ -105,6 +211,36 @@ def test_run_http_asgi_stream_callbacks_are_awaited_in_send_order() -> None:
         "body:second:False",
         "after-second",
     ]
+    assert response.body_chunks == []
+
+
+def test_run_http_asgi_streams_with_body_callback_only() -> None:
+    bodies: list[tuple[bytes, bool]] = []
+
+    async def on_response_body(
+        _response: HTTPResponse,
+        body: bytes,
+        more_body: bool,
+    ) -> None:
+        bodies.append((body, more_body))
+
+    async def app(scope, receive, send):
+        await receive()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+
+    response = asyncio.run(
+        run_http_asgi(
+            app,
+            {"type": "http", "headers": [], "path": "/", "method": "GET", "state": {}},
+            b"",
+            on_response_body=on_response_body,
+        )
+    )
+
+    assert response.streamed is True
+    assert response.body_chunks == []
+    assert bodies == [(b"ok", False)]
 
 
 def test_run_http_asgi_uses_chunked_default_for_single_body_without_headers() -> None:
@@ -124,6 +260,24 @@ def test_run_http_asgi_uses_chunked_default_for_single_body_without_headers() ->
     assert response.chunked_encoding is True
     assert (b"transfer-encoding", b"chunked") in response.headers
     assert response.body_chunks == [b"ok"]
+
+
+def test_run_http_asgi_accepts_iterable_response_headers() -> None:
+    async def app(scope, receive, send):
+        await receive()
+        headers = iter([(b"x-test-header", b"test value")])
+        await send({"type": "http.response.start", "status": 200, "headers": headers})
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+    response = asyncio.run(
+        run_http_asgi(
+            app,
+            {"type": "http", "headers": [], "path": "/", "method": "GET", "state": {}},
+            b"",
+        )
+    )
+
+    assert (b"x-test-header", b"test value") in response.headers
 
 
 def test_run_http_asgi_converts_invalid_initial_message_to_500_response() -> None:
@@ -162,6 +316,51 @@ def test_run_http_asgi_rejects_messages_after_response_completion() -> None:
                 b"",
             )
         )
+
+
+def test_run_http_asgi_receive_after_response_returns_disconnect() -> None:
+    observed: list[dict[str, object]] = []
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+        observed.append(await receive())
+
+    asyncio.run(
+        run_http_asgi(
+            app,
+            {"type": "http", "headers": [], "path": "/", "method": "POST", "state": {}},
+            b"payload",
+        )
+    )
+
+    assert observed == [{"type": "http.disconnect"}]
+
+
+def test_run_http_asgi_late_receive_does_not_send_100_continue() -> None:
+    sent_continue = {"count": 0}
+    observed: list[dict[str, object]] = []
+
+    async def on_continue() -> None:
+        sent_continue["count"] += 1
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+        observed.append(await receive())
+
+    asyncio.run(
+        run_http_asgi(
+            app,
+            {"type": "http", "headers": [], "path": "/", "method": "POST", "state": {}},
+            b"payload",
+            expect_100_continue=True,
+            on_100_continue=on_continue,
+        )
+    )
+
+    assert observed == [{"type": "http.disconnect"}]
+    assert sent_continue["count"] == 0
 
 
 def test_run_http_asgi_streams_request_body_chunks() -> None:

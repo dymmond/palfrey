@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from palfrey.config import PalfreyConfig
-from palfrey.protocols.http import HTTPResponse, encode_http_response, encode_http_response_chunks
+from palfrey.protocols.http import (
+    HTTPResponse,
+    encode_http_response,
+    encode_http_response_chunks,
+    encode_http_response_head_and_body_chunk,
+)
 from palfrey.server import PalfreyServer
 
 
@@ -67,7 +72,33 @@ def test_encode_http_response_chunks_chunked_frames_are_individual_parts() -> No
     assert streamed[-7:] == [b"3\r\n", b"abc", b"\r\n", b"3\r\n", b"def", b"\r\n", b"0\r\n\r\n"]
 
 
-def test_write_response_streams_with_writelines_and_preserves_keep_alive_header() -> None:
+def test_encode_http_response_head_and_body_chunk_matches_streaming_chunks() -> None:
+    response = HTTPResponse(
+        status=200,
+        headers=[
+            (b"content-type", b"text/plain"),
+            (b"transfer-encoding", b"chunked"),
+            (b"date", b"Mon, 01 Jan 2024 00:00:00 GMT"),
+            (b"server", b"palfrey"),
+        ],
+        body_chunks=[b"abc"],
+        chunked_encoding=True,
+        headers_metadata_trusted=True,
+        has_transfer_encoding=True,
+    )
+
+    payload = encode_http_response_head_and_body_chunk(
+        response,
+        b"abc",
+        keep_alive=True,
+        more_body=False,
+    )
+
+    assert payload == b"".join(encode_http_response_chunks(response, keep_alive=True))
+    assert b"3\r\nabc\r\n0\r\n\r\n" in payload
+
+
+def test_write_response_streams_with_writelines_and_close_header() -> None:
     async def scenario() -> None:
         server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
         writer = _Writer()

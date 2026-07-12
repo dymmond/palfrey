@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import http
 import importlib
+import re
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -35,7 +36,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import unquote
 
-from palfrey.acceleration import parse_request_head
+from palfrey.acceleration import parse_request_head_normalized
 from palfrey.http_date import cached_http_date_header
 
 if TYPE_CHECKING:
@@ -50,6 +51,62 @@ if TYPE_CHECKING:
         Scope,
         ServerAddress,
     )
+
+
+@dataclass(slots=True)
+class HTTPBodyStream:
+    """
+    Deferred reader for a fixed-size HTTP request body.
+
+    The server uses this when an application may respond before consuming the
+    body. It keeps the public read_http_request() behavior buffered by default
+    while allowing the connection loop to preserve request framing.
+    """
+
+    reader: asyncio.StreamReader
+    content_length: int
+    body_limit: int
+    bytes_read: int = 0
+    complete: bool = False
+    disconnected: bool = False
+    _complete_event: asyncio.Event = field(default_factory=asyncio.Event, init=False, repr=False)
+
+    async def receive(self) -> tuple[bytes, bool]:
+        """Read the next request-body chunk and report whether more data remains."""
+        if self.complete:
+            return b"", False
+
+        remaining = self.content_length - self.bytes_read
+        if remaining <= 0:
+            self._mark_complete()
+            return b"", False
+
+        try:
+            chunk = await self.reader.readexactly(min(65_536, remaining))
+        except asyncio.IncompleteReadError as exc:
+            chunk = exc.partial
+            self.bytes_read += len(chunk)
+            self.disconnected = True
+            self._mark_complete()
+            return chunk, bool(chunk)
+
+        self.bytes_read += len(chunk)
+        if self.bytes_read >= self.content_length:
+            self._mark_complete()
+        return chunk, not self.complete
+
+    async def drain(self) -> None:
+        """Consume unread body bytes so the connection can parse the next request."""
+        while not self.complete:
+            await self.receive()
+
+    async def wait_complete(self) -> None:
+        """Wait until the request body has been consumed or drained."""
+        await self._complete_event.wait()
+
+    def _mark_complete(self) -> None:
+        self.complete = True
+        self._complete_event.set()
 
 
 @dataclass(slots=True)
@@ -76,6 +133,11 @@ class HTTPRequest:
     headers: Sequence[tuple[str, str] | tuple[bytes, bytes]]
     body: bytes
     body_chunks: list[bytes] = field(default_factory=list)
+    body_stream: HTTPBodyStream | None = None
+    headers_normalized: bool = False
+    connection_header: bytes = b""
+    expect_header: bytes = b""
+    is_websocket_upgrade: bool = False
 
     def __post_init__(self) -> None:
         """Synchronizes the body and body_chunks attributes after initialization.
@@ -84,6 +146,12 @@ class HTTPRequest:
         concatenated content. If only body is provided, body_chunks is populated
         with a single-element list containing that body.
         """
+        if self.body_stream is not None:
+            if self.body_chunks:
+                self.body = b"".join(self.body_chunks)
+            elif self.body:
+                self.body_chunks = [self.body]
+            return
         if self.body_chunks:
             self.body = b"".join(self.body_chunks)
             return
@@ -112,6 +180,21 @@ class HTTPResponse:
     chunked_encoding: bool = False
     suppress_body: bool = False
     streamed: bool = False
+    close_after_response: bool = False
+    connection_keep_alive: bool | None = None
+    headers_metadata_trusted: bool = False
+    has_content_length: bool = False
+    has_transfer_encoding: bool = False
+    has_connection_header: bool = False
+    connection_header: bytes = b""
+
+
+class HTTPResponseStartedError(RuntimeError):
+    """Raised when an ASGI error occurs after response start."""
+
+    def __init__(self, message: str, response: HTTPResponse) -> None:
+        super().__init__(message)
+        self.response = response
 
 
 # Pre-computed HTTP status lines for common response codes.
@@ -139,10 +222,15 @@ _STATUS_LINES: dict[int, bytes] = {
 
 _SERVER_HEADER_VALUE: bytes = b"palfrey"
 
-_CONNECTION_KEEP_ALIVE: bytes = b"connection: keep-alive\r\n"
 _CONNECTION_CLOSE: bytes = b"connection: close\r\n"
 _HEADER_SEPARATOR: bytes = b": "
 _CRLF: bytes = b"\r\n"
+_CHUNK_END: bytes = b"0\r\n\r\n"
+_SMALL_CHUNK_PREFIXES: tuple[bytes, ...] = tuple(
+    f"{size:x}\r\n".encode("ascii") for size in range(256)
+)
+_INVALID_RESPONSE_HEADER_NAME_RE = re.compile(b'[\x00-\x1f\x7f()<>@,;:\\[\\]={} \t\\\\"]')
+_INVALID_RESPONSE_HEADER_VALUE_RE = re.compile(b"[\x00-\x08\x0a-\x1f\x7f]")
 
 
 class _HTTPToolsParserProtocol:
@@ -317,6 +405,75 @@ def _header_lookup(
     return None
 
 
+def _prepare_request_headers(
+    raw_headers: Sequence[tuple[str, str] | tuple[bytes, bytes]],
+    *,
+    already_normalized: bool,
+) -> tuple[list[tuple[bytes, bytes]], bytes | None, bytes, bytes, bytes, bool]:
+    """Normalize request headers once and cache common routing metadata."""
+    content_length: bytes | None = None
+    transfer_encoding = b""
+    connection = b""
+    expect = b""
+    upgrade = b""
+
+    if already_normalized:
+        headers = cast(list[tuple[bytes, bytes]], raw_headers)
+        for name, value in headers:
+            if name == b"content-length":
+                content_length = value
+            elif name == b"transfer-encoding":
+                transfer_encoding = value.lower()
+            elif name == b"connection":
+                connection = value.lower()
+            elif name == b"expect":
+                expect = value.lower()
+            elif name == b"upgrade":
+                upgrade = value.lower()
+        websocket_upgrade = b"websocket" in upgrade and b"upgrade" in connection
+        return headers, content_length, transfer_encoding, connection, expect, websocket_upgrade
+
+    if raw_headers and isinstance(raw_headers[0][0], bytes):
+        headers = []
+        for raw_name, value in cast(Sequence[tuple[bytes, bytes]], raw_headers):
+            name = raw_name.lower()
+            headers.append((name, value))
+
+            if name == b"content-length":
+                content_length = value
+            elif name == b"transfer-encoding":
+                transfer_encoding = value.lower()
+            elif name == b"connection":
+                connection = value.lower()
+            elif name == b"expect":
+                expect = value.lower()
+            elif name == b"upgrade":
+                upgrade = value.lower()
+
+        websocket_upgrade = b"websocket" in upgrade and b"upgrade" in connection
+        return headers, content_length, transfer_encoding, connection, expect, websocket_upgrade
+
+    headers: list[tuple[bytes, bytes]] = []
+    for raw_name, raw_value in raw_headers:
+        name = _coerce_header_bytes(raw_name).lower()
+        value = _coerce_header_bytes(raw_value)
+        headers.append((name, value))
+
+        if name == b"content-length":
+            content_length = value
+        elif name == b"transfer-encoding":
+            transfer_encoding = value.lower()
+        elif name == b"connection":
+            connection = value.lower()
+        elif name == b"expect":
+            expect = value.lower()
+        elif name == b"upgrade":
+            upgrade = value.lower()
+
+    websocket_upgrade = b"websocket" in upgrade and b"upgrade" in connection
+    return headers, content_length, transfer_encoding, connection, expect, websocket_upgrade
+
+
 async def _read_chunked_body_chunks(
     reader: asyncio.StreamReader,
     body_limit: int,
@@ -411,6 +568,7 @@ async def read_http_request(
     max_head_size: int = 1_048_576,
     body_limit: int = 4_194_304,
     parser_mode: str = "auto",
+    stream_body: bool = False,
 ) -> HTTPRequest | None:
     """
     Reads and parses a full HTTP request (head and body) from the reader.
@@ -434,11 +592,58 @@ async def read_http_request(
     if len(head) > max_head_size:
         raise ValueError("HTTP head exceeds configured limit")
 
-    method, target, version, raw_headers = _parse_request_head(head, parser_mode)
-    headers = _normalize_header_items(raw_headers)
-
-    content_length_raw = _header_lookup(headers, b"content-length")
-    transfer_encoding = (_header_lookup(headers, b"transfer-encoding") or b"").lower()
+    if parser_mode == "auto":
+        try:
+            (
+                method_raw,
+                target_raw,
+                version_raw,
+                headers,
+                content_length_raw,
+                transfer_encoding,
+                connection_header,
+                expect_header,
+                websocket_upgrade,
+            ) = parse_request_head_normalized(head)
+            method = method_raw.decode("latin-1")
+            target = target_raw.decode("latin-1")
+            version = version_raw.decode("latin-1")
+        except ValueError:
+            parsed_with_fallback = False
+            with suppress(ValueError):
+                method, target, version, raw_headers = _parse_request_head_httptools(head)
+                (
+                    headers,
+                    content_length_raw,
+                    transfer_encoding,
+                    connection_header,
+                    expect_header,
+                    websocket_upgrade,
+                ) = _prepare_request_headers(raw_headers, already_normalized=True)
+                parsed_with_fallback = True
+            if not parsed_with_fallback:
+                method, target, version, raw_headers = _parse_request_head_h11(head)
+                (
+                    headers,
+                    content_length_raw,
+                    transfer_encoding,
+                    connection_header,
+                    expect_header,
+                    websocket_upgrade,
+                ) = _prepare_request_headers(raw_headers, already_normalized=True)
+    else:
+        method, target, version, raw_headers = _parse_request_head(head, parser_mode)
+        (
+            headers,
+            content_length_raw,
+            transfer_encoding,
+            connection_header,
+            expect_header,
+            websocket_upgrade,
+        ) = _prepare_request_headers(
+            raw_headers,
+            already_normalized=parser_mode in {"h11", "httptools"},
+        )
 
     content_length = 0
     if content_length_raw is not None:
@@ -446,20 +651,32 @@ async def read_http_request(
             content_length = int(content_length_raw)
         except ValueError as exc:
             raise ValueError("Invalid Content-Length header") from exc
+        if content_length < 0:
+            raise ValueError("Invalid Content-Length header")
 
-    body_chunks: list[bytes] = [b""]
+    if content_length > body_limit:
+        raise ValueError("HTTP body exceeds configured limit")
+
+    body = b""
+    body_chunks: list[bytes] = []
+    body_stream: HTTPBodyStream | None = None
     if b"chunked" in transfer_encoding:
         body_chunks = await _read_chunked_body_chunks(reader, body_limit)
-    else:
+        body = body_chunks[0] if len(body_chunks) == 1 else b"".join(body_chunks)
+    elif stream_body and content_length > 0:
+        body_stream = HTTPBodyStream(reader, content_length, body_limit)
+    elif content_length > 0:
         body_chunks = await _read_content_length_body_chunks(reader, content_length, body_limit)
-    body = b"".join(body_chunks)
+        body = body_chunks[0] if len(body_chunks) == 1 else b"".join(body_chunks)
 
-    if _is_websocket_upgrade(headers):
+    if websocket_upgrade:
         request_headers: list[tuple[str, str] | tuple[bytes, bytes]] = [
             (name.decode("latin-1"), value.decode("latin-1")) for name, value in headers
         ]
+        headers_normalized = False
     else:
         request_headers = cast(list[tuple[str, str] | tuple[bytes, bytes]], headers)
+        headers_normalized = True
 
     return HTTPRequest(
         method=method,
@@ -468,6 +685,11 @@ async def read_http_request(
         headers=request_headers,
         body=body,
         body_chunks=body_chunks,
+        body_stream=body_stream,
+        headers_normalized=headers_normalized,
+        connection_header=connection_header,
+        expect_header=expect_header,
+        is_websocket_upgrade=websocket_upgrade,
     )
 
 
@@ -494,7 +716,13 @@ def _parse_request_head(
 
     # Try Rust extension first (fast-path), then httptools, then h11 for maximum compatibility
     try:
-        return parse_request_head(head)
+        method, target, version, headers, *_metadata = parse_request_head_normalized(head)
+        return (
+            method.decode("latin-1"),
+            target.decode("latin-1"),
+            version.decode("latin-1"),
+            headers,
+        )
     except ValueError:
         with suppress(ValueError):
             return _parse_request_head_httptools(head)
@@ -576,6 +804,8 @@ def build_http_scope(
     server: ServerAddress,
     root_path: str,
     is_tls: bool,
+    app_state: dict[str, Any] | None = None,
+    asgi_version: str = "3.0",
 ) -> Scope:
     """
     Converts an internal HTTPRequest into an ASGI 3.0 scope dictionary.
@@ -586,21 +816,29 @@ def build_http_scope(
         server (ServerAddress): IP and port of the server.
         root_path (str): The mounting point of the application.
         is_tls (bool): True if connection is encrypted.
+        app_state (dict[str, Any] | None): Lifespan state to shallow-copy into
+            the per-request scope.
+        asgi_version (str): ASGI callable version reported in the scope.
 
     Returns:
         Scope: A dictionary conforming to the ASGI HTTP specification.
     """
     path, _, query = request.target.partition("?")
-    decoded_path = unquote(path)
+    decoded_path = unquote(path) if "%" in path else path
     raw_path = path.encode("latin-1")
-    root_path_bytes = root_path.encode("latin-1")
-    full_path = root_path + decoded_path
-    full_raw_path = root_path_bytes + raw_path
+    if root_path:
+        root_path_bytes = root_path.encode("latin-1")
+        full_path = root_path + decoded_path
+        full_raw_path = root_path_bytes + raw_path
+    else:
+        full_path = decoded_path
+        full_raw_path = raw_path
 
     headers = request.headers
     scope_headers = (
         cast(list[tuple[bytes, bytes]], headers)
-        if all(
+        if request.headers_normalized
+        or all(
             isinstance(name, bytes) and isinstance(value, bytes) and name == name.lower()
             for name, value in headers
         )
@@ -612,7 +850,7 @@ def build_http_scope(
 
     return {
         "type": "http",
-        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "asgi": {"version": asgi_version, "spec_version": "2.3"},
         "http_version": request.http_version.removeprefix("HTTP/"),
         "method": request.method,
         "scheme": "https" if is_tls else "http",
@@ -623,14 +861,14 @@ def build_http_scope(
         "headers": scope_headers,
         "client": client,
         "server": server,
-        "state": {},
+        "state": app_state.copy() if app_state else {},
     }
 
 
 async def run_http_asgi(
     app: ASGIApplication,
     scope: Scope,
-    request_body: bytes | list[bytes],
+    request_body: bytes | list[bytes] | HTTPBodyStream,
     *,
     expect_100_continue: bool = False,
     on_100_continue: Callable[[], Awaitable[None]] | None = None,
@@ -665,18 +903,37 @@ async def run_http_asgi(
         RuntimeError: If the ASGI application violates the protocol sequence or crashes.
     """
     response = HTTPResponse()
-    body_chunks = request_body if isinstance(request_body, list) else [request_body]
-    if not body_chunks:
+    body_stream = request_body if isinstance(request_body, HTTPBodyStream) else None
+    body_chunks = (
+        []
+        if body_stream is not None
+        else request_body
+        if isinstance(request_body, list)
+        else [request_body]
+    )
+    if body_stream is None and not body_chunks:
         body_chunks = [b""]
 
     response_started = False
     response_complete = False
     waiting_for_100_continue = expect_100_continue
     body_index = 0
-    message_complete = asyncio.Event()
+    message_complete: asyncio.Event | None = None
 
     chunked_encoding: bool | None = None
     expected_content_length = 0
+
+    def mark_message_complete() -> None:
+        if message_complete is not None:
+            message_complete.set()
+
+    async def wait_for_message_complete() -> None:
+        nonlocal message_complete
+        if response_complete:
+            return
+        if message_complete is None:
+            message_complete = asyncio.Event()
+        await message_complete.wait()
 
     async def _send_internal_server_error() -> None:
         """Sends a standard 500 Internal Server Error response.
@@ -695,10 +952,15 @@ async def run_http_asgi(
             (b"content-length", b"21"),
             (b"connection", b"close"),
         ]
+        response.headers_metadata_trusted = True
+        response.has_content_length = True
+        response.has_transfer_encoding = False
+        response.has_connection_header = True
+        response.connection_header = b"close"
         response.body_chunks = [] if scope.get("method") == "HEAD" else [b"Internal Server Error"]
         response.chunked_encoding = False
         response.suppress_body = scope.get("method") == "HEAD"
-        message_complete.set()
+        mark_message_complete()
 
     async def receive() -> Message:
         """The ASGI receive channel for the application.
@@ -707,10 +969,28 @@ async def run_http_asgi(
             Message: An 'http.request' or 'http.disconnect' message.
         """
         nonlocal waiting_for_100_continue, body_index
+        if response_complete:
+            return {"type": "http.disconnect"}
+
         if waiting_for_100_continue:
             waiting_for_100_continue = False
             if on_100_continue is not None:
                 await on_100_continue()
+
+        if body_stream is not None:
+            if body_stream.disconnected:
+                return {"type": "http.disconnect"}
+            if not body_stream.complete:
+                body, more_body = await body_stream.receive()
+                if body_stream.disconnected and not body:
+                    return {"type": "http.disconnect"}
+                return {
+                    "type": "http.request",
+                    "body": body,
+                    "more_body": more_body,
+                }
+            await wait_for_message_complete()
+            return {"type": "http.disconnect"}
 
         if body_index < len(body_chunks):
             body = body_chunks[body_index]
@@ -721,7 +1001,7 @@ async def run_http_asgi(
                 "more_body": body_index < len(body_chunks),
             }
 
-        await message_complete.wait()
+        await wait_for_message_complete()
         return {"type": "http.disconnect"}
 
     async def send(message: Message) -> None:
@@ -747,21 +1027,34 @@ async def run_http_asgi(
             waiting_for_100_continue = False
 
             response.status = int(message.get("status", 200))
-            response.headers = [
-                (_coerce_header_bytes(name), _coerce_header_bytes(value))
-                for name, value in message.get("headers", [])
-            ]
-            response.suppress_body = scope.get("method") == "HEAD"
-
-            # Parse headers for explicit length or encoding
-            for name, value in response.headers:
-                lowered_name = name.lower()
+            _validate_response_status(response.status)
+            response.headers = []
+            response.headers_metadata_trusted = True
+            response.has_content_length = False
+            response.has_transfer_encoding = False
+            response.has_connection_header = False
+            response.connection_header = b""
+            for raw_name, raw_value in message.get("headers", []):
+                name = raw_name if isinstance(raw_name, bytes) else _coerce_header_bytes(raw_name)
+                value = (
+                    raw_value if isinstance(raw_value, bytes) else _coerce_header_bytes(raw_value)
+                )
+                _validate_response_header(name, value)
+                response.headers.append((name, value))
+                lowered_name = name if name.islower() else name.lower()
                 if lowered_name == b"content-length":
+                    response.has_content_length = True
                     expected_content_length = int(value.decode("latin-1"))
                     chunked_encoding = False
-                elif lowered_name == b"transfer-encoding" and value.lower() == b"chunked":
-                    chunked_encoding = True
+                elif lowered_name == b"transfer-encoding":
+                    response.has_transfer_encoding = True
                     expected_content_length = 0
+                    if value.lower() == b"chunked":
+                        chunked_encoding = True
+                elif lowered_name == b"connection":
+                    response.has_connection_header = True
+                    response.connection_header = value.lower()
+            response.suppress_body = scope.get("method") == "HEAD"
 
             # Default to chunked if no explicit length/encoding (allows apps to stream without Content-Length)
             if (
@@ -771,6 +1064,7 @@ async def run_http_asgi(
             ):
                 chunked_encoding = True
                 response.headers.append((b"transfer-encoding", b"chunked"))
+                response.has_transfer_encoding = True
 
             response.chunked_encoding = bool(chunked_encoding)
 
@@ -780,6 +1074,8 @@ async def run_http_asgi(
 
             if on_response_start is not None:
                 await on_response_start(response)
+                response.streamed = True
+            elif on_response_body is not None:
                 response.streamed = True
             return
 
@@ -801,13 +1097,15 @@ async def run_http_asgi(
             if response.suppress_body:
                 pass  # HEAD requests intentionally drop the body
             elif chunked_encoding:
-                response.body_chunks.append(body)
+                if not response.streamed:
+                    response.body_chunks.append(body)
             else:
                 body_size = len(body)
                 if body_size > expected_content_length:
                     raise RuntimeError("Response content longer than Content-Length")
                 expected_content_length -= body_size
-                response.body_chunks.append(body)
+                if not response.streamed:
+                    response.body_chunks.append(body)
 
             if response.streamed and on_response_body is not None:
                 await on_response_body(response, body, more_body)
@@ -816,7 +1114,7 @@ async def run_http_asgi(
                 if not chunked_encoding and expected_content_length != 0:
                     raise RuntimeError("Response content shorter than Content-Length")
                 response_complete = True
-                message_complete.set()
+                mark_message_complete()
         else:
             raise RuntimeError(f"Unexpected ASGI message type: '{msg_type}'.")
 
@@ -825,17 +1123,25 @@ async def run_http_asgi(
     except BaseException as exc:
         if not response_started:
             await _send_internal_server_error()
-        elif isinstance(exc, RuntimeError):
+        elif isinstance(exc, HTTPResponseStartedError):
             raise
+        elif isinstance(exc, RuntimeError):
+            raise HTTPResponseStartedError(str(exc), response) from exc
         else:
-            raise RuntimeError("Exception in ASGI application") from exc
+            raise HTTPResponseStartedError("Exception in ASGI application", response) from exc
     else:
         if result is not None:
-            raise RuntimeError(f"ASGI callable should return None, but returned '{result}'.")
+            message = f"ASGI callable should return None, but returned '{result}'."
+            if response_started:
+                raise HTTPResponseStartedError(message, response)
+            raise RuntimeError(message)
         if not response_started:
             await _send_internal_server_error()
         elif not response_complete:
-            raise RuntimeError("ASGI callable returned without completing response.")
+            raise HTTPResponseStartedError(
+                "ASGI callable returned without completing response.",
+                response,
+            )
 
     return response
 
@@ -847,6 +1153,20 @@ def _coerce_header_bytes(value: object) -> bytes:
     if isinstance(value, bytearray):
         return bytes(value)
     return str(value).encode("latin-1")
+
+
+def _validate_response_header(name: bytes, value: bytes) -> None:
+    """Reject header bytes that would produce invalid HTTP response framing."""
+    if not name or _INVALID_RESPONSE_HEADER_NAME_RE.search(name):
+        raise RuntimeError("Invalid HTTP header name.")
+    if _INVALID_RESPONSE_HEADER_VALUE_RE.search(value):
+        raise RuntimeError("Invalid HTTP header value.")
+
+
+def _validate_response_status(status: int) -> None:
+    """Reject status codes outside the HTTP response range used on the wire."""
+    if status < 100 or status > 599:
+        raise RuntimeError("Invalid HTTP status code.")
 
 
 def _normalize_header_items(
@@ -891,16 +1211,43 @@ def append_default_response_headers(
         config (PalfreyConfig): Application configuration.
         default_headers (list | None): Cached list of headers for fast-path insertion.
     """
-    existing_headers = {name.lower() for name, _ in response.headers}
-
     if default_headers is not None:
+        if not response.headers:
+            for name, value in default_headers:
+                _append_response_header(response, name, value)
+            return
+
+        if len(default_headers) == 2:
+            first_name, first_value = default_headers[0]
+            second_name, second_value = default_headers[1]
+            has_first = False
+            has_second = False
+            for name, _value in response.headers:
+                if name == first_name:
+                    has_first = True
+                elif name == second_name:
+                    has_second = True
+                elif not name.islower():
+                    lowered_name = name.lower()
+                    if lowered_name == first_name:
+                        has_first = True
+                    elif lowered_name == second_name:
+                        has_second = True
+                if has_first and has_second:
+                    break
+            if not has_first:
+                _append_response_header(response, first_name, first_value)
+            if not has_second:
+                _append_response_header(response, second_name, second_value)
+            return
+
         for name, value in default_headers:
-            lowered_name = name.lower()
-            if lowered_name in existing_headers:
+            if _has_header(response.headers, name):
                 continue
-            response.headers.append((name, value))
-            existing_headers.add(lowered_name)
+            _append_response_header(response, name, value)
         return
+
+    existing_headers = {name.lower() for name, _ in response.headers}
 
     configured_headers = config.normalized_headers
     configured_header_names = {name.lower() for name, _ in configured_headers}
@@ -910,17 +1257,41 @@ def append_default_response_headers(
         and b"server" not in existing_headers
         and "server" not in configured_header_names
     ):
-        response.headers.append((b"server", _SERVER_HEADER_VALUE))
+        _append_response_header(response, b"server", _SERVER_HEADER_VALUE)
 
     if (
         config.date_header
         and b"date" not in existing_headers
         and "date" not in configured_header_names
     ):
-        response.headers.append((b"date", _http_date_header()))
+        _append_response_header(response, b"date", _http_date_header())
 
     for name, value in configured_headers:
-        response.headers.append((name.encode("latin-1"), value.encode("latin-1")))
+        _append_response_header(response, name.encode("latin-1"), value.encode("latin-1"))
+
+
+def _append_response_header(response: HTTPResponse, name: bytes, value: bytes) -> None:
+    response.headers.append((name, value))
+    if not response.headers_metadata_trusted:
+        return
+
+    lowered_name = name if name.islower() else name.lower()
+    if lowered_name == b"content-length":
+        response.has_content_length = True
+    elif lowered_name == b"transfer-encoding":
+        response.has_transfer_encoding = True
+    elif lowered_name == b"connection":
+        response.has_connection_header = True
+        response.connection_header = value.lower()
+
+
+def _has_header(headers: list[tuple[bytes, bytes]], header_name: bytes) -> bool:
+    for name, _value in headers:
+        if name == header_name:
+            return True
+        if not name.islower() and name.lower() == header_name:
+            return True
+    return False
 
 
 def encode_http_response_head(response: HTTPResponse, keep_alive: bool) -> Iterable[bytes]:
@@ -945,18 +1316,27 @@ def encode_http_response_head(response: HTTPResponse, keep_alive: bool) -> Itera
             reason = ""
         yield f"HTTP/1.1 {response.status} {reason}\r\n".encode("ascii")
 
-    has_content_length = False
-    has_transfer_encoding = False
-    has_connection = False
+    metadata_trusted = response.headers_metadata_trusted
+    has_content_length = response.has_content_length if metadata_trusted else False
+    has_transfer_encoding = response.has_transfer_encoding if metadata_trusted else False
+    has_connection = response.has_connection_header if metadata_trusted else False
 
     for name, value in response.headers:
-        lowered_name = name.lower()
-        if lowered_name == b"content-length":
-            has_content_length = True
-        elif lowered_name == b"transfer-encoding":
-            has_transfer_encoding = True
-        elif lowered_name == b"connection":
-            has_connection = True
+        if not metadata_trusted:
+            if name == b"content-length":
+                has_content_length = True
+            elif name == b"transfer-encoding":
+                has_transfer_encoding = True
+            elif name == b"connection":
+                has_connection = True
+            elif not name.islower():
+                lowered_name = name.lower()
+                if lowered_name == b"content-length":
+                    has_content_length = True
+                elif lowered_name == b"transfer-encoding":
+                    has_transfer_encoding = True
+                elif lowered_name == b"connection":
+                    has_connection = True
 
         yield name
         yield _HEADER_SEPARATOR
@@ -969,8 +1349,8 @@ def encode_http_response_head(response: HTTPResponse, keep_alive: bool) -> Itera
         yield str(payload_len).encode("ascii")
         yield _CRLF
 
-    if not has_connection:
-        yield _CONNECTION_KEEP_ALIVE if keep_alive else _CONNECTION_CLOSE
+    if not has_connection and not keep_alive:
+        yield _CONNECTION_CLOSE
 
     yield _CRLF
 
@@ -994,6 +1374,127 @@ def encode_http_response_body_chunk(
         return
     if body:
         yield body
+
+
+def encode_http_response_head_and_body_chunk(
+    response: HTTPResponse,
+    body: bytes,
+    *,
+    keep_alive: bool,
+    more_body: bool,
+) -> bytes:
+    """Serialize response headers and the first body event in one pass."""
+    body_size = len(body)
+    if (
+        response.status == 200
+        and response.headers_metadata_trusted
+        and response.chunked_encoding
+        and response.has_transfer_encoding
+        and not response.has_connection_header
+        and not response.suppress_body
+        and keep_alive
+        and not more_body
+        and 0 < body_size < len(_SMALL_CHUNK_PREFIXES)
+    ):
+        headers = response.headers
+        if len(headers) == 4:
+            first_name, first_value = headers[0]
+            second_name, second_value = headers[1]
+            third_name, third_value = headers[2]
+            fourth_name, fourth_value = headers[3]
+            if (
+                first_name == b"content-type"
+                and second_name == b"transfer-encoding"
+                and second_value == b"chunked"
+                and third_name == b"date"
+                and fourth_name == b"server"
+            ):
+                return b"".join(
+                    (
+                        _STATUS_LINES[200],
+                        first_name,
+                        _HEADER_SEPARATOR,
+                        first_value,
+                        _CRLF,
+                        second_name,
+                        _HEADER_SEPARATOR,
+                        second_value,
+                        _CRLF,
+                        third_name,
+                        _HEADER_SEPARATOR,
+                        third_value,
+                        _CRLF,
+                        fourth_name,
+                        _HEADER_SEPARATOR,
+                        fourth_value,
+                        _CRLF,
+                        _CRLF,
+                        _SMALL_CHUNK_PREFIXES[body_size],
+                        body,
+                        _CRLF,
+                        _CHUNK_END,
+                    )
+                )
+
+    if response.status in _STATUS_LINES:
+        parts = [_STATUS_LINES[response.status]]
+    else:
+        try:
+            reason = http.HTTPStatus(response.status).phrase
+        except ValueError:
+            reason = ""
+        parts = [f"HTTP/1.1 {response.status} {reason}\r\n".encode("ascii")]
+
+    metadata_trusted = response.headers_metadata_trusted
+    has_content_length = response.has_content_length if metadata_trusted else False
+    has_transfer_encoding = response.has_transfer_encoding if metadata_trusted else False
+    has_connection = response.has_connection_header if metadata_trusted else False
+
+    for name, value in response.headers:
+        if not metadata_trusted:
+            if name == b"content-length":
+                has_content_length = True
+            elif name == b"transfer-encoding":
+                has_transfer_encoding = True
+            elif name == b"connection":
+                has_connection = True
+            elif not name.islower():
+                lowered_name = name.lower()
+                if lowered_name == b"content-length":
+                    has_content_length = True
+                elif lowered_name == b"transfer-encoding":
+                    has_transfer_encoding = True
+                elif lowered_name == b"connection":
+                    has_connection = True
+
+        parts.append(name)
+        parts.append(_HEADER_SEPARATOR)
+        parts.append(value)
+        parts.append(_CRLF)
+
+    if not has_content_length and not has_transfer_encoding:
+        payload_len = 0 if response.suppress_body else sum(len(c) for c in response.body_chunks)
+        parts.append(b"content-length: ")
+        parts.append(str(payload_len).encode("ascii"))
+        parts.append(_CRLF)
+
+    if not has_connection and not keep_alive:
+        parts.append(_CONNECTION_CLOSE)
+
+    parts.append(_CRLF)
+
+    if not response.suppress_body:
+        if response.chunked_encoding:
+            if body:
+                parts.append(f"{len(body):x}\r\n".encode("ascii"))
+                parts.append(body)
+                parts.append(_CRLF)
+            if not more_body:
+                parts.append(_CHUNK_END)
+        elif body:
+            parts.append(body)
+
+    return b"".join(parts)
 
 
 def encode_http_response_chunks(response: HTTPResponse, keep_alive: bool) -> Iterable[bytes]:
@@ -1053,12 +1554,19 @@ def should_keep_alive(request: HTTPRequest, response: HTTPResponse) -> bool:
     Returns:
         bool: True if the connection should be kept alive, False to close.
     """
-    request_connection = _normalize_connection_value(request.headers)
-    response_connection = b""
-    for name, value in response.headers:
-        if name.lower() == b"connection":
-            response_connection = value.lower()
-            break
+    request_connection = (
+        request.connection_header
+        if request.headers_normalized
+        else request.connection_header or _normalize_connection_value(request.headers)
+    )
+    if response.headers_metadata_trusted:
+        response_connection = response.connection_header
+    else:
+        response_connection = b""
+        for name, value in response.headers:
+            if name == b"connection" or (not name.islower() and name.lower() == b"connection"):
+                response_connection = value.lower()
+                break
 
     if b"close" in request_connection or b"close" in response_connection:
         return False
@@ -1071,12 +1579,18 @@ def should_keep_alive(request: HTTPRequest, response: HTTPResponse) -> bool:
 
 def is_websocket_upgrade(request: HTTPRequest) -> bool:
     """Checks if the request is initiating a WebSocket handshake."""
-    return _is_websocket_upgrade(request.headers)
+    if request.headers_normalized:
+        return request.is_websocket_upgrade
+    return request.is_websocket_upgrade or _is_websocket_upgrade(request.headers)
 
 
 def requires_100_continue(request: HTTPRequest) -> bool:
     """Verifies if the client is waiting for a '100 Continue' response before sending the body."""
-    expect = _header_lookup(request.headers, b"expect")
+    expect = (
+        request.expect_header
+        if request.headers_normalized
+        else request.expect_header or _header_lookup(request.headers, b"expect")
+    )
     if not expect:
         return False
     return expect.lower() == b"100-continue"

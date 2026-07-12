@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import ssl
 
@@ -8,6 +9,7 @@ import pytest
 
 import palfrey.config as config_module
 import palfrey.server as server_module
+from palfrey.adapters import ASGI2Adapter
 from palfrey.config import PalfreyConfig
 from palfrey.importer import ResolvedApp
 from palfrey.protocols.http import HTTPRequest
@@ -57,6 +59,34 @@ class _SocketWithName:
 
     def getsockname(self) -> object:
         return self._sockname
+
+
+class _LifespanState:
+    def __init__(self, state: dict[str, object]) -> None:
+        self.state = state
+
+
+_INVALID_RESPONSE_HEADER_NAMES = [
+    pytest.param(b"bad header", id="reject_space"),
+    pytest.param(b"bad\x00header", id="reject_null"),
+    pytest.param(b"bad(header", id="reject_open_paren"),
+    pytest.param(b"bad)header", id="reject_close_paren"),
+    pytest.param(b"bad<header", id="reject_less_than"),
+    pytest.param(b"bad>header", id="reject_greater_than"),
+    pytest.param(b"bad@header", id="reject_at"),
+    pytest.param(b"bad,header", id="reject_comma"),
+    pytest.param(b"bad;header", id="reject_semicolon"),
+    pytest.param(b"bad:header", id="reject_colon"),
+    pytest.param(b"bad[header", id="reject_open_bracket"),
+    pytest.param(b"bad]header", id="reject_close_bracket"),
+    pytest.param(b"bad{header", id="reject_open_brace"),
+    pytest.param(b"bad}header", id="reject_close_brace"),
+    pytest.param(b"bad=header", id="reject_equals"),
+    pytest.param(b'bad"header', id="reject_double_quote"),
+    pytest.param(b"bad\\header", id="reject_backslash"),
+    pytest.param(b"bad\theader", id="reject_tab"),
+    pytest.param(b"bad\x7fheader", id="reject_del"),
+]
 
 
 def test_loop_backend_name_returns_asyncio_for_stdlib_module_name() -> None:
@@ -335,6 +365,22 @@ async def test_handle_connection_writes_400_on_bad_request(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_handle_connection_rejects_negative_content_length() -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
+    server._resolved_app = _resolved_app()
+    writer = DummyWriter()
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: -1\r\n\r\n")
+    reader.feed_eof()
+
+    await server._handle_connection(reader, writer)
+
+    payload = b"".join(writer.writes)
+    assert b"400 Bad Request" in payload
+    assert writer.closed is True
+
+
+@pytest.mark.asyncio
 async def test_handle_connection_writes_500_on_unhandled_exception(monkeypatch) -> None:
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
     server._resolved_app = _resolved_app()
@@ -355,15 +401,19 @@ async def test_handle_connection_writes_500_on_unhandled_exception(monkeypatch) 
 @pytest.mark.asyncio
 async def test_handle_connection_switches_to_websocket_upgrade(monkeypatch) -> None:
     server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", ws="websockets"))
-    server._resolved_app = _resolved_app()
+    server._resolved_app = ResolvedApp(app=_resolved_app().app, interface="asgi2")
+    shared_state = {"a": 123}
+    server._lifespan = _LifespanState(shared_state)  # type: ignore[assignment]
     writer = DummyWriter()
     called: list[str] = []
+    captured_kwargs = {}
     request = HTTPRequest(
         method="GET",
         target="/ws",
         http_version="HTTP/1.1",
         headers=[("upgrade", "websocket"), ("connection", "Upgrade")],
         body=b"",
+        is_websocket_upgrade=True,
     )
 
     calls = {"count": 0}
@@ -376,14 +426,16 @@ async def test_handle_connection_switches_to_websocket_upgrade(monkeypatch) -> N
 
     async def fake_handle_websocket(*args, **kwargs):
         called.append("ws")
+        captured_kwargs.update(kwargs)
 
     monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
-    monkeypatch.setattr(server_module, "is_websocket_upgrade", lambda req: True)
     monkeypatch.setattr(server_module, "handle_websocket", fake_handle_websocket)
 
     await server._handle_connection(asyncio.StreamReader(), writer)
 
     assert called == ["ws"]
+    assert captured_kwargs["app_state"] is shared_state
+    assert captured_kwargs["asgi_version"] == "2.0"
     assert writer.closed is True
 
 
@@ -402,6 +454,7 @@ async def test_handle_connection_uses_custom_ws_protocol_class(monkeypatch) -> N
         http_version="HTTP/1.1",
         headers=[("upgrade", "websocket"), ("connection", "Upgrade")],
         body=b"",
+        is_websocket_upgrade=True,
     )
     calls = {"count": 0}
 
@@ -421,7 +474,6 @@ async def test_handle_connection_uses_custom_ws_protocol_class(monkeypatch) -> N
         regular_ws_calls.append("ws")
 
     monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
-    monkeypatch.setattr(server_module, "is_websocket_upgrade", lambda req: True)
     monkeypatch.setattr(PalfreyServer, "_run_custom_ws_protocol", fake_run_custom_ws_protocol)
     monkeypatch.setattr(server_module, "handle_websocket", fake_handle_websocket)
 
@@ -445,6 +497,7 @@ async def test_handle_connection_returns_400_for_upgrade_when_ws_backend_disable
         http_version="HTTP/1.1",
         headers=[("upgrade", "websocket"), ("connection", "Upgrade")],
         body=b"",
+        is_websocket_upgrade=True,
     )
     calls = {"count": 0}
 
@@ -460,7 +513,6 @@ async def test_handle_connection_returns_400_for_upgrade_when_ws_backend_disable
         called.append("ws")
 
     monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
-    monkeypatch.setattr(server_module, "is_websocket_upgrade", lambda req: True)
     monkeypatch.setattr(server_module, "handle_websocket", fake_handle_websocket)
 
     await server._handle_connection(asyncio.StreamReader(), writer)
@@ -517,6 +569,34 @@ async def test_handle_connection_sends_100_continue_and_respects_max_requests(
 
 
 @pytest.mark.asyncio
+async def test_handle_connection_does_not_send_100_continue_when_body_not_consumed() -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+    server._resolved_app = ResolvedApp(app=app, interface="asgi3")
+    writer = DummyWriter()
+    reader = asyncio.StreamReader()
+    reader.feed_data(
+        b"POST / HTTP/1.1\r\n"
+        b"Host: x\r\n"
+        b"Expect: 100-continue\r\n"
+        b"Content-Length: 18\r\n\r\n"
+        b'{"hello": "world"}'
+    )
+    reader.feed_eof()
+
+    await server._handle_connection(reader, writer)
+
+    payload = b"".join(writer.writes)
+    assert b"100 Continue" not in payload
+    assert b"204 No Content" in payload
+    assert writer.closed is True
+
+
+@pytest.mark.asyncio
 async def test_handle_connection_streams_asgi_body_before_app_completion(
     monkeypatch,
 ) -> None:
@@ -562,6 +642,483 @@ async def test_handle_connection_streams_asgi_body_before_app_completion(
     assert b"first" in payload
     assert b"second" in payload
     assert payload.count(b"200 OK") == 1
+
+
+@pytest.mark.asyncio
+async def test_handle_connection_reads_connection_close_post_body() -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
+
+    async def app(scope, receive, send):
+        body = b""
+        more_body = True
+        while more_body:
+            message = await receive()
+            assert message["type"] == "http.request"
+            body += message.get("body", b"")
+            more_body = message.get("more_body", False)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"Body: " + body})
+
+    server._resolved_app = ResolvedApp(app=app, interface="asgi3")
+    writer = DummyWriter()
+    reader = asyncio.StreamReader()
+    reader.feed_data(
+        b"POST / HTTP/1.1\r\n"
+        b"Host: x\r\n"
+        b"Connection: close\r\n"
+        b"Content-Length: 18\r\n\r\n"
+        b"{'hello': 'world'}"
+    )
+    reader.feed_eof()
+
+    await server._handle_connection(reader, writer)
+
+    payload = b"".join(writer.writes)
+    assert b"HTTP/1.1 200 OK" in payload
+    assert b"Body: {'hello': 'world'}" in payload
+    assert b"connection: close" in payload.lower()
+    assert writer.closed is True
+
+
+@pytest.mark.asyncio
+async def test_handle_connection_copies_lifespan_state_per_http_scope() -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
+    shared_state = {"a": 123, "b": [1]}
+    seen_states = []
+
+    async def app(scope, receive, send):
+        await receive()
+        seen_states.append({"a": scope["state"]["a"], "b": list(scope["state"]["b"])})
+        scope["state"]["a"] = 456
+        scope["state"]["b"].append(2)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    server._resolved_app = ResolvedApp(app=app, interface="asgi3")
+    server._lifespan = _LifespanState(shared_state)  # type: ignore[assignment]
+    writer = DummyWriter()
+    reader = asyncio.StreamReader()
+    reader.feed_data(
+        b"GET /first HTTP/1.1\r\n"
+        b"Host: x\r\n\r\n"
+        b"GET /second HTTP/1.1\r\n"
+        b"Host: x\r\n"
+        b"Connection: close\r\n\r\n"
+    )
+    reader.feed_eof()
+
+    await server._handle_connection(reader, writer)
+
+    assert seen_states == [{"a": 123, "b": [1]}, {"a": 123, "b": [1, 2]}]
+    assert shared_state == {"a": 123, "b": [1, 2, 2]}
+    assert b"GET /first" not in b"".join(writer.writes)
+    assert writer.closed is True
+
+
+@pytest.mark.asyncio
+async def test_handle_connection_sets_asgi2_scope_version() -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
+    seen_asgi: dict[str, str] = {}
+
+    def asgi2_app(scope):
+        seen_asgi.update(scope["asgi"])
+
+        async def instance(receive, send):
+            await receive()
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        return instance
+
+    server._resolved_app = ResolvedApp(app=ASGI2Adapter(asgi2_app), interface="asgi2")
+    writer = DummyWriter()
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+    reader.feed_eof()
+
+    await server._handle_connection(reader, writer)
+
+    assert seen_asgi == {"version": "2.0", "spec_version": "2.3"}
+    assert b"HTTP/1.1 200 OK" in b"".join(writer.writes)
+    assert writer.closed is True
+
+
+@pytest.mark.asyncio
+async def test_handle_connection_sends_response_before_request_body_arrives() -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"early", "more_body": False})
+
+    server._resolved_app = ResolvedApp(app=app, interface="asgi3")
+    writer = DummyWriter()
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 18\r\n\r\n")
+    task = asyncio.create_task(server._handle_connection(reader, writer))
+
+    async def wait_for_response() -> bytes:
+        for _ in range(50):
+            payload = b"".join(writer.writes)
+            if b"HTTP/1.1 200 OK" in payload:
+                return payload
+            await asyncio.sleep(0.01)
+        raise AssertionError("response was not written before request body arrived")
+
+    try:
+        payload = await asyncio.wait_for(wait_for_response(), timeout=1)
+        assert b"early" in payload
+        assert writer.closed is False
+
+        reader.feed_data(b'{"hello": "world"}')
+        reader.feed_eof()
+        await asyncio.wait_for(task, timeout=1)
+    finally:
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    assert writer.closed is True
+
+
+@pytest.mark.asyncio
+async def test_handle_connection_processes_pipelined_keepalive_requests() -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send(
+            {
+                "type": "http.response.body",
+                "body": scope["path"].encode("ascii"),
+                "more_body": False,
+            }
+        )
+
+    server._resolved_app = ResolvedApp(app=app, interface="asgi3")
+    writer = DummyWriter()
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"GET /one HTTP/1.1\r\nHost: x\r\n\r\nGET /two HTTP/1.1\r\nHost: x\r\n\r\n")
+    reader.feed_eof()
+
+    await server._handle_connection(reader, writer)
+
+    payload = b"".join(writer.writes)
+    assert payload.count(b"HTTP/1.1 200 OK") == 2
+    assert b"/one" in payload
+    assert b"/two" in payload
+    assert writer.closed is True
+
+
+@pytest.mark.asyncio
+async def test_handle_connection_common_http_path_avoids_background_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
+    server._resolved_app = _resolved_app()
+    writer = DummyWriter()
+    reader = asyncio.StreamReader()
+    reader.feed_data(
+        b"GET /one HTTP/1.1\r\nHost: x\r\n\r\n"
+        b"GET /two HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+    )
+    reader.feed_eof()
+
+    async def fail_background_reader(*args, **kwargs):
+        raise AssertionError("common HTTP path should not start the background reader")
+
+    monkeypatch.setattr(PalfreyServer, "_queue_connection_requests", fail_background_reader)
+
+    await server._handle_connection(reader, writer)
+
+    payload = b"".join(writer.writes)
+    assert payload.count(b"HTTP/1.1 200 OK") == 2
+    assert writer.closed is True
+
+
+@pytest.mark.asyncio
+async def test_handle_connection_stops_pipelined_requests_after_connection_close() -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send(
+            {
+                "type": "http.response.body",
+                "body": scope["path"].encode("ascii"),
+                "more_body": False,
+            }
+        )
+
+    server._resolved_app = ResolvedApp(app=app, interface="asgi3")
+    writer = DummyWriter()
+    reader = asyncio.StreamReader()
+    reader.feed_data(
+        b"GET /one HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+        b"GET /two HTTP/1.1\r\nHost: x\r\n\r\n"
+    )
+    reader.feed_eof()
+
+    await server._handle_connection(reader, writer)
+
+    payload = b"".join(writer.writes)
+    assert payload.count(b"HTTP/1.1 200 OK") == 1
+    assert b"/one" in payload
+    assert b"/two" not in payload
+    assert b"connection: close" in payload.lower()
+    assert writer.closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", ["partial", "duplicate_start"])
+async def test_handle_connection_closes_started_response_without_500(
+    monkeypatch,
+    scenario: str,
+) -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", timeout_keep_alive=1))
+    writer = DummyWriter()
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        if scenario == "duplicate_start":
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+
+    server._resolved_app = ResolvedApp(app=app, interface="asgi3")
+    request = HTTPRequest(
+        method="GET",
+        target="/",
+        http_version="HTTP/1.1",
+        headers=[],
+        body=b"",
+    )
+    calls = {"count": 0}
+
+    async def fake_read_request(reader, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return request
+        return None
+
+    monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
+
+    await server._handle_connection(asyncio.StreamReader(), writer)
+
+    payload = b"".join(writer.writes)
+    assert b"HTTP/1.1 200 OK" in payload
+    assert b"500 Internal Server Error" not in payload
+    assert writer.closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", ["body_after_complete", "value_returned"])
+async def test_handle_connection_does_not_append_500_after_committed_response(
+    monkeypatch,
+    scenario: str,
+) -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", timeout_keep_alive=1))
+    writer = DummyWriter()
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+        if scenario == "body_after_complete":
+            await send({"type": "http.response.body", "body": b"again", "more_body": False})
+        else:
+            return 123
+
+    server._resolved_app = ResolvedApp(app=app, interface="asgi3")
+    request = HTTPRequest(
+        method="GET",
+        target="/",
+        http_version="HTTP/1.1",
+        headers=[],
+        body=b"",
+    )
+    calls = {"count": 0}
+
+    async def fake_read_request(reader, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return request
+        return None
+
+    monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
+
+    await server._handle_connection(asyncio.StreamReader(), writer)
+
+    payload = b"".join(writer.writes)
+    assert b"HTTP/1.1 200 OK" in payload
+    assert b"ok" in payload
+    assert b"500 Internal Server Error" not in payload
+    assert payload.count(b"HTTP/1.1") == 1
+    assert writer.closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "char",
+    [
+        pytest.param(b"c", id="allow_ascii_letter"),
+        pytest.param(b"\t", id="allow_tab"),
+        pytest.param(b" ", id="allow_space"),
+        pytest.param("\u00b5".encode(), id="allow_non_ascii_bytes"),
+    ],
+)
+async def test_handle_connection_allows_response_header_value_characters(char: bytes) -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
+
+    async def app(scope, receive, send):
+        await receive()
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"key", b"<" + char + b">")],
+            }
+        )
+        await send({"type": "http.response.body", "body": b"Hello, world"})
+
+    server._resolved_app = ResolvedApp(app=app, interface="asgi3")
+    writer = DummyWriter()
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+    reader.feed_eof()
+
+    await server._handle_connection(reader, writer)
+
+    payload = b"".join(writer.writes)
+    assert b"HTTP/1.1 200 OK" in payload
+    assert b"\r\nkey: <" + char + b">\r\n" in payload
+    assert b"Hello, world" in payload
+    assert writer.closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("headers", "forbidden"),
+    [
+        ([(b"key", b"value\r\nCookie: smuggled=value")], b"Cookie: smuggled=value"),
+        ([(b"bad header", b"value")], b"bad header"),
+    ],
+)
+async def test_handle_connection_rejects_invalid_response_headers_without_smuggling(
+    monkeypatch,
+    headers: list[tuple[bytes, bytes]],
+    forbidden: bytes,
+) -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", timeout_keep_alive=1))
+    writer = DummyWriter()
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": headers})
+        await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+
+    server._resolved_app = ResolvedApp(app=app, interface="asgi3")
+    request = HTTPRequest(
+        method="GET",
+        target="/",
+        http_version="HTTP/1.1",
+        headers=[],
+        body=b"",
+    )
+    calls = {"count": 0}
+
+    async def fake_read_request(reader, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return request
+        return None
+
+    monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
+
+    await server._handle_connection(asyncio.StreamReader(), writer)
+
+    payload = b"".join(writer.writes)
+    assert b"500 Internal Server Error" not in payload
+    assert forbidden not in payload
+    assert payload == b""
+    assert writer.closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", _INVALID_RESPONSE_HEADER_NAMES)
+async def test_handle_connection_rejects_invalid_response_header_names(
+    monkeypatch,
+    name: bytes,
+) -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", timeout_keep_alive=1))
+    writer = DummyWriter()
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": [(name, b"value")]})
+        await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+
+    server._resolved_app = ResolvedApp(app=app, interface="asgi3")
+    request = HTTPRequest(
+        method="GET",
+        target="/",
+        http_version="HTTP/1.1",
+        headers=[],
+        body=b"",
+    )
+    calls = {"count": 0}
+
+    async def fake_read_request(reader, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return request
+        return None
+
+    monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
+
+    await server._handle_connection(asyncio.StreamReader(), writer)
+
+    payload = b"".join(writer.writes)
+    assert b"500 Internal Server Error" not in payload
+    assert name not in payload
+    assert payload == b""
+    assert writer.closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [99, 600, 700])
+async def test_handle_connection_rejects_out_of_range_response_status(
+    monkeypatch,
+    status: int,
+) -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app", timeout_keep_alive=1))
+    writer = DummyWriter()
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": status, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+
+    server._resolved_app = ResolvedApp(app=app, interface="asgi3")
+    request = HTTPRequest(
+        method="GET",
+        target="/",
+        http_version="HTTP/1.1",
+        headers=[],
+        body=b"",
+    )
+    calls = {"count": 0}
+
+    async def fake_read_request(reader, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return request
+        return None
+
+    monkeypatch.setattr(server_module, "read_http_request", fake_read_request)
+
+    await server._handle_connection(asyncio.StreamReader(), writer)
+
+    payload = b"".join(writer.writes)
+    assert b"500 Internal Server Error" not in payload
+    assert f"HTTP/1.1 {status}".encode() not in payload
+    assert payload == b""
+    assert writer.closed is True
 
 
 @pytest.mark.asyncio

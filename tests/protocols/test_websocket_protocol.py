@@ -69,6 +69,15 @@ def _decode_server_frame(payload: bytes) -> tuple[int, bytes]:
     return opcode, payload[offset : offset + length]
 
 
+def _server_frame_payloads(writes: list[bytes], opcode: int) -> list[bytes]:
+    frames = []
+    for payload in writes:
+        if not payload or not payload[0] & 0x80 or payload[0] & 0x0F != opcode:
+            continue
+        frames.append(_decode_server_frame(payload)[1])
+    return frames
+
+
 def _parse_http_response_headers(payload: bytes) -> dict[str, str]:
     head = payload.split(b"\r\n\r\n", 1)[0]
     lines = head.split(b"\r\n")[1:]
@@ -181,6 +190,71 @@ def test_build_websocket_scope_sets_subprotocols_and_scheme() -> None:
     assert scope["subprotocols"] == ["chat", "superchat"]
 
 
+def test_build_websocket_scope_copies_lifespan_state_shallowly() -> None:
+    app_state = {"a": 123, "b": [1]}
+
+    first_scope = build_websocket_scope(
+        target="/ws",
+        headers=_handshake_headers(),
+        client=("127.0.0.1", 1234),
+        server=("127.0.0.1", 8000),
+        root_path="",
+        is_tls=False,
+        app_state=app_state,
+    )
+    first_scope["state"]["a"] = 456
+    first_scope["state"]["b"].append(2)
+
+    second_scope = build_websocket_scope(
+        target="/ws",
+        headers=_handshake_headers(),
+        client=("127.0.0.1", 1234),
+        server=("127.0.0.1", 8000),
+        root_path="",
+        is_tls=False,
+        app_state=app_state,
+    )
+
+    assert second_scope["state"] == {"a": 123, "b": [1, 2]}
+    assert second_scope["state"] is not app_state
+    assert second_scope["state"]["b"] is app_state["b"]
+
+
+def test_handle_websocket_copies_lifespan_state_per_scope() -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="none")
+    app_state = {"a": 123, "b": [1]}
+    seen_states = []
+
+    async def app(scope, receive, send):
+        seen_states.append({"a": scope["state"]["a"], "b": list(scope["state"]["b"])})
+        scope["state"]["a"] = 456
+        scope["state"]["b"].append(2)
+        await send({"type": "websocket.accept"})
+
+    async def scenario() -> None:
+        for _ in range(2):
+            writer = CaptureWriter()
+            reader = await make_stream_reader(b"")
+            await handle_websocket(
+                app,
+                config,
+                reader=reader,
+                writer=writer,
+                headers=_handshake_headers(),
+                target="/ws",
+                client=("127.0.0.1", 1),
+                server=("127.0.0.1", 2),
+                is_tls=False,
+                app_state=app_state,
+            )
+            assert b"101 Switching Protocols" in writer.writes[0]
+
+    asyncio.run(scenario())
+
+    assert seen_states == [{"a": 123, "b": [1]}, {"a": 123, "b": [1, 2]}]
+    assert app_state == {"a": 123, "b": [1, 2, 2]}
+
+
 def test_handle_websocket_rejects_invalid_handshake() -> None:
     config = PalfreyConfig(app="tests.fixtures.apps:websocket_app")
     writer = CaptureWriter()
@@ -274,6 +348,176 @@ def test_handle_websocket_replies_to_ping_then_continues() -> None:
     pong_opcode, pong_payload = _decode_server_frame(writer.writes[1])
     assert pong_opcode == 0xA
     assert pong_payload == b"p"
+
+
+def test_handle_websocket_keepalive_timeout_closes_connection() -> None:
+    config = PalfreyConfig(
+        app="tests.fixtures.apps:websocket_app",
+        ws="none",
+        ws_ping_interval=0.01,
+        ws_ping_timeout=0.01,
+    )
+    writer = CaptureWriter()
+    disconnects = []
+
+    async def app(scope, receive, send):
+        await send({"type": "websocket.accept"})
+        disconnects.append(await receive())
+
+    async def scenario() -> None:
+        reader = asyncio.StreamReader()
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1),
+            server=("127.0.0.1", 2),
+            is_tls=False,
+        )
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=1))
+
+    ping_payloads = _server_frame_payloads(writer.writes, 0x9)
+    assert len(ping_payloads) == 1
+    assert len(ping_payloads[0]) == 4
+    close_payloads = _server_frame_payloads(writer.writes, 0x8)
+    assert close_payloads
+    assert struct.unpack("!H", close_payloads[-1][:2])[0] == 1011
+    assert close_payloads[-1][2:] == b"keepalive ping timeout"
+    assert disconnects == [{"type": "websocket.disconnect", "code": 1011}]
+
+
+def test_handle_websocket_keepalive_ignores_unmatched_pong() -> None:
+    config = PalfreyConfig(
+        app="tests.fixtures.apps:websocket_app",
+        ws="none",
+        ws_ping_interval=0.01,
+        ws_ping_timeout=0.02,
+    )
+    writer = CaptureWriter()
+    disconnects = []
+
+    async def app(scope, receive, send):
+        await send({"type": "websocket.accept"})
+        disconnects.append(await receive())
+
+    async def scenario() -> None:
+        reader = asyncio.StreamReader()
+        handler = asyncio.create_task(
+            handle_websocket(
+                app,
+                config,
+                reader=reader,
+                writer=writer,
+                headers=_handshake_headers(),
+                target="/",
+                client=("127.0.0.1", 1),
+                server=("127.0.0.1", 2),
+                is_tls=False,
+            )
+        )
+        while not _server_frame_payloads(writer.writes, 0x9):
+            await asyncio.sleep(0.001)
+        reader.feed_data(_masked_frame(0xA, b"stale"))
+        await asyncio.wait_for(handler, timeout=1)
+
+    asyncio.run(scenario())
+
+    close_payloads = _server_frame_payloads(writer.writes, 0x8)
+    assert close_payloads
+    assert struct.unpack("!H", close_payloads[-1][:2])[0] == 1011
+    assert disconnects == [{"type": "websocket.disconnect", "code": 1011}]
+
+
+def test_handle_websocket_keepalive_pong_keeps_connection_open() -> None:
+    config = PalfreyConfig(
+        app="tests.fixtures.apps:websocket_app",
+        ws="none",
+        ws_ping_interval=0.02,
+        ws_ping_timeout=0.2,
+    )
+    writer = CaptureWriter()
+    disconnects = []
+
+    async def app(scope, receive, send):
+        await send({"type": "websocket.accept"})
+        disconnects.append(await receive())
+
+    async def scenario() -> None:
+        reader = asyncio.StreamReader()
+        handler = asyncio.create_task(
+            handle_websocket(
+                app,
+                config,
+                reader=reader,
+                writer=writer,
+                headers=_handshake_headers(),
+                target="/",
+                client=("127.0.0.1", 1),
+                server=("127.0.0.1", 2),
+                is_tls=False,
+            )
+        )
+        seen_writes = 0
+        deadline = asyncio.get_running_loop().time() + 0.12
+        while asyncio.get_running_loop().time() < deadline:
+            for payload in writer.writes[seen_writes:]:
+                if payload and payload[0] & 0x80 and payload[0] & 0x0F == 0x9:
+                    _, ping_payload = _decode_server_frame(payload)
+                    reader.feed_data(_masked_frame(0xA, ping_payload))
+            seen_writes = len(writer.writes)
+            assert not _server_frame_payloads(writer.writes, 0x8)
+            await asyncio.sleep(0.002)
+
+        reader.feed_data(_masked_frame(0x8, struct.pack("!H", 1000)))
+        await asyncio.wait_for(handler, timeout=1)
+
+    asyncio.run(scenario())
+
+    assert _server_frame_payloads(writer.writes, 0x9)
+    assert disconnects == [{"type": "websocket.disconnect", "code": 1000, "reason": ""}]
+
+
+@pytest.mark.parametrize("ping_interval", [None, 0.0])
+def test_handle_websocket_keepalive_disabled_sends_no_ping(
+    ping_interval: float | None,
+) -> None:
+    config = PalfreyConfig(
+        app="tests.fixtures.apps:websocket_app",
+        ws="none",
+        ws_ping_interval=ping_interval,
+        ws_ping_timeout=0.01,
+    )
+    writer = CaptureWriter()
+
+    async def app(scope, receive, send):
+        await send({"type": "websocket.accept"})
+        await asyncio.sleep(0.03)
+        await send({"type": "websocket.close", "code": 1000})
+
+    async def scenario() -> None:
+        reader = asyncio.StreamReader()
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1),
+            server=("127.0.0.1", 2),
+            is_tls=False,
+        )
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=1))
+
+    assert _server_frame_payloads(writer.writes, 0x9) == []
+    close_payloads = _server_frame_payloads(writer.writes, 0x8)
+    assert close_payloads
+    assert struct.unpack("!H", close_payloads[-1][:2])[0] == 1000
 
 
 def test_handle_websocket_close_before_accept_returns_403() -> None:
@@ -1781,6 +2025,39 @@ def test_websockets_backend_close_before_accept_reports_disconnect_1006(
     assert rejected.status == 403
 
 
+def test_websockets_backend_client_close_includes_empty_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = PalfreyConfig(app="tests.fixtures.apps:websocket_app", ws="websockets")
+    writer = CaptureWriterWithTransport()
+    _install_fake_websockets_backend(monkeypatch)
+
+    async def app(scope, receive, send):
+        assert await receive() == {"type": "websocket.connect"}
+        await send({"type": "websocket.accept"})
+        assert await receive() == {
+            "type": "websocket.disconnect",
+            "code": 1000,
+            "reason": "",
+        }
+
+    async def scenario() -> None:
+        reader = await make_stream_reader(b"")
+        await handle_websocket(
+            app,
+            config,
+            reader=reader,
+            writer=writer,
+            headers=_handshake_headers(),
+            target="/",
+            client=("127.0.0.1", 1),
+            server=("127.0.0.1", 2),
+            is_tls=False,
+        )
+
+    asyncio.run(scenario())
+
+
 def test_websockets_backend_rejects_messages_after_close(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2122,7 +2399,11 @@ def test_websockets_sansio_backend_handles_pong_and_close_without_reason(
     async def app(scope, receive, send):
         assert await receive() == {"type": "websocket.connect"}
         await send({"type": "websocket.accept"})
-        assert await receive() == {"type": "websocket.disconnect", "code": 1000}
+        assert await receive() == {
+            "type": "websocket.disconnect",
+            "code": 1000,
+            "reason": "",
+        }
 
     async def scenario() -> None:
         reader = await make_stream_reader(b"x")
@@ -2243,7 +2524,11 @@ def test_websockets_sansio_backend_parser_exception_without_reason(
     async def app(scope, receive, send):
         assert await receive() == {"type": "websocket.connect"}
         await send({"type": "websocket.accept"})
-        assert await receive() == {"type": "websocket.disconnect", "code": 1002}
+        assert await receive() == {
+            "type": "websocket.disconnect",
+            "code": 1002,
+            "reason": "",
+        }
 
     async def scenario() -> None:
         reader = await make_stream_reader(b"x")

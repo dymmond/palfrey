@@ -46,14 +46,13 @@ Palfrey was built with deep respect for Uvicorn and the ASGI ecosystem it helped
 This is not a "winner vs loser" comparison. Uvicorn is an excellent, battle-tested server, and Palfrey intentionally keeps a compatible API/CLI experience so teams coming from Uvicorn feel at home.
 Our goal is to offer another strong option when teams want different internal architecture and extended runtime capabilities.
 
-Benchmark snapshot (your run):
+Benchmark snapshot (HTTP sample):
 
-- Command: `python -m benchmarks.run --http-requests 100000`
+- Command: `hatch run python benchmarks/run.py --http-requests 100000 --http-concurrency 50 --ws-clients 0 --ws-messages 0 --samples 5`
 
 | Scenario | Palfrey Ops/s | Uvicorn Ops/s | Relative Speed |
 | --- | ---: | ---: | ---: |
-| HTTP | 36859.67 | 36357.47 | `1.014x` |
-| WebSocket | 38884.53 | 15317.18 | `2.539x` |
+| HTTP | 35016.18 | 33154.69 | `1.056x` |
 
 These numbers are environment-dependent. Always benchmark with your own app, traffic profile, and infrastructure before making production decisions.
 

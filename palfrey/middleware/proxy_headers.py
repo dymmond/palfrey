@@ -57,6 +57,18 @@ class ProxyHeadersMiddleware:
             await self.app(scope, receive, send)
             return
 
+        forwarded_proto_raw: bytes | None = None
+        forwarded_for_raw: bytes | None = None
+        for name, value in scope.get("headers", []):
+            if name == b"x-forwarded-proto":
+                forwarded_proto_raw = value
+            elif name == b"x-forwarded-for":
+                forwarded_for_raw = value
+
+        if forwarded_proto_raw is None and forwarded_for_raw is None:
+            await self.app(scope, receive, send)
+            return
+
         # Determine if the immediate peer is a trusted proxy
         client = scope.get("client")
         client_host = client[0] if client else None
@@ -65,11 +77,7 @@ class ProxyHeadersMiddleware:
             await self.app(scope, receive, send)
             return
 
-        # Prepare headers for lookup; using a dict for O(1) access to byte keys
-        headers = dict(scope.get("headers", []))
-
         # Handle Protocol Scheme (http vs https / ws vs wss)
-        forwarded_proto_raw = headers.get(b"x-forwarded-proto")
         if forwarded_proto_raw is not None:
             forwarded_proto = forwarded_proto_raw.decode("latin1").strip().lower()
             if forwarded_proto in {"http", "https", "ws", "wss"}:
@@ -80,7 +88,6 @@ class ProxyHeadersMiddleware:
                     scope["scheme"] = forwarded_proto
 
         # Handle Client IP Address
-        forwarded_for_raw = headers.get(b"x-forwarded-for")
         if forwarded_for_raw is not None:
             forwarded_for = forwarded_for_raw.decode("latin1")
             host = self.trusted_hosts.get_trusted_client_host(forwarded_for)

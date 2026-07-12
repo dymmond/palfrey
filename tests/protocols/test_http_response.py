@@ -46,6 +46,27 @@ def test_encode_http_response_adds_content_length() -> None:
     assert b"connection: close" in encoded.lower()
 
 
+def test_cached_default_connection_header_updates_trusted_metadata() -> None:
+    response = HTTPResponse(
+        status=200,
+        headers=[(b"content-type", b"text/plain")],
+        body_chunks=[b"hello"],
+        headers_metadata_trusted=True,
+    )
+    config = PalfreyConfig(app="tests.fixtures.apps:http_app")
+
+    append_default_response_headers(
+        response,
+        config,
+        default_headers=[(b"date", b"Mon, 01 Jan 2024 00:00:00 GMT"), (b"connection", b"close")],
+    )
+
+    encoded = encode_http_response(response, keep_alive=False)
+    assert response.has_connection_header is True
+    assert response.connection_header == b"close"
+    assert encoded.lower().count(b"connection: close") == 1
+
+
 def test_encode_http_response_preserves_existing_content_length() -> None:
     response = HTTPResponse(status=200, headers=[(b"content-length", b"1")])
     response.body_chunks = [b"x"]

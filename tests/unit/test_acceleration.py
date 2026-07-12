@@ -33,6 +33,75 @@ def test_parse_request_head_python_fallback(monkeypatch: Any) -> None:
     assert headers == [("host", "example.com"), ("x-test", "yes")]
 
 
+def test_parse_request_head_bytes_python_fallback(monkeypatch: Any) -> None:
+    monkeypatch.setattr(acceleration, "HAS_RUST_EXTENSION", False)
+    request_head = b"GET /health HTTP/1.1\r\nHost: example.com\r\nX-Test: yes\r\n\r\n"
+    method, target, version, headers = acceleration.parse_request_head_bytes(request_head)
+    assert method == b"GET"
+    assert target == b"/health"
+    assert version == b"HTTP/1.1"
+    assert headers == [(b"Host", b"example.com"), (b"X-Test", b"yes")]
+
+
+def test_parse_request_head_normalized_python_fallback(monkeypatch: Any) -> None:
+    monkeypatch.setattr(acceleration, "HAS_RUST_EXTENSION", False)
+    request_head = (
+        b"GET /ws HTTP/1.1\r\n"
+        b"Host: example.com\r\n"
+        b"Connection: Upgrade\r\n"
+        b"Upgrade: websocket\r\n"
+        b"Expect: 100-continue\r\n\r\n"
+    )
+    (
+        method,
+        target,
+        version,
+        headers,
+        content_length,
+        transfer_encoding,
+        connection,
+        expect,
+        websocket_upgrade,
+    ) = acceleration.parse_request_head_normalized(request_head)
+
+    assert (method, target, version) == (b"GET", b"/ws", b"HTTP/1.1")
+    assert (b"connection", b"Upgrade") in headers
+    assert (b"upgrade", b"websocket") in headers
+    assert content_length is None
+    assert transfer_encoding == b""
+    assert connection == b"upgrade"
+    assert expect == b"100-continue"
+    assert websocket_upgrade is True
+
+
+@pytest.mark.skipif(not acceleration.HAS_RUST_EXTENSION, reason="Rust extension not available")
+def test_parse_request_head_bytes_preserves_rust_bytes() -> None:
+    method, target, version, headers = acceleration.parse_request_head_bytes(
+        b"GET /demo HTTP/1.1\r\nHost: example.com\r\n\r\n"
+    )
+    assert isinstance(method, bytes)
+    assert isinstance(target, bytes)
+    assert isinstance(version, bytes)
+    assert headers and isinstance(headers[0][0], bytes) and isinstance(headers[0][1], bytes)
+
+
+@pytest.mark.skipif(not acceleration.HAS_RUST_EXTENSION, reason="Rust extension not available")
+def test_parse_request_head_normalized_rust_metadata() -> None:
+    result = acceleration.parse_request_head_normalized(
+        b"GET /demo HTTP/1.1\r\nHost: example.com\r\nConnection: keep-alive\r\n\r\n"
+    )
+    method, target, version, headers, content_length, transfer_encoding, connection, expect, ws = (
+        result
+    )
+    assert (method, target, version) == (b"GET", b"/demo", b"HTTP/1.1")
+    assert headers == [(b"host", b"example.com"), (b"connection", b"keep-alive")]
+    assert content_length is None
+    assert transfer_encoding == b""
+    assert connection == b"keep-alive"
+    assert expect == b""
+    assert ws is False
+
+
 def test_unmask_websocket_payload_python_fallback(monkeypatch: Any) -> None:
     monkeypatch.setattr(acceleration, "HAS_RUST_EXTENSION", False)
     payload = bytes([0x10, 0x20, 0x30, 0x40, 0x50])

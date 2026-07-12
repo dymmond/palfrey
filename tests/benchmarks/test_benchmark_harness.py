@@ -124,6 +124,49 @@ class TestBenchmarkPhases:
             assert len(results["measure_samples"]) > 0
             assert all(isinstance(s, int | float) for s in results["measure_samples"])
 
+    def test_measure_phase_collects_requested_sample_count(self):
+        """Measurement phase should repeat requested samples after warmup."""
+        from benchmarks.run import _run_benchmark_phases
+
+        with patch("benchmarks.run._run_http") as mock_http:
+            mock_http.side_effect = [
+                (1000, 1.0),
+                (5000, 1.0),
+                (10000, 2.0),
+                (10000, 2.5),
+                (10000, 2.25),
+            ]
+
+            results = _run_benchmark_phases(
+                server="palfrey",
+                port=8000,
+                http_requests=10000,
+                http_concurrency=10,
+                ws_clients=0,
+                ws_messages=0,
+                sample_count=3,
+            )
+
+            assert mock_http.call_count == 5
+            assert len(results["measure_samples"]) == 3
+            assert len(results["http"]["samples"]) == 3
+            assert results["http"]["statistics"]["samples"] == 3
+
+    def test_measure_phase_rejects_empty_sample_count(self):
+        """Measurement phase should reject a sample count with no samples."""
+        from benchmarks.run import _run_benchmark_phases
+
+        with pytest.raises(ValueError, match="sample_count"):
+            _run_benchmark_phases(
+                server="palfrey",
+                port=8000,
+                http_requests=10000,
+                http_concurrency=10,
+                ws_clients=0,
+                ws_messages=0,
+                sample_count=0,
+            )
+
 
 class TestStatisticalReporting:
     """Test statistical output: mean, median, p99, stddev."""
@@ -136,7 +179,10 @@ class TestStatisticalReporting:
 
         assert "mean" in stats
         assert "median" in stats
+        assert "p95" in stats
         assert "p99" in stats
+        assert "max" in stats
+        assert "min" in stats
         assert "stddev" in stats
         assert "ci_lower" in stats
         assert "ci_upper" in stats
@@ -144,7 +190,10 @@ class TestStatisticalReporting:
         # Sanity checks
         assert stats["mean"] > 0
         assert stats["median"] > 0
+        assert stats["p95"] >= stats["median"]
         assert stats["p99"] >= stats["median"]
+        assert stats["max"] >= stats["p99"]
+        assert stats["min"] <= stats["median"]
         assert stats["stddev"] >= 0
 
     def test_statistics_match_stdlib(self, mock_benchmark_samples):
@@ -180,6 +229,92 @@ class TestStatisticalReporting:
         assert stats["ci_lower"] <= stats["mean"]
         assert stats["ci_upper"] >= stats["mean"]
         assert stats["ci_upper"] > stats["ci_lower"]
+
+    def test_sample_statistics_group_by_server_and_scenario(self):
+        """Repeated samples should be summarized per server and scenario."""
+        from benchmarks.run import ScenarioResult, _sample_statistics
+
+        results = [
+            ScenarioResult("uvicorn", "http", 100, 1.0, latency_seconds=(0.1, 0.2)),
+            ScenarioResult("uvicorn", "http", 100, 2.0, latency_seconds=(0.2, 0.3)),
+            ScenarioResult("palfrey", "http", 100, 0.5, latency_seconds=(0.05, 0.06)),
+            ScenarioResult("palfrey", "http", 100, 1.0, latency_seconds=(0.07, 0.08)),
+        ]
+
+        stats = _sample_statistics(results)
+
+        assert stats["http"]["uvicorn"]["samples"] == 2
+        assert stats["http"]["palfrey"]["samples"] == 2
+        assert stats["http"]["palfrey"]["mean"] > stats["http"]["uvicorn"]["mean"]
+        assert "latency_seconds" in stats["http"]["palfrey"]
+        assert stats["http"]["palfrey"]["latency_seconds"]["p95"] >= 0.07
+        assert stats["http"]["ratio"]["palfrey_over_uvicorn_mean"] > 1.0
+
+    def test_aggregate_results_combines_matching_samples(self):
+        """Repeated samples should aggregate without dropping later samples."""
+        from benchmarks.run import ScenarioResult, _aggregate_results
+
+        results = [
+            ScenarioResult(
+                "palfrey",
+                "http",
+                100,
+                1.0,
+                latency_seconds=(0.01,),
+                cpu_time_seconds=0.1,
+                max_rss_bytes=100,
+            ),
+            ScenarioResult(
+                "palfrey",
+                "http",
+                100,
+                3.0,
+                failed_operations=1,
+                latency_seconds=(0.02,),
+                cpu_time_seconds=0.2,
+                max_rss_bytes=120,
+            ),
+            ScenarioResult("palfrey", "websocket", 50, 0.5),
+        ]
+
+        aggregated = _aggregate_results(results)
+
+        assert aggregated == [
+            ScenarioResult(
+                "palfrey",
+                "http",
+                200,
+                4.0,
+                failed_operations=1,
+                latency_seconds=(0.01, 0.02),
+                cpu_time_seconds=0.30000000000000004,
+                max_rss_bytes=120,
+            ),
+            ScenarioResult("palfrey", "websocket", 50, 0.5),
+        ]
+
+    def test_result_to_dict_includes_latency_and_resource_metrics(self):
+        """JSON results should retain raw latency and resource evidence."""
+        from benchmarks.run import ScenarioResult, _result_to_dict
+
+        payload = _result_to_dict(
+            ScenarioResult(
+                "palfrey",
+                "http",
+                2,
+                0.5,
+                latency_seconds=(0.01, 0.02),
+                cpu_time_seconds=0.25,
+                max_rss_bytes=123456,
+            )
+        )
+
+        assert payload["successful_operations"] == 2
+        assert payload["failed_operations"] == 0
+        assert payload["latency_seconds"]["median"] == 0.015
+        assert payload["latency_samples_seconds"] == [0.01, 0.02]
+        assert payload["cpu_time_seconds"] == 0.25
+        assert payload["max_rss_bytes"] == 123456
 
 
 class TestReproducibilityFeatures:

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import os
+
 
 async def http_app(scope, receive, send):
     """Return a simple HTTP response and lifecycle events."""
@@ -181,6 +184,304 @@ async def http_multi_set_cookie_app(scope, receive, send):
             }
         )
         await send({"type": "http.response.body", "body": b"ok"})
+
+
+async def http_streaming_app(scope, receive, send):
+    """HTTP app that emits multiple response body chunks."""
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    if scope["type"] == "http":
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"text/plain")],
+            }
+        )
+        await send({"type": "http.response.body", "body": b"first-", "more_body": True})
+        await send({"type": "http.response.body", "body": b"second", "more_body": False})
+
+
+async def http_path_echo_app(scope, receive, send):
+    """HTTP app that returns the request path for keep-alive reuse checks."""
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    if scope["type"] == "http":
+        payload = scope["path"].encode("ascii")
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [
+                    (b"content-type", b"text/plain"),
+                    (b"content-length", str(len(payload)).encode("ascii")),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": payload})
+
+
+async def http_scope_echo_app(scope, receive, send):
+    """HTTP app that returns stable client and scheme scope fields."""
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    if scope["type"] == "http":
+        client = scope.get("client") or ("", 0)
+        payload = f"scheme={scope.get('scheme')};client={client[0]}".encode("ascii")
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [
+                    (b"content-type", b"text/plain"),
+                    (b"content-length", str(len(payload)).encode("ascii")),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": payload})
+
+
+async def http_disconnect_observer_app(scope, receive, send):
+    """HTTP app that records request/disconnect event order for tests."""
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    if scope["type"] == "http":
+        events = []
+        while True:
+            message = await receive()
+            events.append(message["type"])
+            if message["type"] == "http.disconnect":
+                break
+            if not message.get("more_body", False):
+                break
+
+        log_path = os.environ.get("PALFREY_DISCONNECT_LOG")
+        if log_path:
+            with open(log_path, "w", encoding="utf-8") as log_file:
+                log_file.write(",".join(events))
+
+
+async def http_expect_continue_body_app(scope, receive, send):
+    """HTTP app that consumes the request body before responding."""
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    if scope["type"] == "http":
+        body = bytearray()
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            body.extend(message.get("body", b""))
+            if not message.get("more_body", False):
+                break
+
+        payload = b"Body: " + bytes(body)
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [
+                    (b"content-type", b"text/plain"),
+                    (b"content-length", str(len(payload)).encode("ascii")),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": payload})
+
+
+async def http_no_response_app(scope, receive, send):
+    """HTTP app that returns without sending a response."""
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    if scope["type"] == "http":
+        return
+
+
+async def http_body_before_start_app(scope, receive, send):
+    """HTTP app that emits a response body before response start."""
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    if scope["type"] == "http":
+        await send({"type": "http.response.body", "body": b"out of order"})
+
+
+async def http_exception_before_response_app(scope, receive, send):
+    """HTTP app that fails before starting a response."""
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    if scope["type"] == "http":
+        raise RuntimeError("response did not start")
+
+
+async def http_exception_after_response_start_app(scope, receive, send):
+    """HTTP app that fails after response start and a partial body chunk."""
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    if scope["type"] == "http":
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"text/plain")],
+            }
+        )
+        await send({"type": "http.response.body", "body": b"partial", "more_body": True})
+        raise RuntimeError("response already started")
+
+
+async def http_duplicate_response_start_app(scope, receive, send):
+    """HTTP app that sends response start twice."""
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    if scope["type"] == "http":
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"text/plain")],
+            }
+        )
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 201,
+                "headers": [(b"content-type", b"text/plain")],
+            }
+        )
+
+
+async def http_body_after_complete_app(scope, receive, send):
+    """HTTP app that sends a response body after completion."""
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    if scope["type"] == "http":
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [
+                    (b"content-type", b"text/plain"),
+                    (b"content-length", b"2"),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+        await send({"type": "http.response.body", "body": b"late", "more_body": False})
+
+
+async def http_slow_response_app(scope, receive, send):
+    """HTTP app that keeps one request active briefly."""
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    if scope["type"] == "http":
+        await asyncio.sleep(0.5)
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [
+                    (b"content-type", b"text/plain"),
+                    (b"content-length", b"7"),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": b"slow-ok"})
 
 
 async def lifespan_fail_app(scope, receive, send):

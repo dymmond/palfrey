@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from importlib.util import find_spec
 
+from palfrey import acceleration
 from palfrey.protocols.http import HTTPRequest, build_http_scope, read_http_request
 from tests.helpers import make_stream_reader
 
@@ -52,6 +53,37 @@ def test_h11_headers_stay_bytes_through_scope_pipeline() -> None:
     )
 
     request = asyncio.run(_read(payload, parser_mode="h11"))
+    assert request is not None
+
+    scope = build_http_scope(
+        request,
+        client=("127.0.0.1", 12345),
+        server=("127.0.0.1", 8000),
+        root_path="",
+        is_tls=False,
+    )
+
+    assert all(
+        isinstance(name, bytes) and isinstance(value, bytes) for name, value in request.headers
+    )
+    assert all(
+        isinstance(name, bytes) and isinstance(value, bytes) for name, value in scope["headers"]
+    )
+    assert (b"x-custom", b"TestValue") in scope["headers"]
+    assert (b"x-binary", b"caf\xe9") in scope["headers"]
+
+
+def test_auto_headers_stay_bytes_through_scope_pipeline() -> None:
+    if not acceleration.HAS_RUST_EXTENSION:
+        return
+    payload = (
+        b"GET /hello?x=1 HTTP/1.1\r\n"
+        b"Host: Example.test\r\n"
+        b"X-Custom: TestValue\r\n"
+        b"X-Binary: caf\xe9\r\n\r\n"
+    )
+
+    request = asyncio.run(_read(payload, parser_mode="auto"))
     assert request is not None
 
     scope = build_http_scope(

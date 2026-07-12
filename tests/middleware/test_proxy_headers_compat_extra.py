@@ -128,6 +128,30 @@ def test_proxy_headers_no_client_keeps_scope_unchanged() -> None:
     assert captured_scope["scheme"] == "http"
 
 
+def test_proxy_headers_without_forwarded_headers_skips_trust_lookup() -> None:
+    captured_scope: Scope = {}
+
+    async def app(scope, receive, send):
+        captured_scope.update(scope)
+
+    class _BrokenTrustedHosts:
+        def __contains__(self, host: object) -> bool:
+            raise AssertionError("trust lookup should not run without forwarded headers")
+
+    middleware = ProxyHeadersMiddleware(app, "127.0.0.1")
+    middleware.trusted_hosts = _BrokenTrustedHosts()  # type: ignore[assignment]
+    scope: Scope = {
+        "type": "http",
+        "client": ("127.0.0.1", 7777),
+        "scheme": "http",
+        "headers": [(b"host", b"example.com")],
+    }
+
+    asyncio.run(middleware(scope, _noop_receive, _noop_send))
+    assert captured_scope["client"] == ("127.0.0.1", 7777)
+    assert captured_scope["scheme"] == "http"
+
+
 @pytest.mark.parametrize(
     ("trusted_hosts", "client_host", "expected"),
     [

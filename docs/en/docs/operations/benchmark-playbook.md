@@ -10,7 +10,7 @@ Before running benchmarks, ensure your environment meets these requirements:
 - **OS**: Linux (recommended for production-like network stack) or macOS.
 - **Dependencies**: Install Palfrey with optional performance dependencies:
   ```bash
-  pip install palfrey[httptools,uvloop,websockets] uvicorn
+  hatch env create
   ```
 
 ## Environment Setup
@@ -39,7 +39,7 @@ The built-in benchmark harness compares Palfrey against Uvicorn using identical 
 To run a baseline HTTP test with 100,000 requests:
 
 ```bash
-python -m benchmarks.run --http-requests 100000 --enable-phases
+hatch run python benchmarks/run.py --http-requests 100000 --enable-phases
 ```
 
 ### Standard WebSocket Benchmark
@@ -47,7 +47,7 @@ python -m benchmarks.run --http-requests 100000 --enable-phases
 To run a WebSocket echo test with 10 clients and 5,000 messages each:
 
 ```bash
-python -m benchmarks.run --ws-clients 10 --ws-messages 5000 --enable-phases
+hatch run python benchmarks/run.py --ws-clients 10 --ws-messages 5000 --enable-phases
 ```
 
 ### Combined Run with JSON Output
@@ -55,7 +55,7 @@ python -m benchmarks.run --ws-clients 10 --ws-messages 5000 --enable-phases
 To run both and save results for machine analysis:
 
 ```bash
-python -m benchmarks.run \
+hatch run python benchmarks/run.py \
   --http-requests 50000 \
   --ws-clients 5 \
   --ws-messages 2000 \
@@ -105,7 +105,7 @@ When reporting benchmark results, please include:
 - **Hardware**: [e.g., M2 Pro, 16GB RAM]
 - **OS**: [e.g., Ubuntu 22.04, macOS 14.2]
 - **Python**: [e.g., 3.12.1]
-- **Command**: `python -m benchmarks.run ...`
+- **Command**: `hatch run python benchmarks/run.py ...`
 
 ### Results
 - **HTTP Ops/s**: Palfrey: X, Uvicorn: Y (Ratio: Zx)

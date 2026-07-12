@@ -81,11 +81,11 @@ def test_encode_http_response_uses_default_reason_for_unknown_status() -> None:
     assert payload.startswith(b"HTTP/1.1 299 ")
 
 
-def test_encode_http_response_emits_keep_alive_header_when_enabled() -> None:
+def test_encode_http_response_omits_implicit_keep_alive_header_when_enabled() -> None:
     payload = encode_http_response(
         HTTPResponse(status=200, headers=[], body_chunks=[b"ok"]), keep_alive=True
     )
-    assert b"connection: keep-alive" in payload.lower()
+    assert b"connection:" not in payload.lower()
 
 
 def test_encode_http_response_does_not_duplicate_content_length_header() -> None:

@@ -9,6 +9,7 @@ from palfrey.protocols.http import (
     HTTPRequest,
     HTTPResponse,
     append_default_response_headers,
+    build_http_scope,
     encode_http_response,
     is_websocket_upgrade,
     read_http_request,
@@ -177,6 +178,25 @@ def test_read_http_request_parses_http10_request() -> None:
     request = asyncio.run(_read(payload))
     assert request is not None
     assert request.http_version == "HTTP/1.0"
+
+
+def test_read_http_request_preserves_extension_method_query() -> None:
+    payload = b"QUERY /items?kind=books HTTP/1.1\r\nHost: x\r\n\r\n"
+
+    request = asyncio.run(_read(payload))
+    assert request is not None
+
+    scope = build_http_scope(
+        request,
+        client=("127.0.0.1", 12345),
+        server=("127.0.0.1", 8000),
+        root_path="",
+        is_tls=False,
+    )
+
+    assert request.method == "QUERY"
+    assert scope["method"] == "QUERY"
+    assert scope["query_string"] == b"kind=books"
 
 
 def test_read_http_request_accepts_request_without_body() -> None:

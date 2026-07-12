@@ -167,19 +167,14 @@ class TestHeaderCaching:
 
         assert b"date:" in raw.lower()
 
-    def test_connection_header_included_for_keep_alive(self) -> None:
-        """Connection header is included based on keep_alive flag."""
+    def test_connection_header_only_included_for_close(self) -> None:
+        """Implicit keep-alive does not add a Connection response header."""
         response = HTTPResponse(status=200)
         response.body_chunks = [b"test"]
 
         raw_keep_alive = encode_http_response(response, keep_alive=True)
         raw_close = encode_http_response(response, keep_alive=False)
 
-        # Check for connection header
-        assert b"connection:" in raw_keep_alive.lower()
+        assert b"connection:" not in raw_keep_alive.lower()
         assert b"connection:" in raw_close.lower()
-
-        # keep_alive=True should have keep-alive
-        assert b"keep-alive" in raw_keep_alive.lower()
-        # keep_alive=False should have close
         assert b"close" in raw_close.lower()

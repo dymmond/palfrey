@@ -45,6 +45,7 @@ from palfrey.protocols.http import (
     _STATUS_LINES,
     HTTPRequest,
     HTTPResponse,
+    HTTPResponseStartedError,
     append_default_response_headers,
     build_http_scope,
     encode_http_response_body_chunk,
@@ -698,7 +699,9 @@ class PalfreyServer:
                 finally:
                     self._leave_request_slot()
 
-                keep_processing = should_keep_alive(request, response)
+                keep_processing = (
+                    False if response.close_after_response else should_keep_alive(request, response)
+                )
                 if not response.streamed:
                     await self._write_response(writer, response, keep_alive=keep_processing)
 
@@ -916,15 +919,25 @@ class PalfreyServer:
                 return
             await self._write_response_body_chunk(writer, response, body, more_body=more_body)
 
-        response = await run_http_asgi(
-            self._resolved_app.app,
-            scope,
-            body_input,
-            expect_100_continue=requires_100_continue(request),
-            on_100_continue=context.on_100_continue,
-            on_response_start=on_response_start if writer is not None else None,
-            on_response_body=on_response_body if writer is not None else None,
-        )
+        try:
+            response = await run_http_asgi(
+                self._resolved_app.app,
+                scope,
+                body_input,
+                expect_100_continue=requires_100_continue(request),
+                on_100_continue=context.on_100_continue,
+                on_response_start=on_response_start if writer is not None else None,
+                on_response_body=on_response_body if writer is not None else None,
+            )
+        except HTTPResponseStartedError as exc:
+            response = exc.response
+            response.close_after_response = True
+            if writer is not None and response.streamed and not streamed_head_sent:
+                payload = b"".join(encode_http_response_head(response, keep_alive=False))
+                if payload:
+                    writer.write(payload)
+                await writer.drain()
+            logger.error("%s", exc)
 
         if not response.streamed:
             default_headers = self.server_state.default_headers or None

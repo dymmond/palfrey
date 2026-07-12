@@ -581,6 +581,68 @@ async def test_handle_connection_streams_asgi_body_before_app_completion(
 
 
 @pytest.mark.asyncio
+async def test_handle_connection_processes_pipelined_keepalive_requests() -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send(
+            {
+                "type": "http.response.body",
+                "body": scope["path"].encode("ascii"),
+                "more_body": False,
+            }
+        )
+
+    server._resolved_app = ResolvedApp(app=app, interface="asgi3")
+    writer = DummyWriter()
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"GET /one HTTP/1.1\r\nHost: x\r\n\r\nGET /two HTTP/1.1\r\nHost: x\r\n\r\n")
+    reader.feed_eof()
+
+    await server._handle_connection(reader, writer)
+
+    payload = b"".join(writer.writes)
+    assert payload.count(b"HTTP/1.1 200 OK") == 2
+    assert b"/one" in payload
+    assert b"/two" in payload
+    assert writer.closed is True
+
+
+@pytest.mark.asyncio
+async def test_handle_connection_stops_pipelined_requests_after_connection_close() -> None:
+    server = PalfreyServer(PalfreyConfig(app="tests.fixtures.apps:http_app"))
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send(
+            {
+                "type": "http.response.body",
+                "body": scope["path"].encode("ascii"),
+                "more_body": False,
+            }
+        )
+
+    server._resolved_app = ResolvedApp(app=app, interface="asgi3")
+    writer = DummyWriter()
+    reader = asyncio.StreamReader()
+    reader.feed_data(
+        b"GET /one HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+        b"GET /two HTTP/1.1\r\nHost: x\r\n\r\n"
+    )
+    reader.feed_eof()
+
+    await server._handle_connection(reader, writer)
+
+    payload = b"".join(writer.writes)
+    assert payload.count(b"HTTP/1.1 200 OK") == 1
+    assert b"/one" in payload
+    assert b"/two" not in payload
+    assert b"connection: close" in payload.lower()
+    assert writer.closed is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("scenario", ["partial", "duplicate_start"])
 async def test_handle_connection_closes_started_response_without_500(
     monkeypatch,

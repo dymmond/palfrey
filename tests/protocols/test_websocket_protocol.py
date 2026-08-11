@@ -2099,38 +2099,24 @@ def test_websockets_backend_real_socketpair_roundtrip() -> None:
         await send({"type": "websocket.send", "text": "hello"})
         await send({"type": "websocket.close", "code": 1000})
 
-    def _parse_frames(payload: bytes) -> list[tuple[int, bytes]]:
-        frames: list[tuple[int, bytes]] = []
-        index = 0
-        while index + 2 <= len(payload):
-            first = payload[index]
-            second = payload[index + 1]
-            opcode = first & 0x0F
-            length = second & 0x7F
-            header_size = 2
-            if length == 126:
-                if index + 4 > len(payload):
-                    break
-                length = struct.unpack("!H", payload[index + 2 : index + 4])[0]
-                header_size = 4
-            elif length == 127:
-                if index + 10 > len(payload):
-                    break
-                length = struct.unpack("!Q", payload[index + 2 : index + 10])[0]
-                header_size = 10
-            start = index + header_size
-            end = start + length
-            if end > len(payload):
-                break
-            frames.append((opcode, payload[start:end]))
-            index = end
-        return frames
+    async def _read_server_frame(reader: asyncio.StreamReader) -> tuple[int, bytes]:
+        first, second = await reader.readexactly(2)
+        assert second & 0x80 == 0
+
+        length = second & 0x7F
+        if length == 126:
+            length = struct.unpack("!H", await reader.readexactly(2))[0]
+        elif length == 127:
+            length = struct.unpack("!Q", await reader.readexactly(8))[0]
+
+        return first & 0x0F, await reader.readexactly(length)
 
     async def scenario() -> None:
         server_socket, client_socket = socket.socketpair()
         server_socket.setblocking(False)
         client_socket.setblocking(False)
         reader, writer = await asyncio.open_connection(sock=server_socket)
+        client_reader, client_writer = await asyncio.open_connection(sock=client_socket)
         task = asyncio.create_task(
             handle_websocket(
                 app,
@@ -2145,33 +2131,35 @@ def test_websockets_backend_real_socketpair_roundtrip() -> None:
             )
         )
         try:
-            loop = asyncio.get_running_loop()
-            handshake = await asyncio.wait_for(loop.sock_recv(client_socket, 4096), timeout=2)
+            handshake = await asyncio.wait_for(client_reader.readuntil(b"\r\n\r\n"), timeout=2)
             assert b"101 Switching Protocols" in handshake
 
-            await loop.sock_sendall(client_socket, _masked_frame(0x1, b"hello"))
-            frame_payload = await asyncio.wait_for(loop.sock_recv(client_socket, 4096), timeout=2)
-
-            if b"\x88" not in frame_payload:
-                frame_payload += await asyncio.wait_for(
-                    loop.sock_recv(client_socket, 4096), timeout=2
-                )
-
-            frames = _parse_frames(frame_payload)
-            assert (0x1, b"hello") in frames
-            assert any(
-                opcode == 0x8 and body[:2] == struct.pack("!H", 1000) for opcode, body in frames
+            client_writer.write(_masked_frame(0x1, b"hello"))
+            await client_writer.drain()
+            assert await asyncio.wait_for(_read_server_frame(client_reader), timeout=2) == (
+                0x1,
+                b"hello",
             )
 
-            # Acknowledge server close so websockets backend close() can return.
-            await loop.sock_sendall(client_socket, _masked_frame(0x8, struct.pack("!H", 1000)))
-            client_socket.close()
+            # Complete the close handshake without depending on socket read chunking.
+            client_writer.write(_masked_frame(0x8, struct.pack("!H", 1000)))
+            await client_writer.drain()
+            close_opcode, close_body = await asyncio.wait_for(
+                _read_server_frame(client_reader), timeout=2
+            )
+            assert close_opcode == 0x8
+            assert close_body[:2] == struct.pack("!H", 1000)
+
+            client_writer.close()
+            await client_writer.wait_closed()
             await asyncio.wait_for(task, timeout=2)
         finally:
             writer.close()
             with contextlib.suppress(Exception):
                 await writer.wait_closed()
-            client_socket.close()
+            client_writer.close()
+            with contextlib.suppress(Exception):
+                await client_writer.wait_closed()
 
     asyncio.run(scenario())
 

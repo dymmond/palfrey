@@ -1110,6 +1110,15 @@ async def _handle_websocket_websockets_backend(
         Provides empty implementations of lifecycle management methods.
         """
 
+        def __init__(self) -> None:
+            self.handler_tasks: set[asyncio.Task[None]] = set()
+
+        async def handler(self, _connection: Any) -> None:
+            """Satisfy the connection handler interface used by websockets 17+."""
+            task = asyncio.current_task()
+            if task is not None:
+                self.handler_tasks.discard(task)
+
         def register(self, ws: Any) -> None:
             """Register a connection (No-op)."""
             return None
